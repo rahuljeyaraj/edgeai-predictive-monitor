@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+
+# Zephyr / West build artifacts
+build/
+.west/
+
+# Arduino App Lab / CLI local cache
+.arduino-app-cli/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+!.vscode/extensions.json
+
+# Claude Code personal overrides (not shared with team)
+.claude/settings.local.json
+.claude/CLAUDE.local.md
