@@ -103,6 +103,71 @@ Porting is happening step by step, MCU side first.
     while the app is running. **Confirmed working on hardware** (2026-07-13): static text, scrolling
     text, and clear all render correctly at the expected size/speed.
 
+- **2026-07-13** — Ported `rgb_display_thread` (external WS2812B 8-LED ring on D4/PA12), verified
+  working on hardware (CONST/BREATHE/STROBE all confirmed by eye). Lives in
+  `base-station/sketch/rgb_display.h`/`rgb_display.cpp` (see that file's header comment for the full
+  rationale). Behaviorally matches the old repo's
+  [`threads/rgb_display_thread.c`](../../edgeai-predictive-monitor-unoq/mcu/src/threads/rgb_display_thread.c)
+  + [`hal_display_rgb.h`](../../edgeai-predictive-monitor-unoq/mcu/src/hal/hal_display_rgb.h) +
+  [`drivers/rgb_ws2812.c`](../../edgeai-predictive-monitor-unoq/mcu/src/drivers/rgb_ws2812.c) contract
+  (CONST/BREATHE/STROBE, packed 0xRRGGBB, same sine-breathe/square-strobe math, same tick-thread
+  priority 3 / 20ms period), but the actual WS2812 transmission is fundamentally different, and hit one
+  significant bug worth remembering:
+  - **No `zephyr,led_strip` device.** The old repo drove the ring over SPI1 MOSI via Zephyr's
+    `worldsemi,ws2812-spi` `led_strip` binding — a devicetree node its own board overlay added, which
+    needed a from-scratch Zephyr build. App Lab's `arduino:zephyr` toolchain gives a sketch no way to
+    add devicetree nodes, and unlike the LED matrix there's no bundled Arduino-native library for an
+    external WS2812 strip either — so `rgb_display.cpp` bit-bangs the WS2812 protocol directly on
+    D4/PA12 (the same pin the old repo's ring is wired to) instead of going through a `led_strip` device.
+  - **First bit-bang attempt produced constant solid white regardless of any requested color/mode** —
+    confirmed on hardware. Root cause: toggling the pin via Zephyr's `gpio_pin_set_dt()` (the same
+    `arduino_pins[]` table `digitalWrite()` uses) compiles fine, but its driver-dispatch overhead alone
+    exceeds a WS2812 "0" bit's entire ~0.4us high-time budget, so every bit's physical high pulse — 0 or
+    1 — ends up longer than the decode threshold and reads back as 1, collapsing every byte to 0xFF.
+    Fixed by toggling the pin with direct register writes instead: STM32Cube's
+    `LL_GPIO_SetOutputPin()`/`LL_GPIO_ResetOutputPin()` (`stm32u5xx_ll_gpio.h`, `__STATIC_INLINE` — a
+    single BSRR/BRR store, no driver-API call) — the same primitive Adafruit_NeoPixel's own STM32
+    backend uses for exactly this reason. **Worth knowing for any future timing-critical GPIO work on
+    this board**: the full STM32Cube HAL/LL tree (and CMSIS device headers) ships inside this core's
+    `llext-edk` include path (`modules/hal/stm32/stm32cube/stm32u5xx/...`) and is directly includable
+    from a sketch (`#define STM32U585xx` before `#include <stm32u5xx.h>` +
+    `#include <stm32u5xx_ll_gpio.h>`) — confirmed by test-compiling against it — so direct
+    register-level access is available without any raw hard-coded peripheral addresses. Bit timing
+    itself uses `k_cycle_get_32()` (confirmed `CONFIG_SYS_CLOCK_HW_CYCLES_PER_SEC` == 160000000 on this
+    board), with the whole per-frame transmission (192 bits @ 1.25us =~ 240us for 8 pixels) wrapped in
+    `irq_lock()`/`irq_unlock()` so no ISR/reschedule can stretch a bit out of tolerance.
+  - **Known current limitation**: this bit-bang blocks all interrupts (not just other threads) for the
+    full ~240us of each frame, once per `RGB_DISPLAY_TICK_MS` (20ms) — a ~1.2% duty cycle of IRQs-off.
+    Harmless today (nothing else on this board needs sub-millisecond response), but it's CPU time this
+    thread is fully occupying rather than handing off to hardware — see the SPI1 idea below for the fix
+    if a future thread ever needs tighter latency.
+  - Bridge.provide() takes one combined String (`"RRGGBB,mode,period_ms"`), not
+    `matrix_display.cpp`'s two-separate-single-String-providers split: color/mode/period should latch
+    together atomically, and the known Arduino_RPClite integer-argument bug (see `matrix_display.cpp`'s
+    own comment, still true) still rules out a native numeric argument.
+  - Test script ported: `base-station/tests/display_rgb_test.py`, adapted from the old repo's
+    [`mpu/tests/display_rgb_test.py`](../../edgeai-predictive-monitor-unoq/mpu/tests/display_rgb_test.py)
+    to call `Bridge.call("set_rgb", ...)` instead of hand-framing UART bytes. Run the same way as the
+    matrix test (see that entry above), swapping in `display_rgb_test.py`. **Confirmed working on
+    hardware** (2026-07-13): CONST red/green/blue, BREATHE yellow, and STROBE magenta all rendered
+    correctly.
+
+## Future improvements
+
+- **`rgb_display.cpp`: move WS2812 transmission off the CPU onto SPI1, bypassing devicetree** — right
+  now the ring is bit-banged (see the 2026-07-13 rgb_display_thread entry above), which busy-waits with
+  `irq_lock()` held for ~240us per 8-pixel frame. The old repo avoided this entirely by pinmuxing
+  PA12 as SPI1 MOSI and letting Zephyr's `worldsemi,ws2812-spi` `led_strip` driver clock bits out via
+  DMA-backed SPI, freeing the CPU during transmission — not available to us since App Lab doesn't
+  expose devicetree/pinctrl to a sketch, and Arduino's own `SPI` object doesn't map to D4 by default.
+  Since confirming this core's full STM32Cube HAL/LL tree is reachable from a sketch (see that same
+  entry), the same trick should be redoable by hand: enable SPI1's RCC clock, set PA12 to AF5 (SPI1
+  MOSI) via direct GPIO AFR register writes, and configure/feed SPI1 directly via `stm32u5xx_ll_spi.h`
+  — all bypassing devicetree, the same way `stm32u5xx_ll_gpio.h` bypassed the GPIO driver. Not attempted
+  yet: real complexity (RCC/AF/SPI register setup) for a benefit (freeing ~240us/20ms of CPU time) that's
+  currently invisible on this workload — revisit if a future thread needs tighter latency than the
+  bit-bang's IRQs-off window allows.
+
 ## Next up
 
 Port the remaining threads from the old `main.c`, one at a time, onto the App Lab sketch/python split.
@@ -111,8 +176,9 @@ Old repo had these as separate Zephyr threads under `mcu/src/threads/`:
 - [ ] `accel_sampler_thread` — accelerometer sampling
 - [ ] `mic_sampler_thread` — microphone sampling
 - [ ] `fuser_thread` — sensor fusion / inference
-- [ ] `rgb_display_thread` — external WS2812 ring (port at thread priority 3, matching
-      `matrix_display_thread` above and the old repo's own `RGB_DISPLAY_THREAD_PRIORITY`)
+- [x] `rgb_display_thread` — external WS2812 ring (2026-07-13, see progress log above — direct
+      register-level WS2812 bit-bang on D4/PA12 via STM32Cube's LL_GPIO driver + `Bridge`, not the old
+      repo's `led_strip`/SPI1 approach)
 - [x] `matrix_display_thread` — LED matrix display (2026-07-13, see progress log above — via
       `Arduino_LED_Matrix`/`ArduinoGraphics` + `Bridge`, not a hand-rolled driver/wire protocol)
 - [ ] `transport_thread` — likely superseded per-interface by direct `Bridge.provide()`/`Bridge.call()`
