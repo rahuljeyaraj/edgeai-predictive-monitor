@@ -4,6 +4,19 @@
     "deny": [
       "Edit(base-station/app.yaml)",
       "Edit(base-station/sketch/sketch.yaml)"
-    ]
+    ],
+    "allow": [
+      "Bash(west *)",
+      "Bash(adb *)",
+      "Bash(wsl.exe *)",
+      "Bash(source .venv/bin/activate *)",
+      "Bash(./build_and_flash.sh *)",
+      "Bash(timeout *)",
+      "Bash(grep *)",
+      "Bash(sed *)",
+      "Bash(source .venv/bin/activate 2>/dev/null; *)",
+      "Bash(find *)",
+      "Bash(kill 602317)"
+    ]  
   }
 }
