@@ -7,12 +7,14 @@
 #define HEARTBEAT_PERIOD_MS 500
 
 #include "matrix_display.h"
+#include "mic_sampler.h"
 #include "rgb_display.h"
 
 void setup() {
   pinMode(LED_BUILTIN, OUTPUT);
   matrix_display_start();
   rgb_display_start();
+  mic_sampler_start();
 }
 
 void loop() {
