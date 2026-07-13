@@ -6,8 +6,11 @@
  */
 #define HEARTBEAT_PERIOD_MS 500
 
+#include "matrix_display.h"
+
 void setup() {
   pinMode(LED_BUILTIN, OUTPUT);
+  matrix_display_start();
 }
 
 void loop() {
