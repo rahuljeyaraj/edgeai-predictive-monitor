@@ -171,7 +171,6 @@ static volatile uint32_t accel_timeout_count = 0;
 static volatile uint32_t accel_fifo_full_count = 0;
 static volatile uint8_t accel_who_am_i_seen = 0xFF; /* bring-up diagnostic, see accel_get_info() */
 static volatile bool accel_sensor_ok = false;
-volatile uint8_t accel_checkpoint = 0; /* TEMPORARY, see rgb_display.cpp */
 
 static void accel_int1_isr() {
   accel_isr_count++;
@@ -485,46 +484,29 @@ static void accel_sampler_thread_entry(void *p1, void *p2, void *p3) {
 K_THREAD_STACK_DEFINE(accel_sampler_thread_stack, ACCEL_SAMPLER_THREAD_STACK_SIZE);
 static struct k_thread accel_sampler_thread_data;
 
-extern volatile uint8_t accel_entry_marker; /* TEMPORARY, defined in rgb_display.cpp */
-
 void accel_sampler_start(void) {
-  accel_entry_marker = 42;
-  accel_checkpoint = 10;
-  return; /* TEMPORARY bisection: test whether a TINY function body succeeds
-             where the full-size one didn't, now that the tail-call issue is
-             fixed - isolates function SIZE as a variable. */
-#if 0
   /* Bridge providers are registered before the WHO_AM_I check, not after -
    * see accel_get_info()'s own comment for why: this makes a WHO_AM_I
    * mismatch observable from the MPU side (who_am_i=/ok= fields) instead of
    * silently leaving both providers missing the way an early return here
    * would. */
   Bridge.begin(); /* idempotent - matrix/rgb/mic also call this */
-  accel_checkpoint = 11;
   Bridge.provide("get_accel_spectrum", accel_get_spectrum);
-  accel_checkpoint = 12;
   Bridge.provide("get_accel_info", accel_get_info);
-  accel_checkpoint = 1;
 
   accel_fft_init_twiddles();
-  accel_checkpoint = 2;
 
   /* D8/PB4 isn't part of spi2's own pinctrl (see header comment), so unlike a
    * CS pin sharing a peripheral's AF pin, this order isn't load-bearing - just
    * kept SPI.begin()-then-pinMode() for readability (bus up before the pin
    * that talks to a device on it). */
   SPI.begin();
-  accel_checkpoint = 3;
   pinMode(ACCEL_CS_PIN, OUTPUT);
-  accel_checkpoint = 4;
   digitalWrite(ACCEL_CS_PIN, HIGH); /* idle high, active-low CS */
-  accel_checkpoint = 5;
   pinMode(ACCEL_INT1_PIN, INPUT);
-  accel_checkpoint = 6;
 
   uint8_t who_am_i;
   kx134_read_regs(KX134_REG_WHO_AM_I, &who_am_i, 1);
-  accel_checkpoint = 7;
   accel_who_am_i_seen = who_am_i;
   if (who_am_i != KX134_WHO_AM_I_VALUE) {
     /* KX134 not responding - leave the sampling thread unstarted (same
@@ -561,5 +543,4 @@ void accel_sampler_start(void) {
                   accel_sampler_thread_entry, NULL, NULL, NULL,
                   ACCEL_SAMPLER_THREAD_PRIORITY, 0, K_NO_WAIT);
   k_thread_name_set(&accel_sampler_thread_data, "accel_sampler");
-#endif
 }

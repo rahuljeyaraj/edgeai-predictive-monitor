@@ -12,7 +12,10 @@
 /* Initializes the KX134 over SPI, registers the Bridge providers
  * ("get_accel_spectrum", "get_accel_info"), and starts the capture/FFT thread
  * (priority ACCEL_SAMPLER_THREAD_PRIORITY, see accel_sampler.cpp). Call once
- * from setup(). */
+ * from setup(), BEFORE mic_sampler_start() - mic's priority-7 never-yielding
+ * capture thread starves this (lower-priority) setup() thread the instant it
+ * starts, so anything sequenced after mic_sampler_start() in setup() never
+ * runs. See docs/PROGRESS.md's accel_sampler_thread entry for the full story. */
 void accel_sampler_start(void);
 
 #endif /* ACCEL_SAMPLER_H_ */

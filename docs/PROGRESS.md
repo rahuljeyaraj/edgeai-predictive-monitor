@@ -269,124 +269,91 @@ Porting is happening step by step, MCU side first.
     read back as set, zero capture timeouts) and the spectrum's peak bucket/
     magnitude visibly changes across repeated polls.
 
-- **2026-07-13 — `accel_sampler_thread` (KX134-1211 SPI accelerometer): driver written, PORT BLOCKED
-  on a suspected toolchain/loader bug, not a driver logic bug. Picking this up next session should
-  start by reading this entry in full before touching code.**
+- **2026-07-13 — `accel_sampler_thread` (KX134-1211 SPI accelerometer): DONE, verified working on
+  hardware.** WHO_AM_I reads back `0x46`, the capture/FFT thread runs continuously (`timeouts=0`),
+  and `get_accel_spectrum` returns a live, motion-reactive 3-axis-summed spectrum. Lives in
+  `base-station/sketch/accel_sampler.h`/`.cpp` (see that file's header comment for the full port
+  rationale — KX134 register map, SPI via this core's bundled `SPI` library resolving to spi2 via
+  this board's `spis = <&spi2>, <&spi3>;`, software CS on D8/PB4, INT1 on D9/PB8 via
+  `attachInterrupt()`, hand-rolled radix-2 FFT at `ACCEL_FFT_LEN=1024`, `get_accel_spectrum`/
+  `get_accel_info` Bridge providers registered *before* the WHO_AM_I check so a mismatch stays
+  observable). Wiring (confirmed with the user): CS=D8, INT1=D9, SCK=D13, MISO=D12, MOSI=D11 — the
+  old repo's overlay *prose* comment describing CS on D10 is stale relative to its own applied
+  `cs-gpios = <&gpiob 4 ...>` (=D8); trust the devicetree code, not that comment. The old repo's
+  worry that SPI on PB13/14/15 never read WHO_AM_I correctly did **not** recur here — first real
+  read returned `0x46`.
 
-  **What's done and believed correct:** `base-station/sketch/accel_sampler.h`/`.cpp` (KX134-1211
-  register map, SPI via this core's bundled `SPI` library — `SPI` resolves to spi2 via this board's
-  `spis = <&spi2>, <&spi3>;` devicetree property, confirmed on-device — software CS on D8/PB4,
-  INT1 on D9/PB8 via `attachInterrupt()`, hand-rolled radix-2 FFT at `ACCEL_FFT_LEN=1024` mirroring
-  `mic_sampler.cpp`'s `mic_fft_run()`, `get_accel_spectrum`/`get_accel_info` Bridge providers
-  registered *before* the WHO_AM_I check so a mismatch is still observable). `base-station/tests/
-  accel_sampler_test.py` written, mirroring the other test scripts. Wiring confirmed with the user:
-  CS=D8, INT1=D9, SCK=D13, MISO=D12, MOSI=D11 (the old repo's overlay comment describing CS on D10
-  is stale relative to its own applied `cs-gpios = <&gpiob 4 ...>` = D8 — don't trust that prose
-  comment, trust the devicetree code, see `accel_sampler.cpp`'s header comment). None of this has
-  been confirmed against the real chip yet (WHO_AM_I never successfully read) because of the bug
-  below — once it's fixed, resume verification from "does WHO_AM_I read back 0x46" onward.
+  **The real root cause of the prior session's "PORT BLOCKED" — a scheduling bug, NOT a toolchain
+  bug.** The previous session spent hours concluding that `accel_sampler_start()`, called from
+  `sketch.ino`'s `setup()`, "never executes" despite the call being correctly compiled/relocated
+  (verified via objdump — that part was accurate), and suspected an immature-llext-loader bug worth
+  filing upstream. It was none of that. The call *was* being reached-toward correctly; the CPU was
+  simply being taken away before it got there:
+  - `setup()`/`loop()` run in the Zephyr **main thread, priority 14** (`CONFIG_MAIN_THREAD_PRIORITY`
+    in this core, confirmed on-device).
+  - `mic_sampler_start()` creates a **priority-7, `K_NO_WAIT`, never-yielding busy-wait** capture
+    thread (its whole priority-7 design, see the mic entry above, is *because* it can't yield). The
+    instant `k_thread_create()` runs, that priority-7 thread preempts the priority-14 main thread and
+    — having no yield point on its success path — **never hands the CPU back to a lower-priority
+    thread**. So every statement sequenced *after* `mic_sampler_start()` in `setup()` (and every
+    `loop()` iteration, i.e. the heartbeat) never runs again.
+  - The accel call was placed *after* `mic_sampler_start()` → starved, never reached. matrix/rgb were
+    *before* it → fine. The prior session's "decisive test" (calling accel from `rgb_display_start()`
+    works) looked like it isolated the *caller*, but `rgb_display_start()` runs *before*
+    `mic_sampler_start()` — so "nothing else changed" was wrong: the call's position **relative to
+    mic's thread** changed. That, not the caller's identity, is what mattered.
+  - **The fix is ordering, nothing more:** `setup()` now calls
+    `matrix_display_start()` → `rgb_display_start()` → `accel_sampler_start()` → `mic_sampler_start()`
+    (mic strictly last). accel's own thread is priority 3 and blocks on `accel_data_ready_sem` every
+    read, so it yields cleanly and coexists with everything; it just has to be brought up before mic
+    monopolizes the CPU. `sketch.ino`'s `setup()` and `accel_sampler.h` both carry a comment spelling
+    out this "mic must be last" constraint so it isn't re-lost. The previous session's blind spot was
+    a pure lens mismatch: its whole investigation was framed as "caller context vs. callee compiled
+    form" (a relocation/ELF lens) and never considered that a correctly-compiled instruction was
+    simply never getting scheduled — the mic priority-7 saga lives in a *separate* PROGRESS entry, so
+    the two were never connected. The prior "tiny-body still fails from setup()" and
+    "`__asm__ volatile("")` tail-call guard" findings are now explained/moot (the tiny body was after
+    mic too; the tail-call guard was a genuine-but-irrelevant fix and has been removed — no
+    `xxx_start()` is last in `setup()` anymore, mic is).
 
-  **The actual blocker, found via hours of hardware bisection:** calling `accel_sampler_start()`
-  from `sketch.ino`'s `setup()` — an ordinary, correctly-compiled, correctly-relocated function
-  call (verified via `arm-zephyr-eabi-objdump -d`/`-r` on the on-device compiled ELF at
-  `/home/arduino/ArduinoApps/edgeai-predictive-monitor-base-station/.cache/sketch/sketch.ino.elf` —
-  the call site *does* use an ordinary `blx` through a literal-pool function pointer, and *does*
-  carry a correct `R_ARM_ABS32` relocation against the correctly-mangled `_Z19accel_sampler_startv`
-  symbol, identical in shape to the relocations for `matrix_display_start`/`rgb_display_start`/
-  `mic_sampler_start`, all of which work) — **never actually executes**, even reduced to a single
-  no-op statement (`some_global = 42; return;`) as its entire body. Confirmed via a written-then-read
-  marker global exposed over Bridge (see "how to reproduce" below): the marker never gets set,
-  proving the function body's first instruction never runs, while `mic_sampler_start()` (called
-  immediately before it in the same `setup()`) demonstrably completes and its thread runs live on
-  real hardware (`get_mic_info` returns real SAI register data) every single time. **The decisive
-  test**: calling the exact same `accel_sampler_start()` from inside `rgb_display_start()` instead
-  of from `sketch.ino`'s `setup()` — nothing else changed — works immediately (marker read back
-  correctly). This isolates the bug to something about `sketch.ino`'s `setup()` specifically as a
-  caller (or `sketch.ino.cpp`'s own compiled/relocated form), not about `accel_sampler.cpp`, not
-  about function size (tested tiny vs. full-size body, both failed identically from `setup()`), and
-  not about tail-call optimization (a real, separate, now-fixed issue — see below — that turned out
-  to be a red herring for the actual blocker, though worth keeping fixed regardless).
+  **`fifo_full` tracks `reads`/`isr` ~1:1 on hardware — expected, not a defect.** `get_accel_info`
+  reports `fifo_full` climbing in lockstep with `reads`, i.e. the KX134's 86-frame hardware FIFO sits
+  at its cap on essentially every read. This is the **documented, accepted steady-state** of this
+  exact configuration (ODR=1600Hz, `ACCEL_READ_CHUNK_FRAMES=64` drained off a Buffer-Full interrupt),
+  reproduced faithfully from the old repo — see its
+  [`accel_sampler_thread.c`](../../edgeai-predictive-monitor-unoq/mcu/src/threads/accel_sampler_thread.c)
+  chunk-size comment (lines ~42-52) and `docs/Sensor_Throughput_Tuning_Plan.md`: 64 is the largest
+  divisor of `ACCEL_FFT_LEN=1024` that fits under the 86-frame cap, and at 1600Hz the drain rate is
+  slightly under ODR's production rate, so Stream mode discards the oldest raw samples before the
+  thread sees them. This port deliberately keeps the old repo's original safe 1600Hz baseline (the
+  header comment says so) rather than its later-tuned 12800Hz; closing the fifo_full gap is the same
+  deferred throughput-tuning work, to revisit if bin-level spectral fidelity ever turns out to matter
+  downstream. Not a bring-up blocker.
 
-  **Two real findings along the way, both worth keeping even though neither was the root cause:**
-  - `-Os` turns the *last* call in a `void` function with nothing after it into a tail call
-    (`bx` jump straight into the callee instead of `blx` call-and-return) — confirmed via objdump.
-    This board's loader was suspected to mishandle that specific relocation shape, but the
-    tiny-body/different-caller tests proved the real bug is something else. Still fixed and worth
-    keeping: `sketch.ino`'s `setup()` ends with `__asm__ volatile("");` after the last `xxx_start()`
-    call, which forces an ordinary `blx`. **Apply this same guard to any function whose last
-    statement is a call into another translation unit**, out of caution, until the real bug above is
-    actually understood.
-  - The recurring `Error: verify failed in bank at 0x08000000 starting at 0x00100000` +
-    `Warn : Adding extra erase range` pair in every single `deploy.sh` run's OpenOCD output is
-    **not a real error** — it's `flash_sketch.cfg`'s own intentional `catch {flash verify_image ...}`
-    / `flash write_image erase ...` retry pattern (verify legitimately fails because the sketch
-    changed, triggering the expected re-flash). Don't chase this again.
+  **Side effect worth knowing:** because mic's priority-7 thread starves the priority-14 main thread
+  (above), the `loop()` heartbeat LED effectively **stops blinking once the mic thread is streaming**
+  — this is pre-existing (it started with the mic port, not accel) and currently just cosmetic (the
+  "firmware alive" signal is now better read from any Bridge query succeeding). If a live heartbeat is
+  wanted back, move it out of `loop()` into its own priority-3 (or lower) thread that `k_msleep()`s,
+  the way the display threads do — not done here to keep this change scoped to the accel port.
 
-  **How to reproduce / continue the investigation** (all commands run from a shell with `adb`
-  connected to the board — see `base-station/deploy.sh`):
-  - Deploy via `base-station/deploy.sh`, which pushes+builds+flashes+restarts the app
-    (`edgeai-predictive-monitor-base-station`). Each full incremental deploy takes 3-6 minutes on
-    this board's own (slow) CPU; a from-scratch rebuild (e.g. after `adb shell "rm -rf
-    /home/arduino/ArduinoApps/edgeai-predictive-monitor-base-station/.cache/sketch"`) takes
-    10-15 minutes — **do not assume a deploy is stuck just because it's quiet for several minutes**;
-    poll `adb shell "ps aux | grep -E 'cc1plus|openocd'"` to confirm real CPU activity before
-    worrying, and poll `adb shell "docker ps --filter name=edgeai-predictive-monitor-base-station"`
-    for a fresh (low-uptime) container as the actual completion signal, not log text (the log-follow
-    step of `deploy.sh` streams *historical* container logs from the start, so tailing it can look
-    stale even when the new build is running fine).
+  **Deploy/verify mechanics (unchanged, kept here for the next session):**
+  - Deploy via `base-station/deploy.sh` (push+build+flash+restart). Incremental deploy 3-6 min on
+    this board's slow CPU; from-scratch rebuild 10-15 min — don't assume a quiet deploy is stuck.
+    `deploy.sh`'s final log-follow streams *historical* container logs, so it looks stale even on a
+    good build; the real completion signal is a fresh low-uptime container
+    (`adb shell "docker ps --filter name=edgeai-predictive-monitor-base-station"`).
   - Query Bridge from the host: `adb shell "docker exec edgeai-predictive-monitor-base-station-main-1
-    python3 -c \"from arduino.app_utils import Bridge; print(Bridge.call('get_mic_info'))\""`
-    (first call after a fresh flash often needs one retry — a `timeout 25` wrapper plus one retry on
-    failure has been reliable).
-  - To inspect the actual compiled/relocated code: `adb shell
-    "/home/arduino/.arduino15/packages/zephyr/tools/arm-zephyr-eabi/0.16.8/bin/arm-zephyr-eabi-nm
-    /home/arduino/ArduinoApps/edgeai-predictive-monitor-base-station/.cache/sketch/sketch.ino.elf"`
-    to find symbol addresses, then `arm-zephyr-eabi-objdump -d --start-address=<addr>
-    --stop-address=<addr>` to disassemble, and `arm-zephyr-eabi-objdump -r` to list relocations.
-    This is what actually found the tail-call issue and confirmed the real bug isn't a relocation
-    problem at the ELF level.
-
-  **Current file state — messy, mid-bisection, needs cleanup before continuing:** several files
-  still carry temporary diagnostic scaffolding from this investigation:
-  - `sketch.ino`: `accel_sampler_start()` call currently **removed** from `setup()` entirely (moved
-    into `rgb_display_start()` as the last test). `matrix_display_start()`/`rgb_display_start()`/
-    `mic_sampler_start()` remain called from `setup()` as normal, each followed by nothing further
-    except the trailing `__asm__ volatile("");` guard.
-  - `rgb_display.cpp`: carries a temporary `get_accel_checkpoint`/`get_accel_entry_marker` Bridge
-    providers, an `accel_entry_marker` global, and the temporary `accel_sampler_start()` call +
-    forward-declaration at the end of `rgb_display_start()`.
-  - `accel_sampler.cpp`: `accel_sampler_start()`'s real body is currently wrapped in `#if 0`/`#endif`,
-    replaced with a 3-line stub (`accel_entry_marker = 42; accel_checkpoint = 10; return;`) for the
-    bisection above. An `accel_checkpoint` global and its `extern` counterpart are also temporary.
-  - None of this temporary code is harmful (it's all inert diagnostic scaffolding, doesn't touch real
-    hardware state), but it needs to be stripped back to the real driver logic before the port can be
-    considered done. The real (non-`#if 0`'d) driver body is preserved intact inside the `#if 0`
-    block in `accel_sampler.cpp` — restoring it is a matter of deleting the 3-line stub + the `#if 0`/
-    `#endif` wrapper, then deciding where `accel_sampler_start()` should actually be called from
-    (ideally back in `sketch.ino`'s `setup()`, once the real bug is found and fixed — calling it from
-    `rgb_display_start()` was purely a diagnostic, not the intended long-term shape).
-
-  **Suggested next steps for a fresh session:**
-  1. Read this whole entry before touching code — don't re-derive the above by re-running the same
-     bisections.
-  2. With `accel_sampler_start()` still callable-but-not-yet-called-from-`setup()`, first try simply
-     moving the call back into `setup()` but *not last* (e.g. first, before
-     `matrix_display_start()`) — if that alone works, the bug is specifically about *tail/last
-     position within `setup()`* in some way the `__asm__ volatile("")` guard didn't actually fix for
-     this specific caller (worth re ­checking the guard actually applied — reconfirm via objdump,
-     don't assume).
-  3. If reordering within `setup()` doesn't help either, suspect something specific to
-     `sketch.ino.cpp` as a *translation unit* (it's compiled from a `.ino` file via arduino-cli's
-     auto-generated wrapper, unlike the other `.cpp` files — worth checking whether that
-     code-generation step differs in some relevant way, e.g. via `.cache/sketch/sketch/
-     sketch.ino.cpp` on-device, the actual preprocessed C++ arduino-cli generates from the `.ino`).
-  4. Once `setup()` can reliably call into `accel_sampler.cpp`, restore the real driver body (delete
-     the `#if 0` stub), clean up all temporary diagnostic code listed above, and resume verification
-     from WHO_AM_I onward using `base-station/tests/accel_sampler_test.py`.
-  5. Consider filing/searching for this as a known issue against the `arduino:zephyr` core (version
-     0.56.0 at time of writing) — this smells like an early/immature-toolchain bug (llext-based
-     sketch loading is a relatively new mechanism for this core), not something specific to this
-     project's code.
+    timeout 25 python3 -c \"from arduino.app_utils import Bridge; print(Bridge.call('get_accel_info'))\""`
+    (first call after a fresh flash often needs one retry).
+  - Full test: `adb shell "docker exec edgeai-predictive-monitor-base-station-main-1 python3
+    /app/tests/accel_sampler_test.py"` — prints ODR/FFT metadata + diagnostics, then polls
+    `get_accel_spectrum` with a per-bucket ASCII bar so you can eyeball reactivity (tap/shake the
+    board). **Confirmed working on hardware** (2026-07-13): `who_am_i=0x46,ok=1,timeouts=0`, peak
+    bucket wanders across buckets 0-4, magnitudes vary poll-to-poll — live capture, not stuck data.
+  - The recurring `Error: verify failed in bank at 0x08000000 ...` + `Warn : Adding extra erase
+    range` pair in every `deploy.sh` OpenOCD run is **not a real error** — it's `flash_sketch.cfg`'s
+    own intentional verify-then-reflash retry pattern. Don't chase it.
 
 ## Future improvements
 
@@ -486,12 +453,12 @@ Porting is happening step by step, MCU side first.
 Port the remaining threads from the old `main.c`, one at a time, onto the App Lab sketch/python split.
 Old repo had these as separate Zephyr threads under `mcu/src/threads/`:
 
-- [ ] `accel_sampler_thread` — accelerometer sampling (2026-07-13, **blocked**, not done — driver
-      written (`base-station/sketch/accel_sampler.h`/`.cpp`) but its `_start()` function mysteriously
-      never executes when called from `sketch.ino`'s `setup()` on real hardware, even reduced to a
-      single no-op statement — works fine called from `rgb_display_start()` instead. See the
-      "PORT BLOCKED" progress log entry above for the full investigation, current messy file state,
-      and suggested next steps — read it before touching this again)
+- [x] `accel_sampler_thread` — accelerometer sampling (2026-07-13, see progress log above — KX134
+      over the bundled `SPI` (spi2) + INT1/`attachInterrupt()` + hand-rolled FFT + `Bridge`, not the
+      old repo's Zephyr SPI/DMA/CMSIS-DSP stack. WHO_AM_I=0x46, live spectrum confirmed on hardware.
+      The prior "PORT BLOCKED" was a scheduling bug, not a toolchain bug: mic's priority-7 thread
+      starved the priority-14 `setup()` thread, so `mic_sampler_start()` must be called **last** in
+      `setup()` — see the progress log entry for the full root-cause)
 - [x] `mic_sampler_thread` — microphone sampling (2026-07-13, see progress log
       above — direct-register SAI1 I2S RX + hand-rolled FFT + `Bridge`, not
       the old repo's Zephyr `i2s`/DMA/CMSIS-DSP stack)
