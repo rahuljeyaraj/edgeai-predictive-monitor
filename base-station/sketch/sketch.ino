@@ -6,6 +6,7 @@
  */
 #define HEARTBEAT_PERIOD_MS 500
 
+#include "accel_sampler.h"
 #include "matrix_display.h"
 #include "mic_sampler.h"
 #include "rgb_display.h"
@@ -15,6 +16,10 @@ void setup() {
   matrix_display_start();
   rgb_display_start();
   mic_sampler_start();
+  /* TEMPORARY: accel_sampler_start() call moved into rgb_display_start()
+   * itself, to test whether the caller context (sketch.ino's setup()) is
+   * what matters, vs. the callee's own compiled form. */
+  __asm__ volatile("");
 }
 
 void loop() {

@@ -226,6 +226,22 @@ static void rgb_display_thread_entry(void *p1, void *p2, void *p3) {
 K_THREAD_STACK_DEFINE(rgb_display_thread_stack, RGB_DISPLAY_THREAD_STACK_SIZE);
 static struct k_thread rgb_display_thread_data;
 
+/* TEMPORARY bring-up probe, see accel_sampler.cpp */
+extern volatile uint8_t accel_checkpoint;
+static String get_accel_checkpoint(void) {
+  return String(accel_checkpoint);
+}
+
+/* TEMPORARY bring-up probe: a global DEFINED in this file (not
+ * accel_sampler.cpp), written by accel_sampler_start() as its very first
+ * statement, to test whether writes to accel_sampler.cpp's OWN globals
+ * specifically are what fails, vs. any global write from within that
+ * function. */
+volatile uint8_t accel_entry_marker = 0;
+static String get_accel_entry_marker(void) {
+  return String(accel_entry_marker);
+}
+
 void rgb_display_start(void) {
   pinMode(RGB_DISPLAY_PIN, OUTPUT);
   /* Blank the ring: like the old repo's hal_display_rgb_init(), WS2812
@@ -234,10 +250,17 @@ void rgb_display_start(void) {
 
   Bridge.begin(); /* idempotent - matrix_display_start() also calls this */
   Bridge.provide("set_rgb", rgb_display_set_command);
+  Bridge.provide("get_accel_checkpoint", get_accel_checkpoint);
+  Bridge.provide("get_accel_entry_marker", get_accel_entry_marker);
 
   k_thread_create(&rgb_display_thread_data, rgb_display_thread_stack,
                   K_THREAD_STACK_SIZEOF(rgb_display_thread_stack),
                   rgb_display_thread_entry, NULL, NULL, NULL,
                   RGB_DISPLAY_THREAD_PRIORITY, 0, K_NO_WAIT);
   k_thread_name_set(&rgb_display_thread_data, "rgb_display");
+
+  /* TEMPORARY bring-up probe, see sketch.ino */
+  extern void accel_sampler_start(void);
+  accel_sampler_start();
+  __asm__ volatile("");
 }
