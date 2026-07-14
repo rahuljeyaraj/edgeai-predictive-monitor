@@ -518,6 +518,125 @@ Porting is happening step by step, MCU side first.
   comment above it rewritten to record the finding (options 2/3 from the original entry — lower frame rate,
   retry `Bridge.provide()` — were not needed).
 
+- **2026-07-14 — Config consolidated into one `sketch/app_config.h`; benchmark instrumentation ported
+  as a new `bench.cpp` module; `mic_sampler_start()` promoted ahead of `fuser_start()` in `setup()`.
+  Code DONE and compiles/flashes clean; hardware verification of the reorder/benchmark numbers is
+  BLOCKED on an unrelated wedged board link (see the entry right after this one).**
+
+  - **`app_config.h` (new)**: every module's tunable "policy" knob — bin counts (`MIC_FFT_BIN_COUNT`/
+    `ACCEL_FFT_BIN_COUNT`), `ACCEL_ODR_HZ`, both `*_SPECTRUM_BINS`, every thread priority
+    (`MATRIX_DISPLAY_THREAD_PRIORITY`/`RGB_DISPLAY_THREAD_PRIORITY`/`ACCEL_SAMPLER_THREAD_PRIORITY`/
+    `MIC_SAMPLER_THREAD_PRIORITY`/`FUSER_THREAD_PRIORITY`), tick/epoch periods
+    (`HEARTBEAT_PERIOD_MS`/`MATRIX_DISPLAY_TICK_MS`/`RGB_DISPLAY_TICK_MS`/`FUSER_EPOCH_MS`),
+    `BENCHMARK_STATS_ENABLED`, and `BRIDGE_BAUD` (absorbed from the now-deleted `bridge_config.h`,
+    full baud rationale carried over verbatim) — one file, mirroring the old repo's `app_config.h`
+    intent but extended to thread priorities too, since priority mistakes (mic's busy-poll starving
+    Bridge, the fuser/Bridge-update-thread tie) have been this port's two worst hardware bugs so far.
+    Deliberately NOT centralized: pin assignments, register maps, wire-format constants, stack sizes,
+    derived math (e.g. `MIC_FFT_LEN = MIC_FFT_BIN_COUNT * 4`) — those stay local to the one file that
+    owns that implementation detail. Every other module's `#include "bridge_config.h"` became
+    `#include "app_config.h"`; `provision-baud.sh`'s comments updated to match.
+  - **Benchmarking ported as its own module, `sketch/bench.{h,cpp}` — NOT folded into `fuser.cpp`.**
+    First draft of this work put the periodic stats report inside `fuser.cpp` (it already touches both
+    samplers every epoch); corrected after user feedback that fuser's job is sensor fusion + transport
+    only, not aggregating pipeline health. Final shape: `mic_sampler.h`/`accel_sampler.h`/`fuser.h` each
+    gained a `BENCHMARK_STATS_ENABLED`-gated `*_get_stats()` accessor reporting on *only* their own
+    stage (mic: `windows_completed`/`timeouts`; accel: `windows_completed`/`isr_count`/`read_count`/
+    `timeout_count`/`fifo_full_count`; fuser: `frames_sent`/`overrun_count`/`send_ms_sum`/
+    `send_ms_max` — new counters this session, same "single writer, volatile uint32_t, torn read is
+    harmless for a diagnostic" pattern the samplers already used for `mic_capture_timeouts` etc.).
+    `bench.cpp` is the only module that calls all three accessors, and is the only one that registers
+    `get_bench_stats` over Bridge — a comma-separated `String`, same convention as `get_mic_info`/
+    `get_accel_info`. Ported from the old repo's `BENCHMARK_STATS_ENABLED` instrumentation
+    (`docs/Sensor_Throughput_Tuning_Plan.md` Phase 0: per-stage counters + a periodic `LOG_INF` line),
+    adapted two ways: (1) no background thread/timer — this project has no logging backend to
+    piggyback a fixed report cadence on (the established pattern here is a `Bridge.provide()` String,
+    not `LOG_INF`), and thread-priority interactions have been this port's worst bug category, so
+    `get_bench_stats()` instead computes each rate on demand from the delta since its own previous
+    call, whatever cadence the poller uses; (2) field labels kept short (`mic_fps`/`mic_win`/`mic_to`/
+    `acc_fps`/`acc_win`/`acc_isr`/`acc_ff`/`acc_to`/`fus_fps`/`fus_frm`/`fus_ovr`/`fus_avg`/`fus_max`)
+    to stay well clear of Bridge's 256-byte round-trip ceiling even at large cumulative counts.
+    **Forward-compatible with the eventual MPU dashboard / satellite-node reporting the user flagged**:
+    every module already follows the "cumulative counters behind a `*_get_stats()` accessor" shape
+    specifically so a future satellite node can expose an identically-shaped `get_bench_stats` string
+    without inventing a new schema.
+  - **Real numbers captured on hardware before the board wedged (see below) — genuinely useful, not
+    just plumbing verification**: two `get_bench_stats` polls ~2s apart returned
+    `mic_fps=15.9,mic_win=490,mic_to=1,acc_fps=1.5,acc_win=35,acc_isr=567,acc_ff=567,acc_to=0,
+    fus_fps=15.9,fus_frm=329,fus_ovr=28,fus_avg=58.5,fus_max=66`. Reading these:
+    - **The fuser is running close to its ceiling at the current epoch/baud, not comfortably inside
+      it.** `fus_avg=58.5ms` against the `FUSER_EPOCH_MS=64ms` budget leaves only ~5.5ms of average
+      margin (~91% budget utilization), and `fus_ovr=28` of `329` frames (~8.5%) already exceeded the
+      budget outright that cycle (falls back to `k_yield()` instead of sleeping — see `fuser.cpp`).
+      This is measured, not the ~41ms/64ms figure `bridge_config.h`'s old comment estimated for
+      1 Mbaud — the real send+build cost is notably higher than that estimate, which is itself a
+      useful correction to bank.
+    - **Mic's FFT window rate (`mic_fps≈15.9`) is far below its theoretical DMA-fill ceiling**
+      (2048 samples/96kHz ≈ 21.3ms/block ⇒ ~47 windows/s possible), and tracks the fuser's own
+      ~15.6-15.9 fps almost exactly. Read together with the overrun finding above, the FFT compute
+      time (hand-rolled radix-2, no CMSIS-DSP) is the more likely bottleneck for mic's own throughput
+      than the DMA capture stage — not conclusively proven in this session, flagged for whoever picks
+      up throughput tuning next.
+    - **Accel's window rate (`acc_fps≈1.5`) is expected, not a problem**: at ODR=1600Hz and
+      `ACCEL_FFT_LEN=1024`, one 3-axis window needs 1024/1600s ≈ 0.64s of samples regardless of
+      anything else, so ~1.56 windows/s is the correct ceiling for this ODR — not a bottleneck to
+      chase.
+    - **Answering the user's "are we getting the maximum out of the system" question**: at the
+      current settings (1 Mbaud, `FUSER_EPOCH_MS=64`), the honest answer is *not much headroom left*
+      at this epoch — pushing the epoch faster would very likely increase the overrun rate rather
+      than yield more fps, since send+build is already eating ~91% of the budget on average. The
+      lever with real headroom is baud (2 Mbaud roughly halves raw byte time), but 2 Mbaud is the
+      exact setting that broke round-trip `Bridge.provide()`/`Bridge.call()` reliability in the
+      2026-07-14 fuser entry above — that tension (stream throughput vs. round-trip reliability) is
+      the real ceiling here, not FFT/CPU headroom. Not resolved this session; a real tuning pass
+      would need to re-litigate that tradeoff with the benchmark counters now in place to measure it,
+      rather than argue from the two data points above alone.
+  - **`setup()` reorder**: `mic_sampler_start()` moved ahead of `fuser_start()` (previously
+    `accel → fuser → mic`; now `accel → mic → fuser → bench`), acting on the "mic no longer has to be
+    last" finding from the GPDMA1 migration entry above. Stale "MUST be called last" comments in
+    `sketch.ino` and `accel_sampler.h` rewritten to describe the *current* (non-)constraint instead of
+    the historical busy-poll one. **Not yet verified on hardware** — see next entry.
+  - **Files touched**: new `sketch/app_config.h`, `sketch/bench.{h,cpp}`; deleted
+    `sketch/bridge_config.h`; `sketch/{mic,accel,fuser,matrix_display,rgb_display}.{h,cpp}` (moved
+    `#define`s out, added stats accessors where noted, `#include` swapped to `app_config.h`);
+    `sketch/sketch.ino` (reorder + `bench_start()`); `base-station/provision-baud.sh` (comment fix).
+
+- **2026-07-14 — BLOCKED: board's Bridge link wedged (all `Bridge.call()`s time out) — confirmed
+  NOT caused by the change above; needs a follow-up session with hardware access to resolve.**
+  Discovered while verifying the `setup()` reorder: the very first deploy of this session's changes
+  worked initially (several successful calls, including two real `get_bench_stats` reads — the numbers
+  above came from that window), then every subsequent `Bridge.call()` started timing out
+  (`TimeoutError` after the client's own timeout, e.g. 6-10s).
+  - **Bisection performed, in order**: (1) disabled `bench_start()` entirely, redeployed — still hangs.
+    (2) also reverted the `setup()` reorder back to the original `accel → fuser → mic` order,
+    redeployed — still hangs. (3) `arduino-router` (the Linux-side systemd service) confirmed healthy
+    throughout: correct baud (`--serial-baudrate 1000000`), accepting and cleanly closing connections
+    (`journalctl -u arduino-router`) — the break is below that layer, between the router and the MCU.
+    (4) Per this doc's own "wedged Bridge handshake, needs `sudo reboot`, not just an app restart" note
+    (2026-07-14 fuser entry above): ran a real `sudo reboot` (confirmed via `uptime` — a genuine
+    ~6-minute-old boot, not `adb reboot`'s documented no-op) — **did not fix it**, hang reproduced
+    identically on the freshly-booted board. (5) **Decisive control test**: `git stash`ed every change
+    from this session (config consolidation, `bench.cpp`, the reorder — back to the exact code known
+    working as of the previous progress entry), redeployed that pristine code to the freshly-rebooted
+    board — **it hung identically**. This conclusively rules out anything in this session's code
+    changes; `git stash pop` restored the work afterward (all still present, uncommitted).
+  - **Working hypothesis, untested**: `sudo reboot` restarts the Linux (QRB2210) side; the STM32 MCU is
+    a physically separate chip on this board. If the MCU (or a shared peripheral/UART path) is wedged
+    at a level a Linux-only reboot doesn't reach — as opposed to the softer "Bridge handshake" wedge
+    this doc already knew about, which *does* clear with `sudo reboot` — a full physical power cycle
+    (unplug/replug, or a hardware reset if the board exposes one) is the next thing to try, since nothing
+    reachable over `adb`/systemd resolved it this session.
+  - **Next session, once the board responds to a basic call again** (sanity check:
+    `adb shell "docker exec edgeai-predictive-monitor-base-station-main-1 timeout 10 python3 -c \"from arduino.app_utils import Bridge; print(Bridge.call('get_mic_info'))\""`
+    returns promptly instead of timing out): redeploy this session's already-written, uncommitted
+    changes (`git status` will show them) and confirm (a) the reordered `setup()` still brings up
+    matrix/rgb/accel/mic/fuser/bench cleanly with no regression, (b) `get_bench_stats` still returns
+    sane numbers matching the two-poll snapshot above, closing out this entry.
+  - **Nothing hardware-destructive was attempted or left in a bad state**: no `--no-verify`, no forced
+    flash-erase beyond `deploy.sh`'s own normal (non-error) verify-then-reflash retry, no config left
+    half-changed — `sketch.ino`/`app_config.h`/`bench.cpp` are all in their intended final form, not a
+    bisection artifact.
+
 ## Future improvements
 
 - **`rgb_display.cpp`: move WS2812 transmission off the CPU onto SPI1, bypassing devicetree** — right
@@ -574,10 +693,12 @@ Old repo had these as separate Zephyr threads under `mcu/src/threads/`:
       repo's `led_strip`/SPI1 approach)
 - [x] `matrix_display_thread` — LED matrix display (2026-07-13, see progress log above — via
       `Arduino_LED_Matrix`/`ArduinoGraphics` + `Bridge`, not a hand-rolled driver/wire protocol)
-- [ ] `transport_thread` — likely superseded per-interface by direct `Bridge.provide()`/`Bridge.call()`
-      use (as `matrix_display_thread` now does) rather than one shared thread — revisit once more
-      interfaces are ported and it's clear whether anything still needs a dedicated thread here (e.g. an
-      MCU-initiated push channel Bridge doesn't already cover)
+- [x] `transport_thread` — **DECIDED (2026-07-14): not needed, no separate port planned.** Every
+      interface ended up registering its own `Bridge.provide()`/`Bridge.call()` directly
+      (matrix/rgb/samplers) or its own MCU-initiated push channel (`fuser.cpp`'s chunked
+      `Bridge.notify`) — exactly the "likely superseded" outcome this item already called out, now
+      confirmed with all five other interfaces ported and no remaining case that needs a dedicated
+      shared transport thread. Nothing to build here.
 
 Satellite (ESP32-S3) side hasn't been started at all yet — no code has been ported or written there.
 
