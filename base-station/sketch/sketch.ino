@@ -13,6 +13,7 @@
 #include "matrix_display.h"
 #include "mic_sampler.h"
 #include "rgb_display.h"
+#include "spi_link.h"
 
 void setup() {
   pinMode(LED_BUILTIN, OUTPUT);
@@ -26,6 +27,18 @@ void setup() {
   accel_sampler_start();
   mic_sampler_start();
   bench_start();
+  /* spi_link_start() registers a "get_spi_link_stats" Bridge provider
+   * (register-level SPI3-slave + GPDMA1, see spi_link.cpp) - belongs here,
+   * before fuser_start(), same as the other providers.
+   * TEMP: disabled - restored to the last known-good baseline (this call
+   * disabled, fuser_start() active) pending a board/session reset. This
+   * session's UART link degraded to wedging within seconds regardless of
+   * whether spi_link_start() or even fuser_start() ran (control-tested both
+   * ways) - see docs/progress2.md 4.5/4.6. spi_link.cpp itself is believed
+   * correct (pin/AF/DMA-request constants verified against primary sources)
+   * but could not be conclusively validated against an unstable link.
+   * Re-enable once the link is confirmed stable again. */
+  // spi_link_start();
   /* fuser_start() is intentionally LAST: it starts the continuous notify stream,
    * and every other module's Bridge.provide() registration is a round-trip the
    * stream can crowd out - so all providers register first. NOTE: this ordering

@@ -65,12 +65,18 @@
  * badly enough that every Bridge.provide() provider went "method not
  * available" for as long as the fuser streamed (2026-07-14, see
  * docs/PROGRESS.md). One band below lets Bridge always preempt the stream
- * to service a pending register/call. */
+ * to service a pending register/call.
+ * spi_link (3): the SPI3-slave bring-up spike (docs/progress2.md) - matches
+ * matrix/rgb/accel, not Bridge-relative like fuser/mic: it blocks on
+ * spi_transceive() waiting for the MPU's clock (SPI_PERIPHERAL mode), the
+ * same yield-every-call shape as accel's semaphore wait, and doesn't touch
+ * the UART at all so it has no Bridge-starvation risk to budget against. */
 #define MATRIX_DISPLAY_THREAD_PRIORITY 3
 #define RGB_DISPLAY_THREAD_PRIORITY 3
 #define ACCEL_SAMPLER_THREAD_PRIORITY 3
 #define MIC_SAMPLER_THREAD_PRIORITY 7
 #define FUSER_THREAD_PRIORITY 6
+#define SPI_LINK_THREAD_PRIORITY 3
 
 /* --- Tick / epoch periods ------------------------------------------------ */
 #define HEARTBEAT_PERIOD_MS 500     /* loop()'s LED_BUILTIN blink period */
