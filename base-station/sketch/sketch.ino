@@ -7,6 +7,7 @@
 #define HEARTBEAT_PERIOD_MS 500
 
 #include "accel_sampler.h"
+#include "fuser.h"
 #include "matrix_display.h"
 #include "mic_sampler.h"
 #include "rgb_display.h"
@@ -27,6 +28,7 @@ void setup() {
   matrix_display_start();
   rgb_display_start();
   accel_sampler_start();
+  fuser_start();
   mic_sampler_start();
 }
 

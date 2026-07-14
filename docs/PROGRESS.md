@@ -413,6 +413,95 @@ Porting is happening step by step, MCU side first.
   full one. Same deploy/verify mechanics as the accel entry, swapping in `get_mic_info` /
   `mic_sampler_test.py`.
 
+- **2026-07-14 — `fuser_thread` (sensor fusion transport): full-resolution float32 push WORKING
+  (15.8 fps, clean); one OPEN regression — Bridge provider registration fails while the fuser
+  streams.** This is the live-data-to-MPU path for the dashboard + autoencoder. Unlike the samplers'
+  32-bucket `get_*_spectrum` poll/response providers (capped by Bridge's 256-byte message ceiling),
+  the fuser PUSHES the *entire* 512-mic + 512-accel float32 spectrum to the MPU and it reassembles
+  cleanly. Lossless float32 was a deliberate choice (confirmed with the user): the MPU consumer is the
+  autoencoder, whose features are these exact magnitudes, so quantizing would inject model-input noise.
+
+  **What's done and verified on hardware:**
+  - **Samplers publish full bins.** `mic_sampler.cpp`/`accel_sampler.cpp` now publish their full
+    512-bin float32 magnitude arrays under their existing spectrum mutexes
+    (`mic_copy_full_spectrum()`/`accel_copy_full_spectrum()` + `*_full_bin_count()`/`*_fft_size()`/
+    `*_sample_rate_hz()` accessors, declared in the headers), alongside — not replacing — the 32-bucket
+    `get_*_spectrum` views the standalone tests use.
+  - **Fuser assembles + chunks + pushes.** `sketch/fuser.h`/`fuser.cpp` (new): each epoch
+    (`FUSER_EPOCH_MS=64`, ~15.6 Hz) it sample-and-holds both spectra, builds a self-describing frame —
+    a `fuser_frame_header` byte-identical to the old repo's `spectrum_fused_payload_header`
+    (`mic_fs`/`mic_fft_size`/`mic_bin_count`/`accel_fs`/`accel_fft_size`/`accel_bin_count`) then the mic
+    float32s then the accel float32s (16 + 2048 + 2048 = **4112 B**) — splits it into 200-byte chunks
+    (`magic 0xF5 | frame_seq u16 | chunk_idx u8 | chunk_count u8 | data`), and sends each fire-and-forget
+    as `Bridge.notify("spec_chunk", <msgpack bin>)`. Fixed-period pacing (`k_uptime_get()`, sleep only
+    the remainder of the epoch) → true ~15.8 fps.
+  - **Transport primitive validated.** A MCU→Python **msgpack bin** via `Bridge.notify` arrives at a
+    Python `Bridge.provide("spec_chunk", …)` handler as `bytes` (`MsgPack::bin_t<uint8_t>` on the MCU;
+    notification = msg_type 2, routed to the registering client, fire-and-forget). `tests/fuser_test.py`
+    (rewritten) reassembles frames by `frame_seq`, decodes the header + float32 bins, and prints live
+    mic/accel peaks. **Confirmed reactive on hardware**: ~4160 chunks / 189 frames per 12 s,
+    **0 corrupt, 0 dropped**, peaks track sound/motion. This is the eventual dashboard's reassembler —
+    it will move into `python/main.py`.
+  - **`wire`: chunked because the frame (4112 B) far exceeds the 256-byte RPClite message ceiling
+    (`DECODER_BUFFER_SIZE/4`, MCU-side only; the Python↔router socket has no such limit).**
+
+  **Baud had to be raised, and the exact value matters a lot (this ate most of the session).** The
+  frame is ~64 KB/s at 15.6 Hz; the stock **115200** link does ~11.5 KB/s. Raised via
+  `base-station/provision-baud.sh` (new) which installs a persistent systemd drop-in
+  `/etc/systemd/system/arduino-router.service.d/99-baud.conf` overriding the router's
+  `--serial-baudrate` — a **system-level, one-time board provisioning step OUTSIDE the App Lab app**
+  (not applied by `deploy.sh`, wiped by an OS reflash, needs the board sudo password; the `arduino`
+  user has full sudo). The MCU side is `Bridge.begin(BRIDGE_BAUD)` with `BRIDGE_BAUD` in the new
+  `sketch/bridge_config.h`; **both ends must match or the whole link silently dies.** Findings:
+  - **921600 → MCU goes totally silent** even on a clean reboot. It's not an exact divisor of this
+    board's STM32 `Serial1` clock and the core doesn't realize the fractional divider accurately, so the
+    MCU baud lands off. **Only use exact-divisor rates** (1000000, 2000000). Do not trust "standard"
+    115200/921600 on the MCU side.
+  - **2000000 → streams fine (MCU→MPU) but round-trip reliability is poor** (see the open regression).
+  - **Current setting: `1000000`** (exact ÷16 of the 16 MHz `Serial1` clock → precise baud; ≤1 MHz →
+    STM32 USART uses OVER16 16× oversampling → better RX margin than 2 MHz's OVER8). Carries 15.8 fps
+    full-res at ~64% link util.
+
+  **OPEN REGRESSION — every `Bridge.provide()` provider is "method not available" from the router while
+  the fuser streams at ~15.8 fps.** `get_mic_info`, `get_accel_info`, `set_matrix_text`, `set_rgb`,
+  `get_*_spectrum` — all of them — return `method … not available (2)` (the router has no such provider
+  registered), i.e. the MCU's one-time `$/register` calls didn't land/persist. The fuser's MCU→MPU
+  **notify** stream is completely unaffected. Established facts:
+  - **Not baud / not RX margin.** Reproduced identically at 2000000 (OVER8) *and* 1000000 (OVER16). So
+    the earlier "OVER8 RX margin" hypothesis is **disproven**.
+  - **Correlates with the fuser frame rate.** The *only* build where all providers worked was the
+    earlier **~9.8 fps** fuser (before the fixed-period pacing fix). *Every* ~15.8 fps build fails them.
+    So the continuous high-rate notify stream is starving/desyncing the round-trip register+call path on
+    the shared single UART.
+  - **Not flood-during-setup.** A 1 s fuser startup delay (`FUSER_STARTUP_DELAY_MS`, so `setup()`
+    finishes registering before the stream starts) did **not** fix it — registrations are being lost or
+    unserviced more fundamentally than just being crowded out at boot.
+  - **Consequence:** with the current build the **LED matrix and RGB ring can't be driven from the MPU**
+    (their providers are dead) and the per-sensor standalone tests fail. The fuser stream (the actual
+    dashboard/autoencoder data path) is fine.
+  - **Recommended next steps (untested), highest-leverage first:** (1) **lower the fuser thread priority
+    below the Bridge update thread** — both are currently priority 5; dropping the fuser to 6 lets the
+    update thread (which services incoming register/call round-trips) preempt the stream. (2) Reduce
+    stream load — raise `FUSER_EPOCH_MS` back toward ~10 fps (known-good), and/or fewer bytes/frame.
+    (3) **Retry `Bridge.provide()`** in each module until it returns success (they currently call it once
+    and ignore the bool). Start with (1); the 9.8-works/15.8-fails data point squarely implicates
+    stream-vs-round-trip contention.
+
+  **Workflow lessons banked this session:**
+  - **`adb reboot` silently no-ops on this board** (uptime proved it never cycled) — use
+    `sudo reboot`. Several confusing "wedged, everything silent" states were just me restarting the app
+    inside a stuck link; a real `sudo reboot` (or a clean `arduino-app-cli app stop`/`start`) clears them.
+  - After a deploy/flash the Bridge handshake can come up **wedged** (all calls time out, notify silent
+    too) even though the sketch flashed fine — a clean app restart or reboot fixes it; don't read it as a
+    code fault.
+  - `deploy.sh`'s "Error: verify failed in bank at 0x08000000 … Padding" is the known non-error.
+
+  **Files touched:** new `sketch/fuser.{h,cpp}`, `sketch/bridge_config.h`, `base-station/provision-baud.sh`;
+  `sketch/{mic,accel}_sampler.{h,cpp}` (full-bin publish + accessors); `sketch/{matrix_display,rgb_display}.cpp`
+  (`Bridge.begin(BRIDGE_BAUD)` + include); `sketch/sketch.ino` (`fuser_start()` after accel, before mic);
+  `tests/fuser_test.py` (frame reassembler). **Current board state:** 1 Mbaud, app running, fuser
+  streaming full-res at 15.8 fps, providers down (open regression above).
+
 ## Future improvements
 
 - **`rgb_display.cpp`: move WS2812 transmission off the CPU onto SPI1, bypassing devicetree** — right
@@ -455,7 +544,14 @@ Old repo had these as separate Zephyr threads under `mcu/src/threads/`:
       FFT + `Bridge`; capture moved from FIFO-polling to **GPDMA1** on 2026-07-14, see that progress-log
       entry — the reverted attempt's bug was a missing single-block linked-list init, not the SAI
       request path or Zephyr PM. Live spectrum confirmed reactive on hardware)
-- [ ] `fuser_thread` — sensor fusion / inference
+- [~] `fuser_thread` — sensor fusion / transport (2026-07-14, see progress log above). Transport
+      DONE: full 512-mic+512-accel float32 spectrum PUSHED to the MPU as chunked `Bridge.notify`
+      binary frames, reassembled cleanly at 15.8 fps (samplers publish full bins; `sketch/fuser.cpp`;
+      baud raised to 1000000 via `provision-baud.sh`). OPEN: `Bridge.provide()` provider registration
+      fails while the fuser streams at ~15.8 fps (matrix/rgb/sensor-info providers dead) — stream-load
+      contention, not baud; see the progress-log entry for the diagnosis + recommended fixes (try
+      lowering the fuser thread priority below the Bridge update thread first). Inference itself (the
+      autoencoder) not started — that's the MPU-side consumer of this stream.
 - [x] `rgb_display_thread` — external WS2812 ring (2026-07-13, see progress log above — direct
       register-level WS2812 bit-bang on D4/PA12 via STM32Cube's LL_GPIO driver + `Bridge`, not the old
       repo's `led_strip`/SPI1 approach)

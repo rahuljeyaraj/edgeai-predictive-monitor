@@ -111,6 +111,8 @@
  */
 #include "mic_sampler.h"
 
+#include "bridge_config.h"
+
 #include <Arduino_RouterBridge.h>
 #define STM32U585xx
 #include <stm32u5xx.h>
@@ -165,6 +167,11 @@ static float mic_fft_mag[MIC_FFT_LEN / 2]; /* bins 1..MIC_FFT_LEN/2, DC dropped 
 
 K_MUTEX_DEFINE(mic_spectrum_mtx);
 static float mic_spectrum_latest[MIC_SPECTRUM_BINS];
+/* Full-resolution (un-downsampled) spectrum published for the fuser
+ * (fuser.cpp), which pushes it to the MPU at full float32 fidelity - separate
+ * from mic_spectrum_latest[], the 32-bucket view get_mic_spectrum returns
+ * under Bridge's 256-byte ceiling. Guarded by the same mic_spectrum_mtx. */
+static float mic_full_latest[MIC_FFT_BIN_COUNT];
 
 static void mic_fft_init_twiddles(void) {
   for (int k = 0; k < MIC_FFT_LEN / 2; k++) {
@@ -571,12 +578,31 @@ static void mic_sampler_thread_entry(void *p1, void *p2, void *p3) {
 
     k_mutex_lock(&mic_spectrum_mtx, K_FOREVER);
     mic_spectrum_downsample(mic_spectrum_latest);
+    /* First MIC_FFT_BIN_COUNT bins (the useful <24kHz half) for the fuser -
+     * mic_fft_mag[] holds MIC_FFT_LEN/2 bins but only the first
+     * MIC_FFT_BIN_COUNT are meaningful (see mic_fft_magnitude()'s comment). */
+    memcpy(mic_full_latest, mic_fft_mag, sizeof(mic_full_latest));
     k_mutex_unlock(&mic_spectrum_mtx);
   }
 }
 
 K_THREAD_STACK_DEFINE(mic_sampler_thread_stack, MIC_SAMPLER_THREAD_STACK_SIZE);
 static struct k_thread mic_sampler_thread_data;
+
+/* Full-resolution spectrum accessors for the fuser (fuser.cpp). Self-describing
+ * metadata mirrors the old repo's spectrum_fused_payload_header (mic_fs /
+ * mic_fft_size / mic_bin_count). mic_copy_full_spectrum() copies
+ * mic_full_bin_count() float magnitudes into out[], mutex-guarded against the
+ * capture thread's publish. */
+int mic_full_bin_count(void) { return MIC_FFT_BIN_COUNT; }
+int mic_fft_size(void) { return MIC_FFT_LEN; }
+float mic_sample_rate_hz(void) { return (float)MIC_SAMPLER_SAMPLE_RATE_HZ; }
+
+void mic_copy_full_spectrum(float *out) {
+  k_mutex_lock(&mic_spectrum_mtx, K_FOREVER);
+  memcpy(out, mic_full_latest, sizeof(mic_full_latest));
+  k_mutex_unlock(&mic_spectrum_mtx);
+}
 
 void mic_sampler_start(void) {
   mic_fft_init_twiddles();
@@ -592,7 +618,7 @@ void mic_sampler_start(void) {
   mic_sampler_init_sai();
   mic_sampler_init_dma(); /* GPDMA1 clocks; the capture thread arms channel 2 per block */
 
-  Bridge.begin(); /* idempotent - matrix_display_start()/rgb_display_start() also call this */
+  Bridge.begin(BRIDGE_BAUD); /* idempotent - matrix_display_start()/rgb_display_start() also call this */
   Bridge.provide("get_mic_spectrum", mic_get_spectrum);
   Bridge.provide("get_mic_info", mic_get_info);
 

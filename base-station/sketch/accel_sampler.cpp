@@ -88,6 +88,8 @@
  */
 #include "accel_sampler.h"
 
+#include "bridge_config.h"
+
 #include <Arduino_RouterBridge.h>
 #include <SPI.h>
 #include <zephyr/kernel.h>
@@ -289,6 +291,11 @@ static float accel_mag_combined[ACCEL_FFT_LEN / 2];
 
 K_MUTEX_DEFINE(accel_spectrum_mtx);
 static float accel_spectrum_latest[ACCEL_SPECTRUM_BINS];
+/* Full-resolution (un-downsampled) 3-axis-summed spectrum published for the
+ * fuser (fuser.cpp), which pushes it to the MPU at full float32 fidelity -
+ * separate from accel_spectrum_latest[], the 32-bucket get_accel_spectrum view.
+ * Guarded by the same accel_spectrum_mtx. */
+static float accel_full_latest[ACCEL_FFT_BIN_COUNT];
 
 static void accel_fft_init_twiddles() {
   for (int k = 0; k < ACCEL_FFT_LEN / 2; k++) {
@@ -475,6 +482,9 @@ static void accel_sampler_thread_entry(void *p1, void *p2, void *p3) {
 
     k_mutex_lock(&accel_spectrum_mtx, K_FOREVER);
     accel_spectrum_downsample(accel_mag_combined, accel_spectrum_latest);
+    /* accel_mag_combined holds exactly ACCEL_FFT_LEN/2 == ACCEL_FFT_BIN_COUNT
+     * bins - the full unique-bin set - published as-is for the fuser. */
+    memcpy(accel_full_latest, accel_mag_combined, sizeof(accel_full_latest));
     k_mutex_unlock(&accel_spectrum_mtx);
 
     frames_accumulated = 0;
@@ -484,13 +494,28 @@ static void accel_sampler_thread_entry(void *p1, void *p2, void *p3) {
 K_THREAD_STACK_DEFINE(accel_sampler_thread_stack, ACCEL_SAMPLER_THREAD_STACK_SIZE);
 static struct k_thread accel_sampler_thread_data;
 
+/* Full-resolution spectrum accessors for the fuser (fuser.cpp). Self-describing
+ * metadata mirrors the old repo's spectrum_fused_payload_header (accel_fs /
+ * accel_fft_size / accel_bin_count). accel_copy_full_spectrum() copies
+ * accel_full_bin_count() float magnitudes into out[], mutex-guarded against the
+ * capture thread's publish. */
+int accel_full_bin_count(void) { return ACCEL_FFT_BIN_COUNT; }
+int accel_fft_size(void) { return ACCEL_FFT_LEN; }
+float accel_sample_rate_hz(void) { return (float)ACCEL_ODR_HZ; }
+
+void accel_copy_full_spectrum(float *out) {
+  k_mutex_lock(&accel_spectrum_mtx, K_FOREVER);
+  memcpy(out, accel_full_latest, sizeof(accel_full_latest));
+  k_mutex_unlock(&accel_spectrum_mtx);
+}
+
 void accel_sampler_start(void) {
   /* Bridge providers are registered before the WHO_AM_I check, not after -
    * see accel_get_info()'s own comment for why: this makes a WHO_AM_I
    * mismatch observable from the MPU side (who_am_i=/ok= fields) instead of
    * silently leaving both providers missing the way an early return here
    * would. */
-  Bridge.begin(); /* idempotent - matrix/rgb/mic also call this */
+  Bridge.begin(BRIDGE_BAUD); /* idempotent - matrix/rgb/mic also call this */
   Bridge.provide("get_accel_spectrum", accel_get_spectrum);
   Bridge.provide("get_accel_info", accel_get_info);
 

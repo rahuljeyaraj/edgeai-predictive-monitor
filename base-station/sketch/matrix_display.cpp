@@ -48,6 +48,8 @@
  */
 #include "matrix_display.h"
 
+#include "bridge_config.h"
+
 #include <Arduino_RouterBridge.h>
 #include <Arduino_LED_Matrix.h>
 #include <zephyr/kernel.h>
@@ -286,7 +288,7 @@ void matrix_display_start(void) {
   matrix.begin();
   matrix.clear();
 
-  Bridge.begin();
+  Bridge.begin(BRIDGE_BAUD);
   Bridge.provide("set_matrix_text", matrix_display_set_text);
   Bridge.provide("set_matrix_scroll_speed", matrix_display_set_scroll_speed);
 

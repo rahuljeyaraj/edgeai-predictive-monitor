@@ -15,4 +15,15 @@
  * from setup(). */
 void mic_sampler_start(void);
 
+/* Full-resolution spectrum access for the fuser (fuser.cpp): the latest
+ * mic_full_bin_count() float32 magnitudes (the useful <Fs/4 half of the FFT),
+ * plus self-describing metadata. mic_copy_full_spectrum() is mutex-guarded and
+ * safe to call from another thread; it copies exactly mic_full_bin_count()
+ * floats into out[]. These are the un-downsampled bins, distinct from the
+ * 32-bucket "get_mic_spectrum" Bridge view. */
+int mic_full_bin_count(void);
+int mic_fft_size(void);
+float mic_sample_rate_hz(void);
+void mic_copy_full_spectrum(float *out);
+
 #endif /* MIC_SAMPLER_H_ */

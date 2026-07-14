@@ -59,6 +59,8 @@
  */
 #include "rgb_display.h"
 
+#include "bridge_config.h"
+
 #include <Arduino_RouterBridge.h>
 #define STM32U585xx
 #include <stm32u5xx.h>
@@ -232,7 +234,7 @@ void rgb_display_start(void) {
    * pixels keep whatever they last latched until told otherwise. */
   ws2812_show(0, 0, 0);
 
-  Bridge.begin(); /* idempotent - matrix_display_start() also calls this */
+  Bridge.begin(BRIDGE_BAUD); /* idempotent - matrix_display_start() also calls this */
   Bridge.provide("set_rgb", rgb_display_set_command);
 
   k_thread_create(&rgb_display_thread_data, rgb_display_thread_stack,
