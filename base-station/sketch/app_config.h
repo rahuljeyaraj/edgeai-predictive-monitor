@@ -84,7 +84,7 @@
 #define RGB_DISPLAY_TICK_MS 20
 #define FUSER_EPOCH_MS 64           /* ~15.6 fused frames/s - see fuser.cpp.
                                      * NOTE: this rate's continuous ~65KB/s notify
-                                     * stream over the shared 1Mbaud UART is what
+                                     * stream over the shared Bridge UART is what
                                      * recurringly wedges the Bridge link (msgpack
                                      * framer desync; root-caused 2026-07-14, see
                                      * docs/progress2.md). Lowering it to ~10fps
@@ -98,32 +98,26 @@
 
 /* --- Bridge link ----------------------------------------------------------
  * MCU<->MPU serial baud (Serial1 <-> /dev/ttyHS1). MUST match the router's
- * --serial-baudrate on the Linux side, set in the systemd drop-in (see
- * base-station/provision-baud.sh + docs/PROGRESS.md) - a mismatch silently
- * breaks the whole link. Raised from the library default 115200 because the
- * fuser pushes the full-resolution float32 spectrum (~64 KB/s at 15.6 Hz),
- * which 115200 (~11.5 KB/s) cannot carry.
+ * --serial-baudrate on the Linux side (the stock per-board systemd generator
+ * drop-in, /var/lib/arduino-router/config/10-imola.conf) - a mismatch
+ * silently breaks the whole link.
  *
- * Why 1000000 specifically - it satisfies two independent constraints:
- *   1. EXACT divisor. 1000000 = 16MHz Serial1 kernel clock / 16 exactly, so
- *      the STM32 UART baud is precise. 921600 is NOT an exact divisor here -
- *      tried, the MCU went completely silent even on a clean reboot (the
- *      core's Serial1 doesn't realize the needed fractional divider
- *      accurately). Stick to exact-divisor rates (1000000, 2000000, ...); do
- *      NOT assume a "standard" rate like 921600/115200 is safe on the MCU
- *      side.
- *   2. OVER16 RX margin. At <=1MHz the STM32 USART uses 16x oversampling; at
- *      ~2MHz it drops to OVER8, whose thinner RX margin made the
- *      router->MCU direction unreliable - at 2000000, MCU->MPU notifies
- *      streamed perfectly but round-trip Bridge.provide() registrations and
- *      MPU->MCU calls intermittently failed ("method not available"),
- *      breaking the LED matrix/RGB providers and the sampler info calls.
- *      1000000 keeps OVER16 and fixed it, while still carrying the full-res
- *      frame at 15.6 Hz (~64% link util).
+ * Reverted to the library default 115200 (2026-07-14): this had been raised
+ * to 1000000 (base-station/provision-baud.sh installed a systemd override)
+ * to carry the fuser's full-resolution float32 spectrum push (~64 KB/s at
+ * 15.6 Hz) directly over Bridge notify. That data-rate problem is root-cause
+ * unrelated to baud, though - the recurring Bridge wedge is a msgpack framing
+ * desync on the continuous notify stream that reproduces identically at 1M
+ * and 2M baud (see docs/progress2.md section 2). The actual fix is moving
+ * the bulk stream off the UART entirely onto the dedicated MCU<->MPU SPI bus
+ * (docs/progress2.md "THE NEXT CHANGE", spi_link.{h,cpp}), which leaves this
+ * link carrying RPC/control traffic only - 115200 is ample for that, and
+ * provision-baud.sh's override is no longer needed (drop-in removed
+ * on-device; script kept for reference/rollback).
  *
  * Bridge.begin(BRIDGE_BAUD) is idempotent - only the first caller's baud
  * actually takes effect - but every module passes BRIDGE_BAUD so the
  * effective baud doesn't depend on setup() ordering. */
-#define BRIDGE_BAUD 1000000
+#define BRIDGE_BAUD 115200
 
 #endif /* APP_CONFIG_H_ */

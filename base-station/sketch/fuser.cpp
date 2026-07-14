@@ -26,13 +26,13 @@
  *
  * float32 is kept (not quantized): the MPU consumer is the autoencoder
  * inference pipeline, whose features are these exact magnitudes, so any
- * quantization would inject noise into the model input. That makes the frame
- * rate, not precision, the thing that degrades if the link can't keep up -
- * which is why the UART baud is raised (BRIDGE_BAUD, app_config.h +
- * base-station/provision-baud.sh). 2 Mbaud streamed this frame cleanly too,
- * but was dropped in favor of the current 1 Mbaud - see BRIDGE_BAUD's own
- * comment for why (round-trip Bridge.provide()/call() reliability, not this
- * stream, was the deciding factor).
+ * quantization would inject noise into the model input. The UART baud was
+ * raised to 1 Mbaud for a while to carry this stream, but that's since been
+ * reverted (BRIDGE_BAUD, app_config.h) - baud was never the actual bottleneck,
+ * the link's recurring wedge is a msgpack framing desync independent of baud
+ * (docs/progress2.md section 2). The real fix in progress is moving this
+ * stream off the UART entirely onto the dedicated MCU<->MPU SPI bus
+ * (spi_link.{h,cpp}, docs/progress2.md "THE NEXT CHANGE").
  *
  * The chunked binary-push transport was validated on hardware first (a
  * synthetic-pattern probe stage, since replaced by this real assembler):
