@@ -30,14 +30,17 @@ void setup() {
   /* spi_link_start() registers a "get_spi_link_stats" Bridge provider
    * (register-level SPI3-slave + GPDMA1, see spi_link.cpp) - belongs here,
    * before fuser_start(), same as the other providers.
-   * TEMP: disabled - restored to the last known-good baseline (this call
-   * disabled, fuser_start() active) pending a board/session reset. This
-   * session's UART link degraded to wedging within seconds regardless of
-   * whether spi_link_start() or even fuser_start() ran (control-tested both
-   * ways) - see docs/progress2.md 4.5/4.6. spi_link.cpp itself is believed
-   * correct (pin/AF/DMA-request constants verified against primary sources)
-   * but could not be conclusively validated against an unstable link.
-   * Re-enable once the link is confirmed stable again. */
+   * TEMP: disabled again. Re-tested 2026-07-14 on a confirmed-clean link
+   * (3 clean Bridge.call()s, zero framing-desync errors right before
+   * enabling) and it reproduced a total Bridge hang - same signature as the
+   * earlier SPI1/Zephyr-API attempt (4.3): zero "invalid packet" desync
+   * errors in the router log, every provider (including ones registered
+   * earlier in setup(), e.g. get_mic_info) stops responding, not just
+   * get_spi_link_stats. So the register-level rewrite (4.5) does NOT fix the
+   * hang either - it is not confined to the Zephyr SPI1 path as hoped. Root
+   * cause still open; see docs/progress2.md 4.7. Do not re-enable without a
+   * new diagnostic angle (get_spi_link_stats' checkpoint counter cannot be
+   * read once the hang happens, since Bridge itself is dead by then). */
   // spi_link_start();
   /* fuser_start() is intentionally LAST: it starts the continuous notify stream,
    * and every other module's Bridge.provide() registration is a round-trip the

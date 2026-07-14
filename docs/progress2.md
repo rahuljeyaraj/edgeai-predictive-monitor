@@ -28,9 +28,10 @@ the full per-interface rationale):
 
 **Bridge / RPC link mechanics** (the important, non-obvious bits):
 - MCU↔MPU control link = **UART**: STM32 `lpuart1` ↔ Linux `/dev/ttyHS1`, owned by the
-  `arduino-router` systemd service. Baud raised to **1000000** via
-  `base-station/provision-baud.sh` (a one-time, sudo, out-of-app provisioning step;
-  MCU side is `Bridge.begin(BRIDGE_BAUD)`, `app_config.h`). Both ends must match.
+  `arduino-router` systemd service. Baud is the library default **115200** (reverted
+  2026-07-14, see 4.7 - `provision-baud.sh`'s 1000000 override is no longer applied
+  on-device; baud was never the fix for the wedge, see section 2). MCU side is
+  `Bridge.begin(BRIDGE_BAUD)`, `app_config.h`. Both ends must match.
 - **RPClite 256-byte message ceiling** → the fuser frame (4112 B) is split into 200-B
   chunks, each sent fire-and-forget as `Bridge.notify("spec_chunk", <msgpack bin>)`.
 - Config/tunables consolidated in **`app_config.h`** (bin counts, thread priorities,
@@ -375,3 +376,72 @@ believed correct (every constant traced to a primary source, not guessed) but
 after a genuine cool-down / power cycle, not just `sudo reboot`, and confirm 2-3
 consecutive clean `Bridge.call()`s before touching `spi_link_start()` at all) rather
 than starting the design over.
+
+### 4.7 Session 2026-07-14 (new session) - UART baud reverted, spi_link re-tested fresh: hang REPRODUCED, not a confound this time
+
+Picked up the recommended next steps: committed the SPI spike (4.1-4.6) as-is,
+reverted `BRIDGE_BAUD` 1000000 -> 115200 (library default) since it was never
+the fix for anything - the wedge reproduces identically at 1M/2M baud (section
+2) and the only reason it was raised was to carry the fuser stream directly
+over Bridge, which is exactly what SPI is meant to replace. Removed the
+on-device `99-baud.conf` systemd override so the router's stock generator
+drop-in (already 115200) is what's active; confirmed after a full `sudo
+reboot`.
+
+**Then re-tested `spi_link_start()` on a verified-clean baseline**, exactly as
+4.6 recommended: full reboot, confirmed 3 consecutive clean `Bridge.call()`s
+and zero "invalid packet" errors, *then* enabled `spi_link_start()` and
+deployed.
+
+**Result: the hang reproduced**, and cleanly enough this time to rule out the
+4.6 confound:
+- Immediately after the deploy, `get_spi_link_stats` returned a fast, clean
+  "method not available" (router alive, MCU hadn't registered it yet) while
+  setup() was presumably still running through matrix/rgb/accel/mic/bench -
+  then every subsequent call, to *any* provider including ones registered
+  earlier in setup() (`get_mic_info`, `get_bench_stats`), timed out with no
+  response at all.
+- Repeated the recovery procedure (restart router, then `app stop`/`app
+  start`, which reflashes+resets the MCU) to get a second fresh trial from the
+  same flashed firmware - **hung again, this time from the very first call**
+  (even `get_spi_link_stats` itself timed out rather than returning "not
+  available"), consistent with the fault landing earlier on this run, before
+  the Bridge.provide() registration's `k_msleep(50)` flush window.
+- Router log both times: **zero new "invalid packet" errors** correlated with
+  the hang itself (the only errors were a burst at the reset/reflash moment,
+  matching the router-reconnect transient seen elsewhere this session, not
+  the section-2 desync signature). This is the *same* symptom as 4.3's SPI1
+  hang - total, silent Bridge death - not the msgpack framing desync.
+
+**Conclusion: this is not the 4.6 confound.** That confound was real (both
+controls in 4.6 wedged with the classic desync errors, on a link degraded by
+hours of continuous stress) but this session started from a freshly-rebooted,
+freshly-verified-clean board and reproduced a *different, silent* failure
+signature twice, correlated 1:1 with `spi_link_start()` being enabled at all.
+**The register-level SPI3+GPDMA1 rewrite (4.5) does not fix the hang** - it
+reproduces the same "total Bridge death, zero desync errors" shape as the
+original SPI1/Zephyr-API attempt (4.3), despite going through neither the
+Zephyr SPI subsystem nor `SPI1`. The common factor between the two failed
+attempts is no longer "which SPI API" - it's something else shared by both:
+candidates worth checking next are the SPI3/GPIO/DMA clock-enable sequence
+itself (`spi_link_init_hw()`'s `LL_AHB2_GRP1_EnableClock`/
+`LL_APB3_GRP1_EnableClock`/GPDMA1 calls), a pin conflict, or a power-domain
+issue - anything that could hard-fault *before* the checkpoint/DMA-timeout
+machinery in `spi_link.cpp` even gets a chance to bound it, since the
+whole point of that machinery (bounded `k_msleep` polling instead of a
+blocking wait) assumed the failure mode would be "MPU never reads," not "MCU
+faults outright."
+
+`spi_link_checkpoint`/`get_spi_link_stats` could not be read post-hang either
+time (Bridge itself was dead), so **the checkpoint diagnostic added in 4.5 has
+not yet been observed mid-failure** - it only ever returned "not available"
+(pre-registration) or timed out (post-hang), never a value. Getting
+`arduino-app-cli monitor` (or any serial capture) actually working remains the
+single highest-value next step (flagged since 4.3) - without it, this is
+still blind trial and error.
+
+**Board recovered**: redeployed with `spi_link_start()` re-commented-out
+(sketch.ino), confirmed 3 clean `Bridge.call()`s and provider list back to
+normal (`get_spi_link_stats` cleanly "not available" as expected when
+disabled). Left running in this last-known-good state, `BRIDGE_BAUD` now
+permanently at 115200 pending the SPI work actually landing.
