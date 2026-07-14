@@ -445,3 +445,92 @@ still blind trial and error.
 normal (`get_spi_link_stats` cleanly "not available" as expected when
 disabled). Left running in this last-known-good state, `BRIDGE_BAUD` now
 permanently at 115200 pending the SPI work actually landing.
+
+## 4.8 Session 2026-07-14 (cont'd) - SPI LINK WORKING END-TO-END; every hang root-caused
+
+**Bottom line: the SPI link works.** `spi_link_test.py` passes **40/40 armed
+frames** (two consecutive 20-round runs): each round RPCs `spi_arm`, the MCU
+stages a 64-byte frame (counter + ramp) via SPI3-slave + GPDMA1 TX, the MPU
+clocks it out through `/dev/spidev0.0` (via the spi-bridge daemon socket),
+and counter + ramp verify exactly - 0 timeouts, 0 DMA errors, Bridge healthy
+throughout. The register-level implementation (4.5) was essentially correct
+all along; the hangs were **scheduling starvation**, not SPI bring-up faults,
+plus two latched-flag bugs (one in spi_link, one pre-existing in mic).
+
+### The debugging unlock: SWD via the on-board OpenOCD (no serial monitor needed)
+
+`/opt/openocd/bin/openocd` on the MPU + `/opt/openocd/openocd_gpiod.cfg`
+(linuxgpiod SWD bit-bang, needs sudo, add `-s /opt/openocd -s
+/opt/openocd/share/openocd/scripts`) attaches to the live MCU non-intrusively:
+halt/resume, read PC/BASEPRI/xPSR/CFSR, and `dump_image /tmp/ram.bin
+0x20000000 0xC0000` for full-RAM post-mortems. The base firmware ELF with
+symbols ships at `~/.arduino15/.../firmwares/zephyr-arduino_uno_q_stm32u585xx.elf`
+(host `addr2line`/`nm` work on it). llext sketch statics have no symbol map,
+so `spi_link.cpp` keeps a magic-marked diag block (`0xC0FFEE01`, last
+checkpoint, stamp count) findable by scanning the dump. Thread forensics:
+`_kernel` @ 0x20001e30 (`.current` at +8), thread structs findable by their
+name strings (CONFIG_THREAD_NAME=y), `thread_state` at +0xd (0x80=QUEUED),
+prio at +0xe, saved PSP at +0x50 → exception frame → the thread's parked PC.
+This replaced ~3-5min blind reboot cycles and is what cracked everything below.
+
+### Root causes found (in the order they were peeled back)
+
+1. **spi_link thread priority 3 (above Bridge's 5)** - both historical
+   total-Bridge-death hangs (4.3, 4.7). Any non-yielding path in a thread
+   above Bridge starves Bridge + setup() forever: silent death, zero desync
+   errors - exactly the observed signature. Fixed: `SPI_LINK_THREAD_PRIORITY`
+   → **6** (below Bridge 5; above mic 7 - see #4), plus per-arm GPDMA flag
+   clears, split error/timeout counters in `get_spi_link_stats`, 100ms error
+   back-off.
+2. **fuser spins inside `Bridge.notify` at 115200 baud.** The 4.7 baud revert
+   made one ~4.4KB frame take ~407ms of UART vs the 64ms epoch (measured:
+   `fus_ovr==fus_frm`, `fus_avg=407.5`). Once TX backs up, fuser (prio 6)
+   busy-spins in notify and starves mic/spi_link/loop() forever while Bridge
+   (5) still answers RPC (SWD: `_kernel.current==fuser`, all fps 0, victims
+   QUEUED-ready). Also fixed the over-budget path `k_yield()` → `k_msleep(1)`
+   (k_yield only yields to equal priority). **fuser_start() is disabled in
+   sketch.ino until the stream rides SPI - do not re-enable on UART@115200.**
+3. **mic latched-TC fast-exit** - pre-existing: mic never cleared GPDMA
+   flags, so after the first block its wait exited instantly on stale TC:
+   mic_fps=188.6 vs the ~47 real-time max, ~100% CPU at prio 7, FFT-ing a
+   frozen buffer. Fixed with the same per-arm flag clears. **This unmasked a
+   deeper pre-existing bug: SAI1 isn't actually delivering data**
+   (`sr=0x0` always; with honest flags every block now times out,
+   `mic_win=0`, `mic_to` climbing). The mic pipeline had been serving frozen
+   spectra for an unknown time. OPEN - needs its own session; suspect SAI
+   clock/pin state, unrelated to SPI work.
+4. **spi_link at 8 was then starved by #2/#3** (anything below mic inherits
+   whatever mic leaves over) - hence priority 6, fuser's vacated slot.
+5. **SPI3 latched EOT suppresses re-arm** - first armed frame perfect, every
+   subsequent one clocked 1 stale byte + underrun zeros with DMA never
+   firing: SPE=0 flushes FIFOs but not IFCR flags, and a pending EOT gates
+   TXP/DMA requests. Fixed: clear EOT/TXTF/UDR/OVR/MODF/FRE/SUSP after every
+   disarm in `spi_link_wait_transfer()`.
+
+### Handshake (task 3) - done, RPC-triggered
+
+Free-running arm + blind MPU reads only synced ~1-2/10. Now: MPU calls
+`spi_arm` provider → MCU stages a frame inline on Bridge's thread (pure
+register writes), replies with the frame counter, wakes the spi_link thread
+which owns the bounded completion wait + disarm + stats; `busy` reply while a
+wait is in flight (MPU retries). `tests/spi_link_test.py` implements the MPU
+side.
+
+### Operational notes
+
+- After every reflash this session, Bridge came up dead until
+  `systemctl restart arduino-router` + app stop/start (the 4.4 note is now a
+  hard rule: **deploy = push, app start, router restart, app start**).
+- The first deploy of the day froze differently (BASEPRI stuck at 0x10,
+  SysTick masked, kernel tick frozen, CPU parked in WFI) and never recurred
+  after the router-restart discipline; unexplained, lower priority now.
+- The flash-verify error on deploy (4.5) remains cosmetic.
+
+### Next steps
+
+1. Port the fuser frame onto this link (plan tasks 4-5): `spi_arm`-style
+   handshake, 4112-byte frames (TSIZE fits), reassembler into
+   `python/main.py`; re-enable fuser as the SPI producer.
+2. Fix the real mic/SAI capture bug (see #3 above).
+3. Re-run the extended UART stability monitor with the bulk stream gone
+   (plan task 6).

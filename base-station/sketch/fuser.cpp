@@ -220,7 +220,16 @@ static void fuser_thread_entry(void *p1, void *p2, void *p3) {
     if (elapsed < FUSER_EPOCH_MS) {
       k_msleep(FUSER_EPOCH_MS - elapsed);
     } else {
-      k_yield(); /* over budget - don't monopolize, but don't sleep negative */
+      /* Over budget - MUST actually sleep, not k_yield(): k_yield() only
+       * yields to threads of the SAME priority, so a permanently-over-budget
+       * fuser (e.g. after the Bridge baud revert to 115200, where one
+       * ~4.3KB frame takes ~375ms > the 64ms epoch) became a busy loop at
+       * priority 6 that starved mic (7), spi_link (8) and loop()/setup()
+       * (14) forever - proven on hardware 2026-07-14 via SWD thread-state
+       * forensics (all three QUEUED-ready, never scheduled again; see
+       * docs/progress2.md 4.8). One tick of real sleep gives every
+       * lower-priority thread a scheduling window each frame. */
+      k_msleep(1);
     }
   }
 }

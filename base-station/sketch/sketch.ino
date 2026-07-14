@@ -30,26 +30,35 @@ void setup() {
   /* spi_link_start() registers a "get_spi_link_stats" Bridge provider
    * (register-level SPI3-slave + GPDMA1, see spi_link.cpp) - belongs here,
    * before fuser_start(), same as the other providers.
-   * TEMP: disabled again. Re-tested 2026-07-14 on a confirmed-clean link
-   * (3 clean Bridge.call()s, zero framing-desync errors right before
-   * enabling) and it reproduced a total Bridge hang - same signature as the
-   * earlier SPI1/Zephyr-API attempt (4.3): zero "invalid packet" desync
-   * errors in the router log, every provider (including ones registered
-   * earlier in setup(), e.g. get_mic_info) stops responding, not just
-   * get_spi_link_stats. So the register-level rewrite (4.5) does NOT fix the
-   * hang either - it is not confined to the Zephyr SPI1 path as hoped. Root
-   * cause still open; see docs/progress2.md 4.7. Do not re-enable without a
-   * new diagnostic angle (get_spi_link_stats' checkpoint counter cannot be
-   * read once the hang happens, since Bridge itself is dead by then). */
-  // spi_link_start();
+   * Re-enabled 2026-07-14 after the starvation fix: both earlier total-hang
+   * reproductions (docs/progress2.md 4.3/4.7) are explained by the spi_link
+   * thread running at priority 3 - above Bridge's update thread (5) - where
+   * any non-yielding path through its loop (e.g. a latched DMA error flag
+   * making the bounded wait break out instantly on every re-arm) starves
+   * Bridge and setup() forever: total silent Bridge death, zero router-log
+   * errors, exactly the observed signature. Now priority 8 (below Bridge/
+   * fuser/mic), with per-arm flag clearing, an error back-off, and error
+   * counters in get_spi_link_stats - a worst-case spin can no longer take
+   * Bridge down, so the link stays diagnosable either way. */
+  spi_link_start();
   /* fuser_start() is intentionally LAST: it starts the continuous notify stream,
    * and every other module's Bridge.provide() registration is a round-trip the
    * stream can crowd out - so all providers register first. NOTE: this ordering
    * only avoids losing provider registrations; it does NOT cure the deeper wedge
    * where the continuous stream desyncs the shared UART's msgpack framer within
    * minutes (root-caused 2026-07-14 - see docs/progress2.md). The real fix is
-   * moving this stream off the UART onto the dedicated MCU<->MPU SPI. */
-  fuser_start();
+   * moving this stream off the UART onto the dedicated MCU<->MPU SPI.
+   *
+   * TEMP: disabled during the SPI bring-up (2026-07-14). After the baud revert
+   * to 115200, one ~4.4KB fuser frame takes ~400ms of UART time vs the 64ms
+   * epoch (hardware-measured: fus_ovr == fus_frm, fus_avg=407.5ms), so the
+   * notify flood outruns the link 6x; once the TX path backs up, fuser spins
+   * inside Bridge.notify at priority 6 and starves mic (7), spi_link (8) and
+   * loop() (14) permanently (SWD forensics: _kernel.current == fuser, all
+   * pipeline fps == 0, mic/spi_link QUEUED-ready forever - docs/progress2.md
+   * 4.8). Re-enable when this stream rides the SPI link (tasks 4-5) instead
+   * of the UART - do NOT re-enable on UART at 115200. */
+  // fuser_start();
 }
 
 void loop() {

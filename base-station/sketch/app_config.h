@@ -66,17 +66,30 @@
  * available" for as long as the fuser streamed (2026-07-14, see
  * docs/PROGRESS.md). One band below lets Bridge always preempt the stream
  * to service a pending register/call.
- * spi_link (3): the SPI3-slave bring-up spike (docs/progress2.md) - matches
- * matrix/rgb/accel, not Bridge-relative like fuser/mic: it blocks on
- * spi_transceive() waiting for the MPU's clock (SPI_PERIPHERAL mode), the
- * same yield-every-call shape as accel's semaphore wait, and doesn't touch
- * the UART at all so it has no Bridge-starvation risk to budget against. */
+ * spi_link (6): BELOW Bridge (5), ABOVE mic (7). Two constraints, both
+ * learned the hard way on hardware (docs/progress2.md 4.8):
+ * - Must be below Bridge: it ran at 3 (the matrix/rgb/accel tier) through
+ *   both failed SPI3-slave bring-up attempts, where any non-yielding path
+ *   through its loop starved Bridge (5) and main/setup() (14) forever -
+ *   total silent Bridge death with zero router-log errors, the exact hang
+ *   signature of docs/progress2.md 4.3/4.7. Nothing about the slave path
+ *   needs to preempt Bridge (GPDMA feeds the SPI FIFO regardless of the
+ *   scheduler), and staying below it keeps get_spi_link_stats readable
+ *   through any spi_link misbehaviour.
+ * - Must be above mic: at 8 (below mic's 7) it was starved outright - mic's
+ *   capture loop was a near-100%-CPU spinner off a latched DMA TC flag
+ *   (fixed in mic_dma_capture_block(), but mic remains the heaviest
+ *   continuous compute in the system and anything below it inherits
+ *   whatever CPU mic happens to leave over).
+ * 6 is fuser's old slot; fuser's UART stream is disabled during the SPI
+ * bring-up (sketch.ino), and the plan's endgame is this link replacing that
+ * stream entirely, so the slot is spi_link's to inherit. */
 #define MATRIX_DISPLAY_THREAD_PRIORITY 3
 #define RGB_DISPLAY_THREAD_PRIORITY 3
 #define ACCEL_SAMPLER_THREAD_PRIORITY 3
 #define MIC_SAMPLER_THREAD_PRIORITY 7
 #define FUSER_THREAD_PRIORITY 6
-#define SPI_LINK_THREAD_PRIORITY 3
+#define SPI_LINK_THREAD_PRIORITY 6
 
 /* --- Tick / epoch periods ------------------------------------------------ */
 #define HEARTBEAT_PERIOD_MS 500     /* loop()'s LED_BUILTIN blink period */

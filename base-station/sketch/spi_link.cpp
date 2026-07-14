@@ -54,12 +54,16 @@
  * see tests/spi_link_test.py). No CRC/framing beyond that - this is a wiring
  * probe, not the real frame format (docs/progress2.md task 4 defines that).
  *
- * No handshake yet (docs/progress2.md decision 3/task 3, not built here): the
- * wait loop below is bounded (k_msleep-polled, like mic_sampler.cpp's DMA
- * wait) rather than blocking forever, so an MPU read that never comes just
- * counts a timeout and re-arms - it does not hang this thread, and
- * (being DMA/interrupt driven, not a busy-poll) it does not risk starving
- * Bridge's own thread either.
+ * Handshake: RPC-triggered (docs/progress2.md decision 3's documented
+ * fallback - PG13/"SPI RDY" is not wired through to the MPU, see 4.1). The
+ * MPU calls the "spi_arm" Bridge provider, which stages one frame inline and
+ * answers with its counter; the MPU then clocks the frame out over spidev
+ * and verifies the counter matches. The wait for the master's clock happens
+ * on this module's own thread and is bounded (k_msleep-polled, like
+ * mic_sampler.cpp's DMA wait) rather than blocking forever, so an MPU that
+ * arms but never reads just counts a timeout - it does not hang this thread,
+ * and (being DMA driven, not a busy-poll) it does not risk starving Bridge's
+ * own thread either.
  */
 #include "spi_link.h"
 
@@ -84,12 +88,37 @@
  * up and trying a fresh frame. */
 #define SPI_LINK_DMA_WAIT_TICK_MS 5
 #define SPI_LINK_DMA_WAIT_TICKS 200
-#define SPI_LINK_THREAD_STACK_SIZE 1024
+#define SPI_LINK_THREAD_STACK_SIZE 2048
+
+/* Back-off after a transfer that ended in a DMA error flag (not a timeout -
+ * the timeout path already slept its way through the wait loop). Same idiom
+ * and value as mic_sampler_thread_entry()'s capture-failure back-off. This is
+ * load-bearing, not politeness: an error flag latching on every re-arm would
+ * otherwise turn the thread loop into a never-yielding spin - a priority-3
+ * thread doing exactly that is the leading explanation for both SPI bring-up
+ * hangs (docs/progress2.md 4.3/4.7; see also SPI_LINK_THREAD_PRIORITY's
+ * comment in app_config.h, lowered to 8 for the same reason). */
+#define SPI_LINK_ERROR_BACKOFF_MS 100
+
+/* spi_link_transfer_once() outcomes - kept distinct so the stats provider
+ * can tell "MPU never clocked us" (timeout, expected while there's no
+ * handshake) from "the DMA itself failed" (error, never expected). */
+enum spi_link_xfer_result {
+  SPI_LINK_XFER_OK,
+  SPI_LINK_XFER_TIMEOUT,
+  SPI_LINK_XFER_ERROR,
+};
 
 static uint8_t spi_link_buf[SPI_LINK_FRAME_LEN];
 static uint32_t spi_link_transfer_count = 0;
 static uint32_t spi_link_completed_count = 0;
 static uint32_t spi_link_timeout_count = 0;
+static uint32_t spi_link_error_count = 0;
+/* Bitmask of which GPDMA error flags were set on the most recent
+ * SPI_LINK_XFER_ERROR (1=DTE data transfer, 2=ULE linked-list update,
+ * 4=USE user setting, 8=TO trigger overrun) - the "why", where
+ * spi_link_error_count is the "how often". */
+static volatile uint32_t spi_link_last_error_flags = 0;
 
 /* Checkpoint diagnostic: updated right before each risky register-level step
  * so a hang's last-reached value is visible from get_spi_link_stats() even
@@ -100,7 +129,23 @@ static uint32_t spi_link_timeout_count = 0;
  * mic_sampler.cpp's mic_last_sr. Numbering has gaps on purpose, room to
  * insert finer-grained checkpoints later without renumbering everything. */
 static volatile int spi_link_checkpoint = 0;
-#define SPI_LINK_CP(n) (spi_link_checkpoint = (n))
+
+/* Post-mortem-findable mirror of the checkpoint. The known failure mode is a
+ * total system freeze (BASEPRI stuck at irq_lock level, SysTick masked, every
+ * thread asleep forever - see docs/progress2.md 4.8), where Bridge is dead
+ * and get_spi_link_stats can never be read - but RAM survives and is
+ * dumpable over SWD (/opt/openocd on the MPU, linuxgpiod adapter). The llext
+ * loader copies .data into its RAM heap at a load-dependent address with no
+ * symbol map, so the block is located by scanning the dump for the leading
+ * magic word. Layout: [0] magic, [1] last checkpoint, [2] stamp counter
+ * (liveness - distinguishes "stuck at CP x" from "still looping through x"),
+ * [3] trailing magic to confirm the block wasn't a coincidental word. */
+static volatile uint32_t spi_link_diag[4] = {0xC0FFEE01u, 0u, 0u, 0xC0FFEE02u};
+
+#define SPI_LINK_CP(n)                       \
+  (spi_link_checkpoint = (n),                \
+   spi_link_diag[1] = (uint32_t)(n),         \
+   spi_link_diag[2] = spi_link_diag[2] + 1u)
 
 /* Re-fills spi_link_buf with the next counter value + ramp pattern (see
  * file header comment). Called right before each re-arm, never while the
@@ -200,15 +245,40 @@ static void spi_link_configure_dma(void) {
                          (uint32_t)(uintptr_t)&SPI3->TXDR);
   LL_DMA_SetLinkStepMode(GPDMA1, SPI_LINK_DMA_CHANNEL, LL_DMA_LSM_1LINK_EXECUTION);
   LL_DMA_SetLinkedListAddrOffset(GPDMA1, SPI_LINK_DMA_CHANNEL, 0);
+
+  /* Clear every channel status flag before arming. Nothing else in this file
+   * clears them, and a flag latched from a previous iteration (TC or an
+   * error) would make the wait loop below break out instantly on every
+   * subsequent transfer - see SPI_LINK_ERROR_BACKOFF_MS's comment for why an
+   * instant-exit loop here is catastrophic and not just wasteful. */
+  LL_DMA_ClearFlag_TC(GPDMA1, SPI_LINK_DMA_CHANNEL);
+  LL_DMA_ClearFlag_HT(GPDMA1, SPI_LINK_DMA_CHANNEL);
+  LL_DMA_ClearFlag_DTE(GPDMA1, SPI_LINK_DMA_CHANNEL);
+  LL_DMA_ClearFlag_ULE(GPDMA1, SPI_LINK_DMA_CHANNEL);
+  LL_DMA_ClearFlag_USE(GPDMA1, SPI_LINK_DMA_CHANNEL);
+  LL_DMA_ClearFlag_TO(GPDMA1, SPI_LINK_DMA_CHANNEL);
+  LL_DMA_ClearFlag_SUSP(GPDMA1, SPI_LINK_DMA_CHANNEL);
 }
 
-/* Stages one frame and waits (bounded) for the MPU to clock it out. TSIZE
- * and SPE are set fresh each time (SPI3 disabled at both entry and exit) -
- * TSIZE can't change while SPI3 is enabled, so this can't be a lighter
- * "just re-arm DMA" update the way a steady-state master-driven link might
- * do it. Returns true if the DMA channel completed (MPU actually clocked
- * all SPI_LINK_FRAME_LEN bytes), false on timeout. */
-static bool spi_link_transfer_once(void) {
+/* Reads all four GPDMA error flags into the bitmask documented at
+ * spi_link_last_error_flags - 0 means "no error flag set". */
+static uint32_t spi_link_read_error_flags(void) {
+  uint32_t flags = 0;
+  if (LL_DMA_IsActiveFlag_DTE(GPDMA1, SPI_LINK_DMA_CHANNEL)) flags |= 1;
+  if (LL_DMA_IsActiveFlag_ULE(GPDMA1, SPI_LINK_DMA_CHANNEL)) flags |= 2;
+  if (LL_DMA_IsActiveFlag_USE(GPDMA1, SPI_LINK_DMA_CHANNEL)) flags |= 4;
+  if (LL_DMA_IsActiveFlag_TO(GPDMA1, SPI_LINK_DMA_CHANNEL)) flags |= 8;
+  return flags;
+}
+
+/* Stages one frame: pattern fill, TSIZE, DMA channel config (which also
+ * clears every latched flag), channel + SPI enable. All non-blocking
+ * register writes - safe to run inline on Bridge's thread from the
+ * "spi_arm" provider. TSIZE and SPE are set fresh each time (SPI3 disabled
+ * at both entry and exit of a full arm/wait cycle) - TSIZE can't change
+ * while SPI3 is enabled, so this can't be a lighter "just re-arm DMA"
+ * update the way a steady-state master-driven link might do it. */
+static void spi_link_arm_frame(void) {
   SPI_LINK_CP(200);
   spi_link_fill_pattern();
 
@@ -221,15 +291,25 @@ static bool spi_link_transfer_once(void) {
   SPI_LINK_CP(204);
   LL_SPI_Enable(SPI3);
   SPI_LINK_CP(205);
+}
 
-  bool ok = false;
+/* Waits (bounded) for the MPU to clock the armed frame out, then disarms.
+ * OK means the DMA block completed (MPU actually clocked all
+ * SPI_LINK_FRAME_LEN bytes); TIMEOUT means the MPU never did (it asked to
+ * arm but never read - counted, not fatal); ERROR means a GPDMA error flag
+ * latched (see spi_link_last_error_flags for which). */
+static enum spi_link_xfer_result spi_link_wait_transfer(void) {
+  enum spi_link_xfer_result result = SPI_LINK_XFER_TIMEOUT;
   for (int i = 0; i < SPI_LINK_DMA_WAIT_TICKS; i++) {
     if (LL_DMA_GetBlkDataLength(GPDMA1, SPI_LINK_DMA_CHANNEL) == 0 ||
         LL_DMA_IsActiveFlag_TC(GPDMA1, SPI_LINK_DMA_CHANNEL)) {
-      ok = true;
+      result = SPI_LINK_XFER_OK;
       break;
     }
-    if (LL_DMA_IsActiveFlag_DTE(GPDMA1, SPI_LINK_DMA_CHANNEL)) {
+    uint32_t error_flags = spi_link_read_error_flags();
+    if (error_flags != 0) {
+      spi_link_last_error_flags = error_flags;
+      result = SPI_LINK_XFER_ERROR;
       break;
     }
     k_msleep(SPI_LINK_DMA_WAIT_TICK_MS);
@@ -237,21 +317,66 @@ static bool spi_link_transfer_once(void) {
   SPI_LINK_CP(206);
 
   LL_SPI_Disable(SPI3);
+  /* Clear the latched SPI status flags (IFCR). SPE=0 flushes the FIFOs and
+   * resets the transfer state machine, but NOT these - and a leftover EOT
+   * from a completed transfer suppresses TXP (and with it the TX DMA
+   * request) on the next SPE=1: hardware-measured 2026-07-14 as "first armed
+   * frame perfect, every re-arm clocks out one stale byte + underrun zeros
+   * with the DMA never moving a single byte". Same per-arm hygiene as the
+   * GPDMA flag clears in spi_link_configure_dma(). */
+  LL_SPI_ClearFlag_EOT(SPI3);
+  LL_SPI_ClearFlag_TXTF(SPI3);
+  LL_SPI_ClearFlag_UDR(SPI3);
+  LL_SPI_ClearFlag_OVR(SPI3);
+  LL_SPI_ClearFlag_MODF(SPI3);
+  LL_SPI_ClearFlag_FRE(SPI3);
+  LL_SPI_ClearFlag_SUSP(SPI3);
   SPI_LINK_CP(207);
   LL_DMA_ResetChannel(GPDMA1, SPI_LINK_DMA_CHANNEL);
   SPI_LINK_CP(208);
-  return ok;
+  return result;
 }
+
+/* RPC-triggered handshake (docs/progress2.md decision 3's documented
+ * fallback, adopted in 4.1 once PG13/RDY turned out not to be wired to the
+ * MPU): the MCU arms a frame only when the MPU asks for one over the (now
+ * bulk-free) Bridge UART, then the MPU clocks it out immediately. This
+ * replaces the free-running re-arm loop the first spike used - free-running
+ * meant an MPU read raced the arm/disarm cycle and only ~1-2 reads in 10
+ * landed on a freshly-armed frame (hardware-measured 2026-07-14); with the
+ * arm serialized before each read, every read hits a staged frame.
+ *
+ * Division of labour: the "spi_arm" Bridge provider (runs on Bridge's own
+ * thread, priority 5) does the arm inline - it's a handful of register
+ * writes, nothing blocking - and wakes this thread, which owns the bounded
+ * completion wait + disarm + stats. spi_link_busy serializes the two: an
+ * arm while the previous wait is still in flight gets a clean "busy" reply
+ * (MPU side just retries) instead of two threads poking the same DMA
+ * channel. */
+static struct k_sem spi_link_armed_sem;
+static volatile bool spi_link_busy = false;
 
 static void spi_link_thread_entry(void *, void *, void *) {
   SPI_LINK_CP(100);
   while (true) {
-    bool ok = spi_link_transfer_once();
-    if (ok) {
-      spi_link_completed_count++;
-    } else {
-      spi_link_timeout_count++;
+    k_sem_take(&spi_link_armed_sem, K_FOREVER);
+    SPI_LINK_CP(101);
+    switch (spi_link_wait_transfer()) {
+      case SPI_LINK_XFER_OK:
+        spi_link_completed_count++;
+        break;
+      case SPI_LINK_XFER_TIMEOUT:
+        /* Already slept through the whole bounded wait loop. */
+        spi_link_timeout_count++;
+        break;
+      case SPI_LINK_XFER_ERROR:
+        /* Error flags latch fast - back off so a persistent error can't
+         * become a tight give/take cycle if the MPU re-arms aggressively. */
+        spi_link_error_count++;
+        k_msleep(SPI_LINK_ERROR_BACKOFF_MS);
+        break;
     }
+    spi_link_busy = false;
     SPI_LINK_CP(209);
   }
 }
@@ -266,12 +391,31 @@ static struct k_thread spi_link_thread_data;
  * this session's adb-shell harness). */
 static String spi_link_get_stats() {
   return String(spi_link_checkpoint) + "," + String(spi_link_transfer_count) + "," +
-         String(spi_link_completed_count) + "," + String(spi_link_timeout_count);
+         String(spi_link_completed_count) + "," + String(spi_link_timeout_count) + "," +
+         String(spi_link_error_count) + "," + String((unsigned long)spi_link_last_error_flags);
+}
+
+/* The MPU's side of the handshake (see spi_link_thread_entry's comment):
+ * stage one fresh frame and reply with the counter it carries, so the caller
+ * can verify the frame it then clocks out is the one it asked for. Replies
+ * "busy" (caller retries) while a previous arm is still being waited on. */
+static String spi_link_arm(void) {
+  if (spi_link_busy) {
+    return String("busy");
+  }
+  spi_link_busy = true;
+  spi_link_arm_frame();
+  k_sem_give(&spi_link_armed_sem);
+  return String(spi_link_transfer_count);
 }
 
 void spi_link_start(void) {
+  SPI_LINK_CP(3);
   Bridge.begin(BRIDGE_BAUD); /* idempotent - matrix/rgb/accel/mic also call this */
+  SPI_LINK_CP(4);
+  k_sem_init(&spi_link_armed_sem, 0, 1);
   Bridge.provide("get_spi_link_stats", spi_link_get_stats);
+  Bridge.provide("spi_arm", spi_link_arm);
   SPI_LINK_CP(1);
   /* Give Bridge's own thread a scheduling slice to actually flush this
    * registration over the UART before risking a fault in the register-level
@@ -284,6 +428,7 @@ void spi_link_start(void) {
 
   spi_link_init_hw();
 
+  SPI_LINK_CP(50);
   k_thread_create(&spi_link_thread_data, spi_link_thread_stack,
                   K_THREAD_STACK_SIZEOF(spi_link_thread_stack),
                   spi_link_thread_entry, NULL, NULL, NULL,

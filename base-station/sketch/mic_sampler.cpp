@@ -474,6 +474,21 @@ static bool mic_dma_capture_block(void) {
   SAI1_Block_A->CLRFR = SAI_xCLRFR_COVRUDR;
 
   mic_dma_configure_channel();
+  /* Clear every latched channel status flag before arming: nothing else
+   * clears them, and a TC flag left over from the previous block makes the
+   * wait loop below exit instantly on every block after the first - measured
+   * on hardware 2026-07-14 as mic_fps=188.6 vs the ~47 blocks/s that real
+   * 96kHz audio can produce (docs/progress2.md 4.8). That turned this thread
+   * into a near-100%-CPU spinner (it only ever slept while waiting for a
+   * block that was already complete), silently starving everything below
+   * priority 7 - and tearing the audio windows it handed to the FFT. */
+  LL_DMA_ClearFlag_TC(GPDMA1, MIC_DMA_CHANNEL);
+  LL_DMA_ClearFlag_HT(GPDMA1, MIC_DMA_CHANNEL);
+  LL_DMA_ClearFlag_DTE(GPDMA1, MIC_DMA_CHANNEL);
+  LL_DMA_ClearFlag_ULE(GPDMA1, MIC_DMA_CHANNEL);
+  LL_DMA_ClearFlag_USE(GPDMA1, MIC_DMA_CHANNEL);
+  LL_DMA_ClearFlag_TO(GPDMA1, MIC_DMA_CHANNEL);
+  LL_DMA_ClearFlag_SUSP(GPDMA1, MIC_DMA_CHANNEL);
   LL_DMA_EnableChannel(GPDMA1, MIC_DMA_CHANNEL);
 
   bool ok = false;
