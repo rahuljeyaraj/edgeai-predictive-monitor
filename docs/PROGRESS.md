@@ -355,6 +355,64 @@ Porting is happening step by step, MCU side first.
     range` pair in every `deploy.sh` OpenOCD run is **not a real error** — it's `flash_sketch.cfg`'s
     own intentional verify-then-reflash retry pattern. Don't chase it.
 
+- **2026-07-14 — `mic_sampler` capture moved from FIFO-polling to GPDMA1: DONE, verified working on
+  hardware.** `mic_sampler.cpp` now streams each 2048-sample block SAI1_A→`mic_capture_block[]` over
+  GPDMA1 channel 2 (hardware request 36 = SAI1_A) and `k_msleep()`s while the DMA runs, instead of the
+  busy-poll of `DR` the 2026-07-13 entry describes. **Confirmed on hardware** (2026-07-14):
+  `get_mic_info` reports `timeouts` stuck at 1 (a single first-block startup blip, not climbing), and
+  the `get_mic_spectrum` peak bucket wanders across 0/3/5/6/9/13/15/16/17 with magnitudes swinging
+  ~5k–50k as you clap/tap/speak — live, reactive capture. This closes the "move I2S capture off the
+  CPU onto GPDMA1" item that was in Future improvements (attempted and reverted on 2026-07-13).
+
+  **The reverted attempt's real root cause — a missing single-block linked-list init, NOT the SAI
+  request path and NOT power management.** The 2026-07-13 attempt concluded "zero bytes ever
+  transferred" was likely Zephyr PM re-gating GPDMA1's clock (undiagnosable without a debugger). Both
+  suspicions were wrong. Two staged, Bridge-exposed bring-up probes (since removed) isolated it on a
+  workflow with no debugger/logic-analyzer, one deploy each:
+  - `mic_dma_probe` — a GPDMA1 **memory-to-memory** self-test (software-triggered, no peripheral
+    request, own buffers). Result `gpdma1en=1,len1=0,tc=1,matched=16/16`: the controller and its clock
+    are **fully healthy** — ruling out the whole PM/clock-gating hypothesis outright.
+  - `mic_dma_sai_probe` — a real **SAI1_A→memory** transfer (request 36, P2M), reporting SAI FIFO level
+    alongside the DMA block length. Result `len1=0,tc=1,nonzero=254/256,dte=0`: the SAI DMA **request
+    path works too**, moving live audio cleanly.
+  With both halves proven, the only remaining difference from the reverted code was the **single-block
+  linked-list init** — `LL_DMA_SetLinkStepMode(LSM_1LINK_EXECUTION)` + `LL_DMA_SetLinkedListAddrOffset(0)`
+  — which Zephyr's own [`dma_stm32u5.c`](../../edgeai-predictive-monitor-unoq/zephyr/drivers/dma/dma_stm32u5.c)
+  performs for every non-cyclic transfer and the hand-roll omitted. Without it the channel arms and
+  reads back perfectly but never executes its one block (exactly the reverted attempt's signature). The
+  rest of the config (request 36, halfword, single-burst, both ports Port0, src-fixed/dest-incrementing)
+  matches Zephyr's [`i2s_stm32_sai.c`](../../edgeai-predictive-monitor-unoq/zephyr/drivers/i2s/i2s_stm32_sai.c)
+  HAL_DMA_Init 1:1 — and was already correct in the reverted attempt. (Note for future timing-critical
+  work: GPDMA1 is `status="disabled"` in `stm32u5.dtsi`, so the port explicitly enables its run- **and**
+  sleep-mode clocks (`AHB1ENR`/`AHB1SMENR.GPDMA1SMEN`); the sleep one matters because the thread
+  `k_msleep()`s (CPU→WFI) mid-transfer, and the DMA has to stay clocked through idle. Confirmed it does.)
+
+  **A second bug found and fixed the same session: per-block SAI restart pinned the spectrum to bucket
+  0.** The first working DMA version disabled/re-enabled `SAIEN` around every block, which stops and
+  restarts `SCK`; the INMP441's output re-settles for a few cycles each time the bit clock resumes,
+  injecting a low-frequency transient into *every* FFT window — on hardware the peak bucket was stuck at
+  0 with a slowly-drifting magnitude, unreactive to sound. Fixed by keeping SAI streaming continuously
+  (`SAIEN`+`DMAEN` enabled once in `mic_sampler_init_sai`, never stopped) and only re-arming the DMA
+  channel per block, draining the FIFO's stale gap-samples first (`mic_dma_flush_fifo`). SCK never
+  stops, the mic never re-settles, and the spectrum went reactive (above). This is why the old repo used
+  a *continuous* circular DMA; the single-block-with-re-arm approach here reaches the same "never stop
+  the clock" invariant a different way.
+
+  **Two constraints from earlier entries are now relaxed by this port (left in place, but no longer
+  required):**
+  - **mic no longer has to be called last in `setup()`.** That constraint (accel entry above) existed
+    only because the busy-poll never yielded and starved the priority-14 main thread. The DMA thread
+    `k_msleep()`s, so it yields cleanly and could run at priority 3 like the display threads. Left at
+    priority 7 and last in `setup()` only to keep this change scoped — raising/reordering is now a safe
+    separate cleanup. `sketch.ino`/`accel_sampler.h` still carry the old "mic last" comments; they're
+    now over-cautious, not wrong.
+  - **the `loop()` heartbeat blinks again while the mic streams** (the accel entry's "Side effect"): the
+    busy-poll that starved it is gone.
+
+  Header comment in `mic_sampler.cpp` carries the short version of all of the above; this entry is the
+  full one. Same deploy/verify mechanics as the accel entry, swapping in `get_mic_info` /
+  `mic_sampler_test.py`.
+
 ## Future improvements
 
 - **`rgb_display.cpp`: move WS2812 transmission off the CPU onto SPI1, bypassing devicetree** — right
@@ -371,82 +429,16 @@ Porting is happening step by step, MCU side first.
   currently invisible on this workload — revisit if a future thread needs tighter latency than the
   bit-bang's IRQs-off window allows.
 
-- **`mic_sampler.cpp`: move I2S capture off the CPU onto GPDMA1, bypassing devicetree** — right
-  now capture is a ~21.3ms/block busy-poll of `SR.FREQ` (see the 2026-07-13 mic_sampler_thread
-  entry above), which is why the thread has to run at a below-Bridge priority (7) rather than
-  preempt it like the display threads do. The old repo avoided this by having Zephyr's
-  `i2s_stm32_sai.c` driver clock samples in via GPDMA1 channel 2 (request/slot 36, fixed SAI1_A RX
-  hardware wiring) into a mem-slab queue, freeing the CPU between blocks entirely.
-
-  **Attempted 2026-07-13, reverted the same day — left for whoever picks this up next with
-  debugger/logic-analyzer access, since this session didn't have either.** Single-block (not
-  circular/linked-list) GPDMA1 channel 2 register programming against `stm32u5xx_ll_dma.h`
-  (there's no linkable `LL_DMA_Init()`/`LL_DMA_StructInit()` either — same missing-`.c` situation
-  as `HAL_SAI_Init()` — so this called the individual `__STATIC_INLINE` setters by hand, same
-  pattern as `mic_sampler_init_sai()`): direction=peripheral-to-memory, request=36 (`SAI1_A`),
-  one-halfword-per-request single-burst, 16-bit widths both sides, source fixed at
-  `SAI1_A->DR`/dest incrementing through `mic_capture_block[]`, re-armed (fresh `SrcAddress`/
-  `DestAddress`/`BlkDataLength` + `EnableChannel`) from the sampler thread every block instead of
-  the old repo's mem-slab-queue blocking wait. The channel could be proven correctly *configured*
-  every time (`CTR2`/`CCR`/`PRIVCFGR`/`SECCFGR`/`RCFGLOCKR` all read back exactly as written, no
-  `DTE`/`USE`/`ULE` error flags, `mic_capture_block[]`'s and `SAI1_A->DR`'s addresses both
-  ordinary/expected) but never once *executed* a transfer —
-  `LL_DMA_GetBlkDataLength()` always read back the full, untouched block length. Ten distinct
-  fixes were tried on real hardware, each producing the identical failure signature:
-  1. Clearing SAI1's `OVRUDR` unconditionally before every arm, not just after a successful
-     block (in case an unacknowledged overrun — plausible, since `SAIEN` had already been on for
-     a while by the time the sampler thread's first arm ran — was gating SAI1's own DMA request
-     generation, mirroring the old repo's own `audio_i2s.c` "must restart, not just clear a flag"
-     `I2S_STATE_ERROR` precedent).
-  2. Writing `CR1.DMAEN` as a genuine `0→1` edge strictly after `SAIEN`, not in the same write or
-     before it.
-  3. `CR2.FTH` (FIFO threshold) at `1/4 FIFO` instead of `EMPTY`.
-  4. `GPDMA1`'s per-channel destination port allocation (`CTR1.DAP`) explicitly set to Port1 (ST's
-     own STM32U5 GPDMA training material: "Port0 ... direct hardware data path to APB
-     peripherals ... Port1 ... for transfers to/from memory" — both default to Port0, and
-     `mic_capture_block[]` is memory).
-  5. A full `SAIEN` stop/restart cycle wrapped around every arm (disable, clear `OVRUDR`, arm+
-     enable the DMA channel, re-enable `SAIEN`), so the FIFO starts empty and DMA is already
-     draining before any new sample can arrive for that block.
-  6. Reordering step 5 to exactly match ST's own `HAL_SAI_Receive_DMA()`
-     (`stm32u5xx_hal_sai.c`, fetched from
-     [github.com/STMicroelectronics/stm32u5xx-hal-driver](https://github.com/STMicroelectronics/stm32u5xx-hal-driver)
-     for reference, since only that file's *headers* ship in this core): `DMAEN` set once,
-     `SAIEN` enabled, and *only then* the DMA channel's addresses/length configured and started —
-     the opposite order from attempt 5's "start DMA, then re-enable SAI" — still identical
-     failure.
-  7. `LL_DMA_IsActiveFlag_SUSP()` (channel status) confirmed set the whole time, with no
-     corresponding `CCR.SUSP` *request* bit ever written — i.e. genuinely "armed and waiting,"
-     not an error state.
-  8. Ruled out trigger-gating entirely: `CTR2.TRIGPOL`'s reset default (`0`) is
-     `LL_DMA_TRIG_POLARITY_MASKED` — "no trigger of the selected DMA request, masked trigger
-     event" — confirmed by two independent sources (the LL header's own doc comment and an ST
-     community thread), so the channel was never waiting on a phantom trigger despite `TRIGSEL`
-     also defaulting to a *real* selector value (`EXTI_LINE0`, not a "disabled" sentinel) that
-     looked suspicious at first.
-  9. Ruled out privilege/security/config-lock gating: `GPDMA1->PRIVCFGR`/`SECCFGR`/`RCFGLOCKR`
-     all read back `0` (unrestricted) throughout.
-  10. Confirmed the sampler thread itself was alive and genuinely retrying the whole time (not
-      stuck/faulted), by watching `mic_get_info()`'s `timeouts=` counter climb steadily across
-      repeated queries — ruling out "the thread silently died after N attempts" as an explanation
-      for the unchanging diagnostics.
-
-  Live-searched ST's own community forums for this exact combination mid-session (a `STM32U599 SAI
-  (PDM Mono) GPDMA got only 0's` thread reported the closely-related "polling mode worked, DMA
-  received only zeros" symptom, unresolved/unanswered) — this SAI+GPDMA pairing is evidently a
-  known rough edge even for people using full HAL on bare-metal firmware, not just hand-rolled
-  registers. The most informative result here is arguably attempt 6: matching ST's own
-  authoritative HAL sequence byte-for-byte changed nothing, which points away from a configuration
-  mistake and toward something specific to this runtime environment that no bare-metal ST
-  reference material would account for — the leading unconfirmed suspicion being Zephyr's own
-  power management silently re-gating GPDMA1's execution clock sometime after this sketch enables
-  it (register reads/writes keep working, on what would be a separate bus-clock domain, while the
-  transfer engine itself stays dark) — but this session had no way to test that (no debugger, no
-  logic analyzer on the actual GPDMA1↔SAI1 request line, no visibility into Zephyr's PM state from
-  sketch code). Reverted to the FIFO-polling implementation described in the 2026-07-13
-  mic_sampler_thread entry above, which is confirmed working. The `mic_sampler.cpp` header comment
-  carries a shorter version of this same account; this entry is the full one, kept here since it's
-  the natural place a future attempt would look first.
+- **`mic_sampler.cpp`: move I2S capture off the CPU onto GPDMA1 — DONE (2026-07-14).** See the
+  2026-07-14 progress-log entry above for the full account. Short version: the 2026-07-13 attempt
+  (reverted, with a ten-fix "never transfers" saga once documented here) had every register field
+  correct; the one missing piece was the single-block linked-list init
+  (`LL_DMA_SetLinkStepMode(LSM_1LINK_EXECUTION)` + `LL_DMA_SetLinkedListAddrOffset(0)`) that a
+  non-cyclic GPDMA transfer needs. The prior "Zephyr PM re-gates GPDMA1's clock" suspicion was
+  disproven by a memory-to-memory self-test that transferred fine. Capture is now GPDMA1-backed and
+  the thread `k_msleep()`s between blocks, so — unlike the note that used to live here — the mic thread
+  no longer has to sit below Bridge/the display threads or run last in `setup()`; those are now safe,
+  unblocked cleanups (priority left at 7 only to keep the port scoped).
 
 ## Next up
 
@@ -459,9 +451,10 @@ Old repo had these as separate Zephyr threads under `mcu/src/threads/`:
       The prior "PORT BLOCKED" was a scheduling bug, not a toolchain bug: mic's priority-7 thread
       starved the priority-14 `setup()` thread, so `mic_sampler_start()` must be called **last** in
       `setup()` — see the progress log entry for the full root-cause)
-- [x] `mic_sampler_thread` — microphone sampling (2026-07-13, see progress log
-      above — direct-register SAI1 I2S RX + hand-rolled FFT + `Bridge`, not
-      the old repo's Zephyr `i2s`/DMA/CMSIS-DSP stack)
+- [x] `mic_sampler_thread` — microphone sampling (2026-07-13 direct-register SAI1 I2S RX + hand-rolled
+      FFT + `Bridge`; capture moved from FIFO-polling to **GPDMA1** on 2026-07-14, see that progress-log
+      entry — the reverted attempt's bug was a missing single-block linked-list init, not the SAI
+      request path or Zephyr PM. Live spectrum confirmed reactive on hardware)
 - [ ] `fuser_thread` — sensor fusion / inference
 - [x] `rgb_display_thread` — external WS2812 ring (2026-07-13, see progress log above — direct
       register-level WS2812 bit-bang on D4/PA12 via STM32Cube's LL_GPIO driver + `Bridge`, not the old

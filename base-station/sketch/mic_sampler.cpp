@@ -43,43 +43,30 @@
  *    and discard the right slot in software (audio_i2s.c's own comment),
  *    telling the SAI hardware to only push the left slot into the FIFO in
  *    the first place skips that step entirely.
- *  - No DMA. The old repo's driver was DMA-backed (GPDMA1 channel 2,
- *    request/slot 36 - fixed SAI1_A RX hardware wiring, confirmed in that
- *    repo's own overlay comment) and blocked on a Zephyr mem-slab queue,
- *    which is what let mic_sampler_thread's whole existence be "block until
- *    the next 2048-sample buffer is ready" - cheap for the scheduler, no
- *    busy-waiting. A GPDMA1-based rewrite of this file was built and tested
- *    at length - hand-programming the same channel/request directly against
- *    stm32u5xx_ll_dma.h, since there's no linkable `LL_DMA_Init()` either
- *    (same missing-.c situation as HAL_SAI) - but never got real data
- *    moving: the channel armed and read back exactly as configured
- *    (CTR2/CCR/PRIVCFGR/SECCFGR/RCFGLOCKR all correct, no DTE/USE/ULE error
- *    flags), yet `LL_DMA_GetBlkDataLength()` always read back the full,
- *    untouched block length - zero bytes ever transferred, across ten
- *    different fixes tried on real hardware (clearing SAI's OVRUDR before
- *    arming, a genuine DMAEN 0->1 edge after SAIEN, FIFO threshold EMPTY vs
- *    1/4, GPDMA1 destination port allocation Port0 vs Port1, a full SAIEN
- *    stop/restart cycle around each arm, and finally matching ST's own
- *    `HAL_SAI_Receive_DMA()` sequence exactly - fetched from
- *    github.com/STMicroelectronics/stm32u5xx-hal-driver for reference, since
- *    only that file's headers ship in this core). All ten produced the
- *    identical failure signature, which is itself the most informative data
- *    point: matching ST's own authoritative HAL sequence byte-for-byte
- *    changing nothing points away from a configuration bug and toward
- *    something specific to running as a dynamically-loaded llext extension
- *    inside a full pre-built Zephyr RTOS image (e.g. its own power
- *    management silently re-gating GPDMA1's execution clock after this
- *    sketch enables it, while register read/write access - on a separate
- *    bus-clock domain - keeps working) - not something diagnosable further
- *    without a debugger or logic analyzer on the actual request line, which
- *    this workflow doesn't have. Given FIFOTHRESHOLD_EMPTY (SAI's RX
- *    "request" flag, FREQ, asserts as soon as the FIFO has anything to
- *    read), this instead polls FREQ and reads one 16-bit sample from DR at
- *    a time - much less code, at the cost of the capture loop being a tight
- *    busy-wait for the ~21.3ms one 2048-sample block takes at 96kHz (see the
- *    "Known current limitation" note below). See docs/PROGRESS.md's "Future
- *    improvements" for the full list of what was ruled out, in case whoever
- *    revisits this has debugger access this session didn't.
+ *  - DMA, hand-programmed. The old repo's driver was DMA-backed (GPDMA1
+ *    channel 2, request/slot 36 - fixed SAI1_A RX hardware wiring, confirmed
+ *    in that repo's own overlay comment) and blocked on a Zephyr mem-slab
+ *    queue. This repo reproduces that: capture is GPDMA1-backed too (see the
+ *    "GPDMA1-backed capture" section below), hand-programmed against
+ *    stm32u5xx_ll_dma.h since there's no linkable `LL_DMA_Init()` (same
+ *    missing-.c situation as HAL_SAI). An earlier attempt at this was reverted
+ *    after "zero bytes ever transferred" across ten hardware fixes, and the
+ *    file long carried a FIFO-polling fallback instead. That's now resolved.
+ *    Two staged bring-up probes (a GPDMA1 memory-to-memory self-test, then a
+ *    real SAI1_A->memory transfer - both exposed over Bridge and since
+ *    removed) isolated the cause: the GPDMA1 controller, its clock, and the
+ *    SAI1_A DMA request line (request 36) all work fine; what the reverted
+ *    attempt was missing was the single-block linked-list init a non-cyclic
+ *    GPDMA transfer needs (LL_DMA_SetLinkStepMode(LSM_1LINK_EXECUTION) +
+ *    LL_DMA_SetLinkedListAddrOffset(0)) - exactly what Zephyr's own
+ *    dma_stm32u5.c does for a non-cyclic transfer, and what the earlier
+ *    hand-roll omitted, so the channel armed and read back perfectly but never
+ *    executed its one block. With that in place a full SAI1_A->memory block
+ *    moves cleanly (TC set, live audio in the buffer, no error flags). The
+ *    prior "power management re-gates GPDMA1's clock" suspicion was wrong - the
+ *    M2M self-test transferred fine while the CPU spun, and the run+sleep clock
+ *    enables (mic_sampler_init_dma) cover the idle case for the k_msleep-paced
+ *    wait. Full detail in docs/PROGRESS.md's "Future improvements" entry.
  *  - No CMSIS-DSP. The old repo's FFT was CMSIS-DSP's arm_rfft_fast_f32() -
  *    part of Zephyr's own module tree in a from-scratch build, but not
  *    present anywhere in this core's llext-edk (no arm_math.h found
@@ -91,22 +78,17 @@
  *    sqrtf(re^2+im^2), no mirroring). Twiddle factors are precomputed once
  *    at startup (cosf/sinf), not recomputed per FFT call.
  *
- * Known current limitation: with no DMA, the ~21.3ms/block capture loop is a
- * genuine busy-wait (interrupts stay enabled, so it's not as disruptive as
- * rgb_display.cpp's irq_lock()'d WS2812 bursts, but it still occupies the
- * CPU for the whole block). This is also why MIC_SAMPLER_THREAD_PRIORITY is
- * *below* Bridge's and the display threads', not matching their priority-3
- * "preempt Bridge" convention - see that macro's own comment for what
- * happened on real hardware when this thread first tried priority 3 (it
- * hung the entire Bridge link, not just this provider). At its current
- * priority, a Bridge RPC or a display tick can preempt mid-capture-block and
- * cost a dropped/skewed sample; it also can't survive rgb_display.cpp's own
- * ~240us irq_lock() windows without dropping whatever mic samples were due
- * during that window - unavoidable with polling, since irq_lock() blocks
- * literally everything, not just lower-priority threads. Both would go away
- * if capture moved to GPDMA1 (freeing this thread to block/sleep between
- * blocks the way the old repo's did) - attempted and reverted, see the "No
- * DMA" bullet above and docs/PROGRESS.md.
+ * Note on sample continuity: capture is single-block (arm, fill 2048 samples,
+ * process, re-arm), not double-buffered/circular, so samples produced while
+ * the FFT runs between blocks are dropped - the same effective behaviour as
+ * the old repo's mem-slab-queue boundary, and fine for a spectrum view.
+ * Because the thread now k_msleep()s while GPDMA1 fills each block instead of
+ * busy-polling DR, it no longer occupies the CPU per block and no longer has
+ * to sit below Bridge/the display threads to avoid starving them (see
+ * MIC_SAMPLER_THREAD_PRIORITY's comment) - the priority is left at 7 only to
+ * keep this change scoped. A rare Bridge RPC or rgb_display.cpp irq_lock()
+ * window overlapping a block can still cost a dropped block (caught as a
+ * timeout, counted in get_mic_info), which just re-arms on the next pass.
  *
  * Bridge exposure is also necessarily different from the old repo, which
  * never had one: the old repo's mic_sampler_thread only ever produced a
@@ -133,6 +115,7 @@
 #define STM32U585xx
 #include <stm32u5xx.h>
 #include <stm32u5xx_ll_bus.h>
+#include <stm32u5xx_ll_dma.h>
 #include <stm32u5xx_ll_gpio.h>
 #include <stm32u5xx_ll_rcc.h>
 #include <zephyr/kernel.h>
@@ -357,63 +340,153 @@ static void mic_sampler_init_sai(void) {
                         * at their reset value. */
 
   SAI1_Block_A->CR1 = SAI_xCR1_MODE_0 /* Master RX */
-                     | SAI_xCR1_DS_2  /* 16-bit data size */
+                     | SAI_xCR1_DS_2   /* 16-bit data size */
+                     | SAI_xCR1_DMAEN  /* generate DMA requests (drained by GPDMA1 ch2) */
                      | (MIC_SAMPLER_MCKDIV << SAI_xCR1_MCKDIV_Pos);
                      /* CKSTR=0 (falling edge), NODIV=0 (divider enabled), PRTCFG=0 (free
                       * protocol - I2S hand-configured via FRCR/SLOTR above), LSBFIRST=0
                       * (MSB first), SYNCEN=0 (async - this block generates its own clock),
-                      * MONO=0, OUTDRIV=0, DMAEN=0 (no DMA - see header comment): all left
-                      * at their reset (0) value. */
+                      * MONO=0, OUTDRIV=0: all left at their reset (0) value. */
 
+  /* Enable SAI once and leave it streaming continuously - the capture thread
+   * only re-arms the DMA channel per block, it never stops SCK. Stopping and
+   * restarting SAIEN per block re-settles the INMP441 (its output ramps for a
+   * few cycles each time the bit clock restarts), which injects a low-frequency
+   * transient into every FFT window and pins the spectrum's peak to bucket 0 -
+   * observed on hardware. Continuous streaming, like the old repo's circular
+   * DMA, avoids that. */
   SAI1_Block_A->CR1 |= SAI_xCR1_SAIEN;
 }
 
-/* Diagnostics only - see mic_capture_next_block()'s per-sample timeout
- * comment. Not mutex-guarded: single writer (mic_sampler_thread_entry's
- * thread), read only by mic_get_info() where a torn read is harmless (it's
- * a debugging aid, not something correctness depends on). */
+/* Diagnostics only. Not mutex-guarded: single writer (the capture thread),
+ * read only by mic_get_info() where a torn read is harmless (a debugging aid,
+ * not something correctness depends on). mic_last_sr latches SAI1_A's status
+ * after each block; mic_capture_timeouts counts blocks whose DMA transfer
+ * didn't complete within MIC_DMA_WAIT_TICKS. */
 static volatile uint32_t mic_capture_timeouts = 0;
 static volatile uint32_t mic_last_sr = 0;
 
-/* 50000 register-poll iterations - generously longer than one sample period
- * should ever take (a correctly running 96kHz stream delivers a new sample
- * every ~10.4us; even a slow few-cycles-per-iteration poll loop covers that
- * many times over in 50000 iterations) without being so long that a truly
- * dead peripheral hangs the thread for a perceptible amount of time. */
-#define MIC_SAMPLER_FREQ_POLL_LIMIT 50000
+/* --- GPDMA1-backed capture -----------------------------------------------
+ * Each 2048-sample block is streamed SAI1_A->DR -> mic_capture_block[] by
+ * GPDMA1 channel 2 (hardware request 36 = SAI1_A), and the capture thread
+ * k_msleep()s while the DMA runs instead of busy-polling DR one sample at a
+ * time. The CPU is free between blocks - the whole point of moving to DMA
+ * (see this file's header comment) - so, unlike the old busy-poll, this thread
+ * no longer starves lower-priority threads, and the loop() heartbeat runs
+ * again while the mic streams.
+ *
+ * This exact sequence is the one proven on hardware by the mic_dma_probe /
+ * mic_dma_sai_probe bring-up diagnostics: a GPDMA1 memory-to-memory self-test
+ * confirmed the controller + clock healthy (len->0, TC set, data copied), then
+ * a real SAI1_A->memory transfer confirmed the request path moves live audio
+ * (len->0, TC set, 254/256 samples non-zero, no error flags). The earlier
+ * reverted attempt's "zero bytes ever transferred" was NOT the SAI request
+ * path (that works) - the decisive missing piece was the single-block
+ * linked-list init (LSM_1LINK_EXECUTION + zero LL offset, in
+ * mic_dma_configure_channel below) that Zephyr's own dma_stm32u5.c performs
+ * for a non-cyclic transfer and the hand-roll omitted. Those two probes'
+ * reads also showed the DMA-written buffer read back correct with no cache
+ * maintenance, so DCache coherency isn't in play for this on-chip SRAM buffer. */
+#define MIC_DMA_CHANNEL LL_DMA_CHANNEL_2
 
-/* Busy-polls SAI1_A's FIFO request flag and reads one 16-bit sample (slot 0
- * only, per SLOTR's SLOTEN above) at a time - see header comment's "Known
- * current limitation" for why this is a tight loop instead of a blocking
- * DMA-backed read like the old repo's hal_audio_read_block(). Bounded, not
- * infinite: an early version of this looped forever on FREQ, and because
- * this thread runs at MIC_SAMPLER_THREAD_PRIORITY (3, higher priority than
- * Bridge's own priority-5 update thread), a SAI1 misconfiguration that never
- * asserts FREQ took the *entire* Bridge link down with it, indistinguishable
- * from a hard fault from the Python side (every Bridge.call(), including
- * ones to unrelated providers like matrix/rgb, timed out) - confirmed on
- * real hardware. Returns false (and leaves mic_capture_block only partially
- * filled) on a timeout rather than hang; the caller just discards that
- * block and retries. */
-static bool mic_capture_next_block(void) {
-  for (int i = 0; i < MIC_FFT_LEN; i++) {
-    int spins = 0;
-    while (!(SAI1_Block_A->SR & SAI_xSR_FREQ)) {
-      if (++spins >= MIC_SAMPLER_FREQ_POLL_LIMIT) {
-        mic_last_sr = SAI1_Block_A->SR;
-        mic_capture_timeouts++;
-        return false;
-      }
+/* One block == MIC_FFT_LEN halfwords == ~21.3ms at 96kHz. k_msleep(2) between
+ * completion checks -> ~11 wake-ups per block; 40 ticks (~80ms) is a generous
+ * ceiling before declaring a timeout - bounded like the old poll loop, so a
+ * SAI/DMA misconfiguration counts timeouts (visible in get_mic_info) instead
+ * of hanging the thread. */
+#define MIC_DMA_WAIT_TICK_MS 2
+#define MIC_DMA_WAIT_TICKS 40
+
+/* Enable GPDMA1's run- and sleep-mode clocks. Sleep-mode (AHB1SMENR) is the
+ * one that matters for the k_msleep()-paced wait below: the capture thread
+ * idles the CPU (WFI) while the transfer is in flight, so the controller has
+ * to stay clocked through idle or the block would never complete. GPDMA1 is
+ * status="disabled" in stm32u5.dtsi, so nothing in the shipped App Lab image
+ * is guaranteed to have enabled either clock for us. */
+static void mic_sampler_init_dma(void) {
+  LL_AHB1_GRP1_EnableClock(LL_AHB1_GRP1_PERIPH_GPDMA1);
+  RCC->AHB1SMENR |= RCC_AHB1SMENR_GPDMA1SMEN;
+}
+
+/* Reset + fully reconfigure channel 2 for one SAI1_A->mic_capture_block block.
+ * A full reconfigure per block (rather than a lightweight length/address
+ * re-arm) costs ~15 register writes against a ~21ms block - negligible - and
+ * keeps the armed state byte-identical to the proven probe sequence every
+ * time. Field values match Zephyr i2s_stm32_sai.c's HAL_DMA_Init for the SAI
+ * RX path (halfword, single burst, both ports port0, src fixed / dest
+ * incrementing, request 36). */
+static void mic_dma_configure_channel(void) {
+  LL_DMA_ResetChannel(GPDMA1, MIC_DMA_CHANNEL);
+  LL_DMA_SetDataTransferDirection(GPDMA1, MIC_DMA_CHANNEL, LL_DMA_DIRECTION_PERIPH_TO_MEMORY);
+  LL_DMA_SetChannelPriorityLevel(GPDMA1, MIC_DMA_CHANNEL, LL_DMA_HIGH_PRIORITY);
+  LL_DMA_SetSrcIncMode(GPDMA1, MIC_DMA_CHANNEL, LL_DMA_SRC_FIXED);
+  LL_DMA_SetDestIncMode(GPDMA1, MIC_DMA_CHANNEL, LL_DMA_DEST_INCREMENT);
+  LL_DMA_SetSrcDataWidth(GPDMA1, MIC_DMA_CHANNEL, LL_DMA_SRC_DATAWIDTH_HALFWORD);
+  LL_DMA_SetDestDataWidth(GPDMA1, MIC_DMA_CHANNEL, LL_DMA_DEST_DATAWIDTH_HALFWORD);
+  LL_DMA_SetBlkHWRequest(GPDMA1, MIC_DMA_CHANNEL, LL_DMA_HWREQUEST_SINGLEBURST);
+  LL_DMA_SetPeriphRequest(GPDMA1, MIC_DMA_CHANNEL, LL_GPDMA1_REQUEST_SAI1_A);
+  LL_DMA_SetTransferEventMode(GPDMA1, MIC_DMA_CHANNEL, LL_DMA_TCEM_BLK_TRANSFER);
+  LL_DMA_SetSrcAllocatedPort(GPDMA1, MIC_DMA_CHANNEL, LL_DMA_SRC_ALLOCATED_PORT0);
+  LL_DMA_SetDestAllocatedPort(GPDMA1, MIC_DMA_CHANNEL, LL_DMA_DEST_ALLOCATED_PORT0);
+  LL_DMA_SetBlkDataLength(GPDMA1, MIC_DMA_CHANNEL, MIC_FFT_LEN * 2);
+  LL_DMA_ConfigAddresses(GPDMA1, MIC_DMA_CHANNEL,
+                         (uint32_t)(uintptr_t)&SAI1_Block_A->DR,
+                         (uint32_t)(uintptr_t)mic_capture_block);
+  /* Single block, no linked list - the init the reverted attempt was missing. */
+  LL_DMA_SetLinkStepMode(GPDMA1, MIC_DMA_CHANNEL, LL_DMA_LSM_1LINK_EXECUTION);
+  LL_DMA_SetLinkedListAddrOffset(GPDMA1, MIC_DMA_CHANNEL, 0);
+}
+
+/* Bounded drain of whatever the SAI FIFO accumulated while the previous
+ * block's FFT ran (SAI streams continuously, so the FIFO overruns during that
+ * gap and holds stale samples). Discarding them means each block starts from
+ * "now" rather than a few ms in the past. The FIFO is a handful of words deep
+ * and drains far faster than 96kHz refills it, so this clears in ~8 reads;
+ * capped well above that. */
+static void mic_dma_flush_fifo(void) {
+  for (int i = 0; i < 64 && (SAI1_Block_A->SR & SAI_xSR_FREQ); i++) {
+    (void)SAI1_Block_A->DR;
+  }
+}
+
+/* Capture one block via DMA. SAI streams continuously (enabled once in
+ * mic_sampler_init_sai); this only drops the stale FIFO, re-arms channel 2 for
+ * one fresh block, and k_msleep()s until it completes. SCK is never stopped,
+ * so the mic doesn't re-settle between blocks. Returns false on a bounded
+ * timeout (block left partially filled; caller discards and retries), the same
+ * contract the old busy-poll had. Samples produced during the FFT gap are
+ * dropped - a block-boundary discontinuity only, not a within-block transient,
+ * same effective behaviour as the old repo's msgq-boundary truncation. */
+static bool mic_dma_capture_block(void) {
+  mic_dma_flush_fifo();
+  SAI1_Block_A->CLRFR = SAI_xCLRFR_COVRUDR;
+
+  mic_dma_configure_channel();
+  LL_DMA_EnableChannel(GPDMA1, MIC_DMA_CHANNEL);
+
+  bool ok = false;
+  for (int i = 0; i < MIC_DMA_WAIT_TICKS; i++) {
+    if (LL_DMA_GetBlkDataLength(GPDMA1, MIC_DMA_CHANNEL) == 0 ||
+        LL_DMA_IsActiveFlag_TC(GPDMA1, MIC_DMA_CHANNEL)) {
+      ok = true;
+      break;
     }
-    uint16_t raw = (uint16_t)(SAI1_Block_A->DR & 0xFFFFUL);
-    mic_capture_block[i] = (int16_t)raw;
+    if (LL_DMA_IsActiveFlag_DTE(GPDMA1, MIC_DMA_CHANNEL)) {
+      break;
+    }
+    k_msleep(MIC_DMA_WAIT_TICK_MS);
   }
 
   mic_last_sr = SAI1_Block_A->SR;
-  if (mic_last_sr & SAI_xSR_OVRUDR) {
-    SAI1_Block_A->CLRFR = SAI_xCLRFR_COVRUDR;
+  __DMB();
+
+  /* Park the channel (SAI keeps streaming) so it isn't left armed mid-FFT. */
+  LL_DMA_ResetChannel(GPDMA1, MIC_DMA_CHANNEL);
+
+  if (!ok) {
+    mic_capture_timeouts++;
   }
-  return true;
+  return ok;
 }
 
 static String mic_get_spectrum(void) {
@@ -441,7 +514,8 @@ static String mic_get_spectrum(void) {
  * before downsampling), exposed_bin_count (what get_mic_spectrum() actually
  * returns). */
 /* Trailing hex(SR)/timeouts fields are a debugging aid for hardware bring-up
- * (see mic_capture_next_block()'s comment) - not part of the old repo's
+ * (mic_last_sr latches SAI1_A's SR each block, mic_capture_timeouts counts
+ * blocks whose DMA transfer didn't finish in time) - not part of the old repo's
  * self-describing-header precedent this function is otherwise modeled on. */
 static String mic_get_info(void) {
   String out;
@@ -460,29 +534,19 @@ static String mic_get_info(void) {
 }
 
 #define MIC_SAMPLER_THREAD_STACK_SIZE 2048
-/* 7 - lower priority (less urgent) than both Bridge's own update thread (5)
- * and matrix_display_thread/rgb_display_thread (3), NOT the same priority-3
- * "preempt Bridge" convention those two use. First tried at priority 3 to
- * match them; confirmed on real hardware that this was wrong and hangs the
- * *entire* Bridge link (every provider, not just this one - matrix/rgb
- * calls timed out too) as soon as the thread starts: this loop's success
- * path (mic_capture_next_block() returning true once SAI1 is genuinely
- * streaming samples) never blocks or sleeps between blocks, so at any
- * priority equal to or higher than Bridge's update thread, Zephyr's
- * preemptive scheduler never lets that lower/equal-priority thread run
- * again - k_yield() doesn't help either, since it only cedes to
- * equal-priority peers, not strictly-lower-priority ones like Bridge. The
- * display threads get away with priority 3 precisely because they always
- * k_msleep() every tick, giving Bridge (and each other) a chance to run;
- * this thread structurally can't (see header comment on why capture can't
- * be interrupted mid-block without losing samples anyway). Priority 7 makes
- * Bridge and the display threads always preempt this one on demand - mic
- * still gets essentially the whole CPU the rest of the time, since nothing
- * else is running continuously, but can no longer starve them permanently.
- * Trade-off: unlike the priority-3 attempt, a Bridge RPC or matrix/rgb tick
- * can now preempt mid-capture-block and cause a dropped/skewed sample or
- * two - same category of acceptable data-quality cost as the "Known current
- * limitation" already documented above, not a new one. */
+/* 7 - kept below Bridge's update thread (5) and the display threads (3).
+ * HISTORY: back when capture was a never-yielding busy-poll of DR, priority 3
+ * (matching the display threads) hung the *entire* Bridge link the instant
+ * this thread started - a same-or-higher-priority thread that never blocks
+ * starves Zephyr's preemptive scheduler out of ever running Bridge again -
+ * which is also why mic_sampler_start() had to be called last in setup().
+ * The DMA capture (mic_dma_capture_block) removes that constraint entirely:
+ * the thread now k_msleep()s while GPDMA1 fills each block, so it yields
+ * regularly and could safely run at priority 3 - and the setup() ordering no
+ * longer needs mic last. The value is left at 7 to keep this change scoped to
+ * the DMA port; raising it (and relaxing the ordering) is a separate, now-safe
+ * cleanup. Consequence of the yield: the loop() heartbeat, which the old
+ * busy-poll starved, blinks again while the mic streams. */
 #define MIC_SAMPLER_THREAD_PRIORITY 7
 
 static void mic_sampler_thread_entry(void *p1, void *p2, void *p3) {
@@ -491,11 +555,9 @@ static void mic_sampler_thread_entry(void *p1, void *p2, void *p3) {
   ARG_UNUSED(p3);
 
   while (1) {
-    if (!mic_capture_next_block()) {
-      /* Yield the CPU (this thread would otherwise immediately retry at
-       * MIC_SAMPLER_THREAD_PRIORITY, at least as disruptive to Bridge/
-       * matrix/rgb as the hang this is meant to avoid - see
-       * mic_capture_next_block()'s comment) and try again. */
+    if (!mic_dma_capture_block()) {
+      /* Block timed out (SAI/DMA not streaming). Back off and retry rather
+       * than spin - the retry is cheap now that the thread sleeps anyway. */
       k_msleep(100);
       continue;
     }
@@ -528,6 +590,7 @@ void mic_sampler_start(void) {
     return;
   }
   mic_sampler_init_sai();
+  mic_sampler_init_dma(); /* GPDMA1 clocks; the capture thread arms channel 2 per block */
 
   Bridge.begin(); /* idempotent - matrix_display_start()/rgb_display_start() also call this */
   Bridge.provide("get_mic_spectrum", mic_get_spectrum);
