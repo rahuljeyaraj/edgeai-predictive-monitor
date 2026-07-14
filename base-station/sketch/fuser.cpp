@@ -66,12 +66,22 @@
 /* Magic first byte of every chunk so the MPU side can sanity-check framing. */
 #define FUSER_FRAME_MAGIC 0xF5
 
-/* 5 == same band as Bridge's own update thread; the fuser only k_msleep()s and
- * fires notifies, so it yields cleanly and won't starve anything (unlike the
- * mic busy-poll saga - see mic_sampler.cpp). Matches the old repo's
- * FUSER_THREAD_PRIORITY. */
+/* 6 == one below Bridge's own update thread (5), NOT matching it as originally
+ * set. At equal priority (5) the continuous ~15.8fps notify stream starved the
+ * round-trip register/call path badly enough that every Bridge.provide()
+ * provider (matrix/rgb/sensor-info) came back "method not available" for the
+ * whole time the fuser streamed - confirmed on hardware 2026-07-14, reproduced
+ * identically at both 1M and 2M baud, so it wasn't a baud/RX-margin issue, and
+ * it correlated with frame rate, not flood-during-setup (see PROGRESS.md's
+ * 2026-07-14 fuser entry). Dropping the fuser one band below Bridge's update
+ * thread lets that thread always preempt the stream to service a pending
+ * register/call, at the cost of the fuser's own k_msleep() wakeups being
+ * delayed by however long Bridge's thread runs - acceptable since the fuser
+ * only cares about average frame rate, not per-frame timing. Diverges from the
+ * old repo's FUSER_THREAD_PRIORITY (which had no Bridge update thread to
+ * share a priority band with in the first place). */
 #define FUSER_THREAD_STACK_SIZE 3072
-#define FUSER_THREAD_PRIORITY 5
+#define FUSER_THREAD_PRIORITY 6
 
 /* One-time delay before the first frame, so setup() can finish registering
  * every module's Bridge providers before this thread starts streaming (see the

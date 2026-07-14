@@ -500,7 +500,23 @@ Porting is happening step by step, MCU side first.
   `sketch/{mic,accel}_sampler.{h,cpp}` (full-bin publish + accessors); `sketch/{matrix_display,rgb_display}.cpp`
   (`Bridge.begin(BRIDGE_BAUD)` + include); `sketch/sketch.ino` (`fuser_start()` after accel, before mic);
   `tests/fuser_test.py` (frame reassembler). **Current board state:** 1 Mbaud, app running, fuser
-  streaming full-res at 15.8 fps, providers down (open regression above).
+  streaming full-res at 15.8 fps, providers down (open regression above — **fixed same day, see next
+  entry**).
+
+- **2026-07-14 — OPEN REGRESSION (above) FIXED: dropped `FUSER_THREAD_PRIORITY` from 5 to 6.** Recommended
+  fix #1 from the entry above, confirmed correct on the first try. `fuser.cpp`'s thread was created at the
+  same priority (5) as Bridge's own update thread, which serializes it against — rather than yielding to —
+  that thread on every scheduling decision; dropping the fuser one band below (6) means Bridge's update
+  thread always preempts it to service a pending register/call, instead of the two contending as peers.
+  **Verified on hardware**: with the fuser streaming, `get_mic_info`/`get_accel_info`/`set_matrix_text`/
+  `set_rgb` all now return correctly (previously 100% "method not available"), and `fuser_test.py` still
+  shows `chunks=4145 bad=0 complete_frames=188 (~15.7 fps)` — no fps or corruption regression from the
+  priority drop. Frame rate and reassembly are unaffected because the fuser only ever `k_msleep()`s between
+  epochs; losing a preemption race against Bridge's thread just delays that wakeup slightly, well inside
+  the 64ms epoch budget. **This closes the fuser port's only open item** — matrix/rgb/sensor-info providers
+  and the full-res push stream now coexist. Change: `sketch/fuser.cpp`'s `FUSER_THREAD_PRIORITY` 5→6 only,
+  comment above it rewritten to record the finding (options 2/3 from the original entry — lower frame rate,
+  retry `Bridge.provide()` — were not needed).
 
 ## Future improvements
 
@@ -544,14 +560,15 @@ Old repo had these as separate Zephyr threads under `mcu/src/threads/`:
       FFT + `Bridge`; capture moved from FIFO-polling to **GPDMA1** on 2026-07-14, see that progress-log
       entry — the reverted attempt's bug was a missing single-block linked-list init, not the SAI
       request path or Zephyr PM. Live spectrum confirmed reactive on hardware)
-- [~] `fuser_thread` — sensor fusion / transport (2026-07-14, see progress log above). Transport
+- [x] `fuser_thread` — sensor fusion / transport (2026-07-14, see progress log above). Transport
       DONE: full 512-mic+512-accel float32 spectrum PUSHED to the MPU as chunked `Bridge.notify`
-      binary frames, reassembled cleanly at 15.8 fps (samplers publish full bins; `sketch/fuser.cpp`;
-      baud raised to 1000000 via `provision-baud.sh`). OPEN: `Bridge.provide()` provider registration
-      fails while the fuser streams at ~15.8 fps (matrix/rgb/sensor-info providers dead) — stream-load
-      contention, not baud; see the progress-log entry for the diagnosis + recommended fixes (try
-      lowering the fuser thread priority below the Bridge update thread first). Inference itself (the
-      autoencoder) not started — that's the MPU-side consumer of this stream.
+      binary frames, reassembled cleanly at ~15.7-15.8 fps (samplers publish full bins;
+      `sketch/fuser.cpp`; baud raised to 1000000 via `provision-baud.sh`). The `Bridge.provide()`
+      provider-registration regression (matrix/rgb/sensor-info providers dead while streaming) is
+      FIXED — dropping `FUSER_THREAD_PRIORITY` from 5 to 6 (below Bridge's own update thread) let
+      that thread always preempt the stream; confirmed on hardware, no fps/corruption regression.
+      Inference itself (the autoencoder) not started — that's the MPU-side consumer of this stream,
+      and the `fuser_test.py` reassembler still needs to move into `python/main.py`.
 - [x] `rgb_display_thread` — external WS2812 ring (2026-07-13, see progress log above — direct
       register-level WS2812 bit-bang on D4/PA12 via STM32Cube's LL_GPIO driver + `Bridge`, not the old
       repo's `led_strip`/SPI1 approach)
