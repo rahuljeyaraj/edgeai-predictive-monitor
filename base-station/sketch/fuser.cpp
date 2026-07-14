@@ -28,32 +28,35 @@
  * inference pipeline, whose features are these exact magnitudes, so any
  * quantization would inject noise into the model input. That makes the frame
  * rate, not precision, the thing that degrades if the link can't keep up -
- * which is why the UART baud is raised (BRIDGE_BAUD, bridge_config.h +
- * base-station/provision-baud.sh; validated clean at 2 Mbaud, ~20% link util).
+ * which is why the UART baud is raised (BRIDGE_BAUD, app_config.h +
+ * base-station/provision-baud.sh). 2 Mbaud streamed this frame cleanly too,
+ * but was dropped in favor of the current 1 Mbaud - see BRIDGE_BAUD's own
+ * comment for why (round-trip Bridge.provide()/call() reliability, not this
+ * stream, was the deciding factor).
  *
  * The chunked binary-push transport was validated on hardware first (a
  * synthetic-pattern probe stage, since replaced by this real assembler):
- * zero corruption / zero drops streaming the full ~4KB-frame load at 2 Mbaud.
+ * zero corruption / zero drops streaming the full ~4KB-frame load.
  */
 #include "fuser.h"
 
 #include "accel_sampler.h"
-#include "bridge_config.h"
+#include "app_config.h"
 #include "mic_sampler.h"
 
 #include <Arduino_RouterBridge.h>
 #include <zephyr/kernel.h>
 #include <cstring>
 
-/* Old repo's FUSER_EPOCH_MS - ~15.6 frames/s. The samplers produce a new FFT
- * block every ~21ms (mic) / faster (accel), so at 64ms cadence every frame
- * carries fresh data; a slower epoch just sub-samples, a faster one repeats. */
-#define FUSER_EPOCH_MS 64
+/* FUSER_EPOCH_MS (~15.6 frames/s) and FUSER_THREAD_PRIORITY now live in
+ * app_config.h. The samplers produce a new FFT block every ~21ms (mic) /
+ * faster (accel), so at 64ms cadence every frame carries fresh data; a
+ * slower epoch just sub-samples, a faster one repeats. */
 
 /* Compile-time ceiling for the per-sensor bin count, used to size the static
  * frame/scratch buffers. Both samplers currently publish exactly 512 bins
- * (MIC_FFT_BIN_COUNT / ACCEL_FFT_BIN_COUNT); the runtime counts from the
- * accessors are asserted against this. */
+ * (MIC_FFT_BIN_COUNT / ACCEL_FFT_BIN_COUNT, app_config.h); the runtime counts
+ * from the accessors are asserted against this. */
 #define FUSER_MAX_BINS 512
 
 /* Chunk framing. 200-byte total chunk (5-byte header + 195 data) stays under
@@ -66,22 +69,22 @@
 /* Magic first byte of every chunk so the MPU side can sanity-check framing. */
 #define FUSER_FRAME_MAGIC 0xF5
 
-/* 6 == one below Bridge's own update thread (5), NOT matching it as originally
- * set. At equal priority (5) the continuous ~15.8fps notify stream starved the
- * round-trip register/call path badly enough that every Bridge.provide()
- * provider (matrix/rgb/sensor-info) came back "method not available" for the
- * whole time the fuser streamed - confirmed on hardware 2026-07-14, reproduced
- * identically at both 1M and 2M baud, so it wasn't a baud/RX-margin issue, and
- * it correlated with frame rate, not flood-during-setup (see PROGRESS.md's
+/* FUSER_THREAD_PRIORITY (app_config.h) == one below Bridge's own update
+ * thread (5), NOT matching it as originally set. At equal priority (5) the
+ * continuous ~15.8fps notify stream starved the round-trip register/call
+ * path badly enough that every Bridge.provide() provider (matrix/rgb/
+ * sensor-info) came back "method not available" for the whole time the
+ * fuser streamed - confirmed on hardware 2026-07-14, reproduced identically
+ * at both 1M and 2M baud, so it wasn't a baud/RX-margin issue, and it
+ * correlated with frame rate, not flood-during-setup (see PROGRESS.md's
  * 2026-07-14 fuser entry). Dropping the fuser one band below Bridge's update
  * thread lets that thread always preempt the stream to service a pending
  * register/call, at the cost of the fuser's own k_msleep() wakeups being
  * delayed by however long Bridge's thread runs - acceptable since the fuser
- * only cares about average frame rate, not per-frame timing. Diverges from the
- * old repo's FUSER_THREAD_PRIORITY (which had no Bridge update thread to
+ * only cares about average frame rate, not per-frame timing. Diverges from
+ * the old repo's FUSER_THREAD_PRIORITY (which had no Bridge update thread to
  * share a priority band with in the first place). */
 #define FUSER_THREAD_STACK_SIZE 3072
-#define FUSER_THREAD_PRIORITY 6
 
 /* One-time delay before the first frame, so setup() can finish registering
  * every module's Bridge providers before this thread starts streaming (see the
@@ -110,6 +113,16 @@ static float fuser_accel_bins[FUSER_MAX_BINS];
 static uint8_t fuser_frame_buf[sizeof(fuser_frame_header) +
                                2 * FUSER_MAX_BINS * sizeof(float)];
 
+#if BENCHMARK_STATS_ENABLED
+/* Single writer (fuser_thread_entry), read by fuser_get_stats() from
+ * whatever thread bench.cpp's Bridge handler runs on - same "torn read is
+ * harmless for a diagnostic" reasoning as the samplers' own counters. */
+static volatile uint32_t fuser_frames_sent = 0;
+static volatile uint32_t fuser_overrun_count = 0;
+static volatile uint32_t fuser_send_ms_sum = 0;
+static volatile uint32_t fuser_send_ms_max = 0;
+#endif
+
 static void fuser_thread_entry(void *p1, void *p2, void *p3) {
   ARG_UNUSED(p1);
   ARG_UNUSED(p2);
@@ -133,12 +146,14 @@ static void fuser_thread_entry(void *p1, void *p2, void *p3) {
 
   uint16_t frame_seq = 0;
 
-  /* Let setup() finish first. This thread (priority 5) is created mid-setup()
-   * and would otherwise preempt the priority-14 setup() thread and start
-   * flooding the link before mic_sampler_start() (which runs after
-   * fuser_start()) has registered its Bridge providers - registration is a
-   * round-trip that the continuous notify stream can crowd out. One short sleep
-   * lets every module's Bridge.provide() complete before streaming begins. */
+  /* Let setup() finish first. This thread (FUSER_THREAD_PRIORITY, app_config.h)
+   * is created mid-setup() and would otherwise preempt the priority-14 setup()
+   * thread and start flooding the link before the other modules' Bridge
+   * providers are registered - registration is a round-trip that the continuous
+   * notify stream can crowd out (2026-07-14: a too-fast stream wedged the whole
+   * link and starved every provider registration; see docs/PROGRESS.md).
+   * fuser_start() is now called last in setup() so registration is already done
+   * by the time this runs; this sleep is belt-and-suspenders on top of that. */
   k_msleep(FUSER_STARTUP_DELAY_MS);
 
   while (1) {
@@ -190,6 +205,18 @@ static void fuser_thread_entry(void *p1, void *p2, void *p3) {
     frame_seq++;
 
     int64_t elapsed = k_uptime_get() - frame_start;
+
+#if BENCHMARK_STATS_ENABLED
+    fuser_frames_sent++;
+    fuser_send_ms_sum += (uint32_t)elapsed;
+    if ((uint32_t)elapsed > fuser_send_ms_max) {
+      fuser_send_ms_max = (uint32_t)elapsed;
+    }
+    if (elapsed >= FUSER_EPOCH_MS) {
+      fuser_overrun_count++;
+    }
+#endif
+
     if (elapsed < FUSER_EPOCH_MS) {
       k_msleep(FUSER_EPOCH_MS - elapsed);
     } else {
@@ -210,3 +237,12 @@ void fuser_start(void) {
                   FUSER_THREAD_PRIORITY, 0, K_NO_WAIT);
   k_thread_name_set(&fuser_thread_data, "fuser");
 }
+
+#if BENCHMARK_STATS_ENABLED
+void fuser_get_stats(struct fuser_bench_stats *out) {
+  out->frames_sent = fuser_frames_sent;
+  out->overrun_count = fuser_overrun_count;
+  out->send_ms_sum = fuser_send_ms_sum;
+  out->send_ms_max = fuser_send_ms_max;
+}
+#endif

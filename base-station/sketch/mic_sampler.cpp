@@ -111,7 +111,7 @@
  */
 #include "mic_sampler.h"
 
-#include "bridge_config.h"
+#include "app_config.h"
 
 #include <Arduino_RouterBridge.h>
 #define STM32U585xx
@@ -141,15 +141,14 @@
  * 2x upsampling to Fs folds an image at Fs/4) - so only the first
  * MIC_FFT_BIN_COUNT of the 1024 unique RFFT bins (up to 24kHz) are useful;
  * see mic_fft_magnitude()'s own comment for where the rest get dropped.
- * Exact same reasoning/numbers as the old repo's mic_sampler_thread.c. */
-#define MIC_FFT_BIN_COUNT 512
+ * Exact same reasoning/numbers as the old repo's mic_sampler_thread.c.
+ * MIC_FFT_BIN_COUNT/MIC_SPECTRUM_BINS now live in app_config.h. */
 #define MIC_FFT_LEN (MIC_FFT_BIN_COUNT * 4)
 #define MIC_FFT_LOG2N 11 /* log2(MIC_FFT_LEN), MIC_FFT_LEN == 2048 == 1 << 11 */
 
 /* Bridge's hard 256-byte round-trip message ceiling (see header comment)
  * forces further downsampling before "get_mic_spectrum" can return
  * anything - 512 bins averaged 16-to-1 into 32 buckets. */
-#define MIC_SPECTRUM_BINS 32
 #define MIC_DOWNSAMPLE_FACTOR (MIC_FFT_BIN_COUNT / MIC_SPECTRUM_BINS)
 
 #define MIC_FFT_PI 3.14159265f
@@ -373,6 +372,12 @@ static void mic_sampler_init_sai(void) {
 static volatile uint32_t mic_capture_timeouts = 0;
 static volatile uint32_t mic_last_sr = 0;
 
+#if BENCHMARK_STATS_ENABLED
+/* Same "single writer in the capture thread, torn read harmless" reasoning
+ * as mic_capture_timeouts above. Read by mic_sampler_get_stats(). */
+static volatile uint32_t mic_windows_completed = 0;
+#endif
+
 /* --- GPDMA1-backed capture -----------------------------------------------
  * Each 2048-sample block is streamed SAI1_A->DR -> mic_capture_block[] by
  * GPDMA1 channel 2 (hardware request 36 = SAI1_A), and the capture thread
@@ -541,20 +546,22 @@ static String mic_get_info(void) {
 }
 
 #define MIC_SAMPLER_THREAD_STACK_SIZE 2048
-/* 7 - kept below Bridge's update thread (5) and the display threads (3).
- * HISTORY: back when capture was a never-yielding busy-poll of DR, priority 3
- * (matching the display threads) hung the *entire* Bridge link the instant
- * this thread started - a same-or-higher-priority thread that never blocks
- * starves Zephyr's preemptive scheduler out of ever running Bridge again -
- * which is also why mic_sampler_start() had to be called last in setup().
- * The DMA capture (mic_dma_capture_block) removes that constraint entirely:
- * the thread now k_msleep()s while GPDMA1 fills each block, so it yields
- * regularly and could safely run at priority 3 - and the setup() ordering no
- * longer needs mic last. The value is left at 7 to keep this change scoped to
- * the DMA port; raising it (and relaxing the ordering) is a separate, now-safe
- * cleanup. Consequence of the yield: the loop() heartbeat, which the old
- * busy-poll starved, blinks again while the mic streams. */
-#define MIC_SAMPLER_THREAD_PRIORITY 7
+/* MIC_SAMPLER_THREAD_PRIORITY (app_config.h) == 7 - kept below Bridge's
+ * update thread (5) and the display threads (3). HISTORY: back when capture
+ * was a never-yielding busy-poll of DR, priority 3 (matching the display
+ * threads) hung the *entire* Bridge link the instant this thread started - a
+ * same-or-higher-priority thread that never blocks starves Zephyr's
+ * preemptive scheduler out of ever running Bridge again. The DMA capture
+ * (mic_dma_capture_block) removes that constraint entirely: the thread now
+ * k_msleep()s while GPDMA1 fills each block, so it yields regularly and
+ * could safely run at priority 3. The value is left at 7 to keep this change
+ * scoped to the DMA port; raising it is a separate, safe cleanup not yet
+ * done. Consequence of the yield: the loop() heartbeat, which the old
+ * busy-poll starved, blinks again while the mic streams.
+ *
+ * setup() ordering: mic_sampler_start() no longer has to be called last -
+ * see sketch.ino's setup() comment and docs/PROGRESS.md's 2026-07-14 entry
+ * for the hardware verification of that specific claim. */
 
 static void mic_sampler_thread_entry(void *p1, void *p2, void *p3) {
   ARG_UNUSED(p1);
@@ -583,6 +590,10 @@ static void mic_sampler_thread_entry(void *p1, void *p2, void *p3) {
      * MIC_FFT_BIN_COUNT are meaningful (see mic_fft_magnitude()'s comment). */
     memcpy(mic_full_latest, mic_fft_mag, sizeof(mic_full_latest));
     k_mutex_unlock(&mic_spectrum_mtx);
+
+#if BENCHMARK_STATS_ENABLED
+    mic_windows_completed++;
+#endif
   }
 }
 
@@ -603,6 +614,13 @@ void mic_copy_full_spectrum(float *out) {
   memcpy(out, mic_full_latest, sizeof(mic_full_latest));
   k_mutex_unlock(&mic_spectrum_mtx);
 }
+
+#if BENCHMARK_STATS_ENABLED
+void mic_sampler_get_stats(struct mic_bench_stats *out) {
+  out->windows_completed = mic_windows_completed;
+  out->timeouts = mic_capture_timeouts;
+}
+#endif
 
 void mic_sampler_start(void) {
   mic_fft_init_twiddles();

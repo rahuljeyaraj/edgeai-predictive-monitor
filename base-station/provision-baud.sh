@@ -3,7 +3,7 @@
 # provision-baud.sh
 #
 # Raises the arduino-router MCU<->MPU serial link baud on the UNO Q to match the
-# sketch's BRIDGE_BAUD (base-station/sketch/bridge_config.h). The default router
+# sketch's BRIDGE_BAUD (base-station/sketch/app_config.h). The default router
 # baud is 115200 (~11.5 KB/s), which cannot carry the fuser's full-resolution
 # float32 spectrum push (~64 KB/s); this installs a persistent systemd drop-in
 # that overrides the router's --serial-baudrate.
@@ -13,13 +13,13 @@
 # after any base-OS reflash. It edits a root-owned systemd unit, so it needs the
 # board's sudo password (prompted once on-device via sudo -S).
 #
-# The MCU side must be flashed at the SAME baud (deploy.sh, with bridge_config.h
+# The MCU side must be flashed at the SAME baud (deploy.sh, with app_config.h
 # already set) - a mismatch silently breaks the whole Bridge link. Recommended
 # order: run this first, then deploy.sh (so the MCU resets into the new baud last
 # and the handshake is clean).
 #
 # Usage:
-#   BRIDGE_BAUD=2000000 ./provision-baud.sh          # baud must match bridge_config.h
+#   BRIDGE_BAUD=2000000 ./provision-baud.sh          # baud must match app_config.h
 #   ./provision-baud.sh                             # defaults to 1000000
 #
 # You will be prompted for the board's sudo password.
@@ -64,4 +64,4 @@ step "Verifying active baud"
 adb shell "systemctl cat arduino-router 2>/dev/null | grep -m1 serial-baudrate | sed 's/^/  /'"
 echo
 echo "Router now at baud ${BAUD}. Flash the MCU at the same baud (deploy.sh with"
-echo "bridge_config.h BRIDGE_BAUD=${BAUD}) if you haven't already."
+echo "app_config.h BRIDGE_BAUD=${BAUD}) if you haven't already."

@@ -6,12 +6,34 @@
  * poll/response model, and not the 32-bucket downsampled Bridge providers the
  * samplers expose for their standalone tests. See fuser.cpp's header comment
  * for the full rationale (why push, why chunked, why float32/full-res).
- *
- * NOTE: currently at the BRING-UP PROBE stage - fuser_start() only exercises
- * the binary-notify transport primitive (fixed synthetic payload) so the
- * MCU->Python msgpack-bin path can be proven on hardware before the real frame
- * assembly + sampler-full-bin plumbing is wired in. See fuser.cpp.
  */
 #pragma once
 
+#include <stdint.h>
+
+#include "app_config.h"
+
 void fuser_start(void);
+
+#if BENCHMARK_STATS_ENABLED
+/* This module's own transport-stage counters - fuser only reports on
+ * itself here (frames pushed, epoch overruns, build+send duration), the
+ * same "one accessor per module" shape as mic_sampler_get_stats()/
+ * accel_sampler_get_stats(). Aggregation across modules into one Bridge-
+ * pollable summary lives in bench.cpp, not here - fuser stays scoped to
+ * fusion + transport. Compiled out entirely when BENCHMARK_STATS_ENABLED is
+ * 0 (app_config.h). */
+struct fuser_bench_stats {
+  uint32_t frames_sent;    /* fused frames pushed since boot */
+  uint32_t overrun_count;  /* epochs where build+send took >= FUSER_EPOCH_MS,
+                             * i.e. the link/CPU couldn't keep up that cycle */
+  uint32_t send_ms_sum;    /* cumulative build+send time, for an avg-since-
+                             * boot in bench.cpp (send_ms_sum / frames_sent) */
+  uint32_t send_ms_max;    /* worst single-epoch build+send time seen */
+};
+
+/* Snapshot of the counters above - same no-locking rationale as
+ * mic_sampler_get_stats() (mic_sampler.h): single writer (the fuser
+ * thread), a torn read across fields is harmless for this diagnostic. */
+void fuser_get_stats(struct fuser_bench_stats *out);
+#endif /* BENCHMARK_STATS_ENABLED */

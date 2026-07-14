@@ -48,7 +48,7 @@
  */
 #include "matrix_display.h"
 
-#include "bridge_config.h"
+#include "app_config.h"
 
 #include <Arduino_RouterBridge.h>
 #include <Arduino_LED_Matrix.h>
@@ -150,17 +150,15 @@ static uint8_t glyph_column(char ch, int col) {
 /* 1024, matching the old repo's MATRIX_DISPLAY_THREAD_STACK_SIZE. */
 #define MATRIX_DISPLAY_THREAD_STACK_SIZE 1024
 /*
- * 3, same as (a future ported) rgb_display_thread - see that thread's own
- * priority-choice rationale in the old repo
+ * MATRIX_DISPLAY_THREAD_PRIORITY (app_config.h) == 3, same as rgb_display_thread
+ * - see that thread's own priority-choice rationale in the old repo
  * (threads/rgb_display_thread.c): a visible-timing render thread should
  * preempt the RPC/worker threads (Bridge's own background update thread
  * runs at priority 5, UPDATE_THREAD_PRIORITY in Arduino_RouterBridge's
  * bridge.h) rather than share their priority and inherit their
- * scheduling jitter.
+ * scheduling jitter. MATRIX_DISPLAY_TICK_MS (20ms) is also in app_config.h,
+ * matching the old repo's own value.
  */
-#define MATRIX_DISPLAY_THREAD_PRIORITY 3
-/* 20ms, matching the old repo's MATRIX_DISPLAY_TICK_MS. */
-#define MATRIX_DISPLAY_TICK_MS 20
 #define MATRIX_DISPLAY_MAX_TEXT_LEN 63
 
 static Arduino_LED_Matrix matrix;

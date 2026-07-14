@@ -88,7 +88,7 @@
  */
 #include "accel_sampler.h"
 
-#include "bridge_config.h"
+#include "app_config.h"
 
 #include <Arduino_RouterBridge.h>
 #include <SPI.h>
@@ -133,9 +133,9 @@
 
 /* ODCNTL OSA<3:0> - 1600Hz, the old repo's own original/safe baseline (see this
  * file's header comment for why this port doesn't jump straight to that repo's
- * later-tuned 12800Hz). */
+ * later-tuned 12800Hz). Must match ACCEL_ODR_HZ (app_config.h) - this is the
+ * KX134 register bit pattern for that rate, not independently tunable. */
 #define KX134_ODCNTL_OSA_1600HZ 0x0B
-#define ACCEL_ODR_HZ 1600
 
 #define KX134_INC1_IEN1 (1 << 5) /* physical INT1 pin enabled */
 #define KX134_INC1_IEA1 (1 << 4) /* INT1 active HIGH */
@@ -173,6 +173,11 @@ static volatile uint32_t accel_timeout_count = 0;
 static volatile uint32_t accel_fifo_full_count = 0;
 static volatile uint8_t accel_who_am_i_seen = 0xFF; /* bring-up diagnostic, see accel_get_info() */
 static volatile bool accel_sensor_ok = false;
+
+#if BENCHMARK_STATS_ENABLED
+/* Same reasoning as the counters above. Read by accel_sampler_get_stats(). */
+static volatile uint32_t accel_windows_completed = 0;
+#endif
 
 static void accel_int1_isr() {
   accel_isr_count++;
@@ -266,11 +271,9 @@ static int accel_read_block(int32_t *out_samples, size_t max_samples) {
  * same value and reasoning as the old repo's ACCEL_SAMPLER_READ_CHUNK_FRAMES. */
 #define ACCEL_READ_CHUNK_FRAMES 64
 
-#define ACCEL_FFT_BIN_COUNT 512
+/* ACCEL_FFT_BIN_COUNT/ACCEL_SPECTRUM_BINS now live in app_config.h. */
 #define ACCEL_FFT_LEN (ACCEL_FFT_BIN_COUNT * 2) /* 1024 */
 #define ACCEL_FFT_LOG2N 10 /* log2(1024) */
-
-#define ACCEL_SPECTRUM_BINS 32 /* Bridge's 256-byte ceiling forces downsampling, same scheme as mic_sampler.cpp */
 #define ACCEL_DOWNSAMPLE_FACTOR (ACCEL_FFT_BIN_COUNT / ACCEL_SPECTRUM_BINS)
 
 #define ACCEL_FFT_PI 3.14159265f
@@ -431,7 +434,8 @@ static String accel_get_info() {
 }
 
 #define ACCEL_SAMPLER_THREAD_STACK_SIZE 2048
-/* 3, matching matrix_display_thread/rgb_display_thread, NOT mic_sampler_thread's
+/* ACCEL_SAMPLER_THREAD_PRIORITY (app_config.h) == 3, matching
+ * matrix_display_thread/rgb_display_thread, NOT mic_sampler_thread's
  * below-Bridge priority 7. Unlike mic's capture loop (a genuine non-blocking
  * busy-wait once SAI1 is streaming - see that file's own comment on why
  * priority 3 hung the entire Bridge link there), accel_read_block() above
@@ -442,7 +446,6 @@ static String accel_get_info() {
  * docs/PROGRESS.md's mic_sampler_thread entry for how wrong the same
  * "it blocks/sleeps every tick, so it should be safe" assumption turned out to
  * be for a thread that couldn't actually guarantee that in its failure path. */
-#define ACCEL_SAMPLER_THREAD_PRIORITY 3
 
 static void accel_sampler_thread_entry(void *p1, void *p2, void *p3) {
   ARG_UNUSED(p1);
@@ -487,6 +490,10 @@ static void accel_sampler_thread_entry(void *p1, void *p2, void *p3) {
     memcpy(accel_full_latest, accel_mag_combined, sizeof(accel_full_latest));
     k_mutex_unlock(&accel_spectrum_mtx);
 
+#if BENCHMARK_STATS_ENABLED
+    accel_windows_completed++;
+#endif
+
     frames_accumulated = 0;
   }
 }
@@ -508,6 +515,16 @@ void accel_copy_full_spectrum(float *out) {
   memcpy(out, accel_full_latest, sizeof(accel_full_latest));
   k_mutex_unlock(&accel_spectrum_mtx);
 }
+
+#if BENCHMARK_STATS_ENABLED
+void accel_sampler_get_stats(struct accel_bench_stats *out) {
+  out->windows_completed = accel_windows_completed;
+  out->isr_count = accel_isr_count;
+  out->read_count = accel_read_count;
+  out->timeout_count = accel_timeout_count;
+  out->fifo_full_count = accel_fifo_full_count;
+}
+#endif
 
 void accel_sampler_start(void) {
   /* Bridge providers are registered before the WHO_AM_I check, not after -

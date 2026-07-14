@@ -59,7 +59,7 @@
  */
 #include "rgb_display.h"
 
-#include "bridge_config.h"
+#include "app_config.h"
 
 #include <Arduino_RouterBridge.h>
 #define STM32U585xx
@@ -206,13 +206,13 @@ static void rgb_display_tick(void) {
   rgb_render(cmd.r, cmd.g, cmd.b, scale_pct);
 }
 
-/* 3, matching matrix_display_thread and the old repo's own
- * RGB_DISPLAY_THREAD_PRIORITY - see matrix_display.cpp's priority-choice
- * comment for the shared rationale (preempt Bridge's priority-5 update
- * thread so visible timing doesn't inherit its scheduling jitter). */
+/* RGB_DISPLAY_THREAD_PRIORITY (app_config.h) == 3, matching
+ * matrix_display_thread and the old repo's own RGB_DISPLAY_THREAD_PRIORITY -
+ * see matrix_display.cpp's priority-choice comment for the shared rationale
+ * (preempt Bridge's priority-5 update thread so visible timing doesn't
+ * inherit its scheduling jitter). RGB_DISPLAY_TICK_MS is also in
+ * app_config.h. */
 #define RGB_DISPLAY_THREAD_STACK_SIZE 1024
-#define RGB_DISPLAY_THREAD_PRIORITY 3
-#define RGB_DISPLAY_TICK_MS 20
 
 static void rgb_display_thread_entry(void *p1, void *p2, void *p3) {
   ARG_UNUSED(p1);

@@ -1,6 +1,10 @@
 #ifndef ACCEL_SAMPLER_H_
 #define ACCEL_SAMPLER_H_
 
+#include <stdint.h>
+
+#include "app_config.h"
+
 /*
  * KX134-1211 SPI accelerometer sampler - see accel_sampler.cpp's header comment for
  * the full port rationale. Mirrors the old repo's threads/accel_sampler_thread.h +
@@ -12,10 +16,10 @@
 /* Initializes the KX134 over SPI, registers the Bridge providers
  * ("get_accel_spectrum", "get_accel_info"), and starts the capture/FFT thread
  * (priority ACCEL_SAMPLER_THREAD_PRIORITY, see accel_sampler.cpp). Call once
- * from setup(), BEFORE mic_sampler_start() - mic's priority-7 never-yielding
- * capture thread starves this (lower-priority) setup() thread the instant it
- * starts, so anything sequenced after mic_sampler_start() in setup() never
- * runs. See docs/PROGRESS.md's accel_sampler_thread entry for the full story. */
+ * from setup(). No ordering constraint relative to mic_sampler_start() -
+ * mic's capture thread used to never yield and would starve setup() if
+ * anything was sequenced after it, but that was fixed by moving mic capture
+ * onto GPDMA1 (see mic_sampler.cpp and docs/PROGRESS.md's 2026-07-14 entry). */
 void accel_sampler_start(void);
 
 /* Full-resolution spectrum access for the fuser (fuser.cpp): the latest
@@ -28,5 +32,26 @@ int accel_full_bin_count(void);
 int accel_fft_size(void);
 float accel_sample_rate_hz(void);
 void accel_copy_full_spectrum(float *out);
+
+#if BENCHMARK_STATS_ENABLED
+/* Cumulative-since-boot pipeline-stage counters, read by fuser.cpp's
+ * periodic "get_bench_stats" Bridge report - ported from the old repo's
+ * docs/Sensor_Throughput_Tuning_Plan.md Phase 0 (isr/read/fifo_full/timeout
+ * are the same underlying counters accel_get_info()'s string already
+ * exposes; windows_completed is new). Compiled out entirely when
+ * BENCHMARK_STATS_ENABLED is 0 (app_config.h). */
+struct accel_bench_stats {
+  uint32_t windows_completed; /* 3-axis FFT windows produced */
+  uint32_t isr_count;         /* INT1/BFI pulses */
+  uint32_t read_count;        /* accel_read_block() calls */
+  uint32_t timeout_count;     /* accel_data_ready_sem timeouts */
+  uint32_t fifo_full_count;   /* reads where the HW FIFO was already at its
+                                * 86-frame cap */
+};
+
+/* Snapshot of the counters above - same no-locking rationale as
+ * mic_sampler_get_stats() (mic_sampler.h). */
+void accel_sampler_get_stats(struct accel_bench_stats *out);
+#endif /* BENCHMARK_STATS_ENABLED */
 
 #endif /* ACCEL_SAMPLER_H_ */
