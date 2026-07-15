@@ -1,0 +1,340 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Stepper Rig Dashboard</title>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #1a1e26; --panel2: #222834;
+    --line: #2c333f; --text: #e6e9ef; --muted: #8b93a3;
+    --accent: #4f8cff; --accent2: #37c98b; --warn: #ffb020; --danger: #ff5470;
+    --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+    line-height: 1.4;
+  }
+  header {
+    display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+    padding: 14px 20px; border-bottom: 1px solid var(--line); background: var(--panel);
+  }
+  header h1 { font-size: 16px; margin: 0; font-weight: 600; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--danger);
+         display: inline-block; margin-right: 7px; vertical-align: middle; }
+  .dot.on { background: var(--accent2); box-shadow: 0 0 8px var(--accent2); }
+  .status { color: var(--muted); font-size: 13px; }
+  .spacer { flex: 1; }
+  button {
+    font: inherit; color: var(--text); background: var(--panel2);
+    border: 1px solid var(--line); border-radius: 8px; padding: 8px 14px;
+    cursor: pointer; transition: background .12s, border-color .12s;
+  }
+  button:hover:not(:disabled) { background: #2b323f; border-color: #3a4250; }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.primary:hover:not(:disabled) { background: #3d7bf0; }
+  button.danger  { background: var(--danger); border-color: var(--danger); color: #fff; }
+  button.ghost   { background: transparent; }
+  main { max-width: 1040px; margin: 0 auto; padding: 20px; display: grid; gap: 18px; }
+  .row { display: grid; gap: 18px; grid-template-columns: 1fr 1fr; }
+  @media (max-width: 760px) { .row { grid-template-columns: 1fr; } }
+  .card {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 14px; padding: 18px 20px;
+  }
+  .card h2 { margin: 0 0 4px; font-size: 15px; }
+  .card .sub { color: var(--muted); font-size: 12px; margin-bottom: 14px; }
+  .readout { font-family: var(--mono); font-size: 34px; font-weight: 600; }
+  .readout small { font-size: 15px; color: var(--muted); font-weight: 400; }
+  input[type=range] { width: 100%; margin: 14px 0 6px; accent-color: var(--accent); }
+  .m2 input[type=range] { accent-color: var(--accent2); }
+  .ticks { display: flex; justify-content: space-between; color: var(--muted);
+           font-size: 11px; font-family: var(--mono); }
+  .quick { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 14px; }
+  .quick button { padding: 6px 10px; font-size: 13px; }
+  .presets { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+  .presets .label { color: var(--muted); font-size: 13px; margin-right: 4px; }
+  .console {
+    background: #0b0d11; border: 1px solid var(--line); border-radius: 10px;
+    font-family: var(--mono); font-size: 12.5px; height: 180px; overflow-y: auto;
+    padding: 10px 12px; white-space: pre-wrap; color: #b9c1d0;
+  }
+  .console .tx { color: var(--accent); }
+  .console .rx { color: var(--accent2); }
+  .console .sys { color: var(--muted); }
+  .console .err { color: var(--danger); }
+  .hint { color: var(--muted); font-size: 12.5px; }
+  code { font-family: var(--mono); background: var(--panel2); padding: 1px 5px; border-radius: 4px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>⚙️ Stepper Rig</h1>
+  <span class="status"><span id="dot" class="dot"></span><span id="connState">disconnected</span></span>
+  <div class="spacer"></div>
+  <button id="stopBtn" class="danger" disabled>■ Stop (disable)</button>
+  <button id="connBtn" class="primary">Connect</button>
+</header>
+
+<main>
+  <div id="unsupported" class="card" style="display:none; border-color: var(--warn);">
+    <h2>⚠️ Web Serial not available</h2>
+    <p class="hint">This dashboard needs the <b>Web Serial API</b>. Open this file in
+    desktop <b>Chrome</b> or <b>Edge</b> (not Firefox/Safari), served from
+    <code>file://</code> or <code>localhost</code>. Then click <b>Connect</b> and pick
+    the Arduino Uno's port.</p>
+  </div>
+
+  <div class="row">
+    <!-- Motor 1 -->
+    <div class="card" id="card1">
+      <h2>Motor 1 · X</h2>
+      <div class="sub">STEP D2 · DIR D5</div>
+      <div class="readout"><span id="rpm1">0</span> <small>RPM</small></div>
+      <input id="slider1" type="range" min="-300" max="300" step="5" value="0" />
+      <div class="ticks"><span>-300</span><span>0</span><span>+300</span></div>
+      <div class="quick" data-motor="1">
+        <button data-rpm="0">0</button>
+        <button data-rpm="60">60</button>
+        <button data-rpm="90">90</button>
+        <button data-rpm="120">120</button>
+        <button data-rpm="180">180</button>
+        <button data-rpm="-90">rev</button>
+      </div>
+    </div>
+
+    <!-- Motor 2 -->
+    <div class="card m2" id="card2">
+      <h2>Motor 2 · Y</h2>
+      <div class="sub">STEP D3 · DIR D6</div>
+      <div class="readout"><span id="rpm2">0</span> <small>RPM</small></div>
+      <input id="slider2" type="range" min="-300" max="300" step="5" value="0" />
+      <div class="ticks"><span>-300</span><span>0</span><span>+300</span></div>
+      <div class="quick" data-motor="2">
+        <button data-rpm="0">0</button>
+        <button data-rpm="60">60</button>
+        <button data-rpm="90">90</button>
+        <button data-rpm="120">120</button>
+        <button data-rpm="180">180</button>
+        <button data-rpm="-90">rev</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Both + presets -->
+  <div class="card">
+    <h2>Both motors</h2>
+    <div class="sub">Master speed &amp; demo presets</div>
+    <div class="readout"><span id="rpmB">0</span> <small>RPM (both)</small></div>
+    <input id="sliderB" type="range" min="-300" max="300" step="5" value="0" />
+    <div class="ticks"><span>-300</span><span>0</span><span>+300</span></div>
+    <div class="presets" style="margin-top:16px;">
+      <span class="label">Presets:</span>
+      <button data-preset="baseline">Baseline (b 90)</button>
+      <button data-preset="beat">Beat (120 / 90)</button>
+      <button data-preset="fault">Fault (m1→220)</button>
+      <button class="ghost" data-preset="enable">Enable</button>
+      <button class="ghost" data-preset="status">Status</button>
+    </div>
+  </div>
+
+  <!-- Console -->
+  <div class="card">
+    <h2>Serial console</h2>
+    <div class="sub">115200 baud · <span class="hint">green = from Uno, blue = sent</span></div>
+    <div id="console" class="console"></div>
+    <div style="margin-top:10px; display:flex; gap:8px;">
+      <button id="clearBtn" class="ghost">Clear</button>
+      <button id="helpBtn" class="ghost">Send help (h)</button>
+    </div>
+  </div>
+</main>
+
+<script>
+"use strict";
+
+const RPM_MAX = 300;
+const SEND_THROTTLE_MS = 80;   // rate-limit slider spam to the serial link
+
+let port = null, writer = null, reader = null, keepReading = false;
+const enc = new TextEncoder();
+
+const $ = (id) => document.getElementById(id);
+const consoleEl = $("console");
+
+function log(kind, text) {
+  const line = document.createElement("div");
+  line.className = kind;
+  const prefix = { tx: "» ", rx: "‹ ", sys: "· ", err: "✕ " }[kind] || "";
+  line.textContent = prefix + text;
+  consoleEl.appendChild(line);
+  consoleEl.scrollTop = consoleEl.scrollHeight;
+  // Trim to keep the DOM light during long demos.
+  while (consoleEl.childElementCount > 400) consoleEl.removeChild(consoleEl.firstChild);
+}
+
+function setConnected(on) {
+  $("dot").classList.toggle("on", on);
+  $("connState").textContent = on ? "connected · 115200" : "disconnected";
+  $("connBtn").textContent = on ? "Disconnect" : "Connect";
+  $("stopBtn").disabled = !on;
+}
+
+// ---- Serial lifecycle ------------------------------------------------------
+async function connect() {
+  try {
+    port = await navigator.serial.requestPort();
+    await port.open({ baudRate: 115200 });
+    writer = port.writable.getWriter();
+    setConnected(true);
+    log("sys", "port opened — Uno is rebooting (~2s)…");
+    readLoop();
+  } catch (e) {
+    log("err", "connect failed: " + e.message);
+  }
+}
+
+async function disconnect() {
+  await sendCmd("d");            // safety: coast the motors on disconnect
+  keepReading = false;
+  try { if (reader) await reader.cancel(); } catch (_) {}
+  try { if (writer) { writer.releaseLock(); writer = null; } } catch (_) {}
+  try { if (port) await port.close(); } catch (_) {}
+  port = null;
+  setConnected(false);
+  log("sys", "disconnected");
+}
+
+async function readLoop() {
+  keepReading = true;
+  let buf = "";
+  while (keepReading && port && port.readable) {
+    reader = port.readable.getReader();
+    try {
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buf += new TextDecoder().decode(value);
+        let nl;
+        while ((nl = buf.indexOf("\n")) >= 0) {
+          const line = buf.slice(0, nl).replace(/\r$/, "");
+          buf = buf.slice(nl + 1);
+          if (line.length) log("rx", line);
+        }
+      }
+    } catch (e) {
+      if (keepReading) log("err", "read error: " + e.message);
+    } finally {
+      try { reader.releaseLock(); } catch (_) {}
+      reader = null;
+    }
+  }
+}
+
+async function sendCmd(cmd) {
+  if (!writer) return;
+  try {
+    await writer.write(enc.encode(cmd + "\n"));
+    log("tx", cmd);
+  } catch (e) {
+    log("err", "write failed: " + e.message);
+  }
+}
+
+// ---- Throttled per-target senders -----------------------------------------
+function makeThrottledSender(prefix) {
+  let last = 0, pending = null, timer = null;
+  return (rpm) => {
+    const cmd = `${prefix} ${rpm}`;
+    const now = Date.now();
+    if (now - last >= SEND_THROTTLE_MS) {
+      last = now; sendCmd(cmd);
+    } else {
+      pending = cmd;
+      if (!timer) timer = setTimeout(() => {
+        timer = null; last = Date.now();
+        if (pending) { sendCmd(pending); pending = null; }
+      }, SEND_THROTTLE_MS - (now - last));
+    }
+  };
+}
+const send1 = makeThrottledSender("1");
+const send2 = makeThrottledSender("2");
+
+function clampRpm(v) {
+  v = Math.round(Number(v));
+  return Math.max(-RPM_MAX, Math.min(RPM_MAX, v));
+}
+
+// ---- UI wiring -------------------------------------------------------------
+function bindSlider(sliderId, labelId, onChange) {
+  const s = $(sliderId), lbl = $(labelId);
+  s.addEventListener("input", () => {
+    const v = clampRpm(s.value);
+    lbl.textContent = v;
+    onChange(v);
+  });
+  return {
+    set(v) { v = clampRpm(v); s.value = v; lbl.textContent = v; }
+  };
+}
+
+const m1 = bindSlider("slider1", "rpm1", (v) => send1(v));
+const m2 = bindSlider("slider2", "rpm2", (v) => send2(v));
+const mB = bindSlider("sliderB", "rpmB", (v) => {
+  m1.set(v); m2.set(v);
+  send1(v); send2(v);
+});
+
+// quick-set buttons
+document.querySelectorAll(".quick").forEach((grp) => {
+  const motor = grp.dataset.motor;
+  grp.querySelectorAll("button").forEach((b) => {
+    b.addEventListener("click", () => {
+      const v = clampRpm(b.dataset.rpm);
+      if (motor === "1") { m1.set(v); send1(v); }
+      else               { m2.set(v); send2(v); }
+    });
+  });
+});
+
+// presets
+const presets = {
+  baseline() { m1.set(90); m2.set(90); mB.set(90); sendCmd("e"); sendCmd("b 90"); },
+  beat()     { m1.set(120); m2.set(90); sendCmd("1 120"); sendCmd("2 90"); },
+  fault()    { m1.set(220); m2.set(90); sendCmd("1 220"); sendCmd("2 90"); },
+  enable()   { sendCmd("e"); },
+  status()   { sendCmd("s"); },
+};
+document.querySelectorAll("[data-preset]").forEach((b) => {
+  b.addEventListener("click", () => {
+    const fn = presets[b.dataset.preset];
+    if (fn) fn();
+  });
+});
+
+// header + misc buttons
+$("connBtn").addEventListener("click", () => (port ? disconnect() : connect()));
+$("stopBtn").addEventListener("click", () => {
+  m1.set(0); m2.set(0); mB.set(0);
+  sendCmd("d");                 // disable drivers = immediate coast
+});
+$("clearBtn").addEventListener("click", () => (consoleEl.innerHTML = ""));
+$("helpBtn").addEventListener("click", () => sendCmd("h"));
+
+window.addEventListener("beforeunload", () => { if (port) sendCmd("d"); });
+
+// feature detection
+if (!("serial" in navigator)) {
+  $("unsupported").style.display = "block";
+  $("connBtn").disabled = true;
+  log("err", "navigator.serial unavailable — use Chrome/Edge over file:// or localhost");
+} else {
+  log("sys", "ready — click Connect and select the Arduino Uno port");
+}
+</script>
+</body>
+</html>
