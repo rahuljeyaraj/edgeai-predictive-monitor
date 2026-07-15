@@ -21,13 +21,12 @@
  *
  * Negative RPM reverses direction. RPM is clamped to +/-RPM_MAX, which is
  * derived from MAX_SPS and the microstep setting (~1200 RPM at full step).
- * Speed changes ramp in/out at RPM_ACCEL (accelerating AND decelerating)
- * rather than jumping instantly, so the motor doesn't stall trying to
- * start - or stop - at a high step rate. This is a hand-rolled ramp (see
- * curSps/targetSps below), not AccelStepper's own accel/moveTo machinery:
- * that machinery only decelerates when it thinks it's approaching a target
- * position, which never happens for continuous jogging, so lowering speed
- * (including down to 0) would otherwise clamp instantly instead of ramping.
+ * Speed is driven through AccelStepper's own acceleration machinery: each
+ * motor is aimed at a target position far away in the desired direction and
+ * run() ramps up to the commanded speed at RPM_ACCEL, so it doesn't stall
+ * trying to start at a high step rate. A commanded speed of 0 uses stop(),
+ * which decelerates smoothly to a halt. Direction reversals ramp down
+ * through zero and back up automatically (the target position flips sign).
  * -----------------------------------------------------------------------------
  */
 
@@ -61,12 +60,22 @@ constexpr float MAX_SPS = 4000.0;
 constexpr float RPM_MAX     = MAX_SPS * 60.0 / (STEPS_PER_REV * MICROSTEP); // ~1200 RPM at full step
 constexpr float RPM_DEFAULT = 90.0;    // startup speed for both motors
 
-// Ramp rate (RPM/s) used to accelerate/decelerate to the commanded speed,
-// symmetric in both directions. Jumping straight to a high step rate stalls
-// the motor (no torque headroom at that speed yet) - ramping climbs through
-// the low-speed range first. Tune down if it still stalls; tune up for
-// snappier demos.
-constexpr float RPM_ACCEL = 50.0;
+// Ramp rate (RPM/s) used to accelerate/decelerate to the commanded speed.
+// Jumping straight to a high step rate stalls the motor (no torque headroom
+// at that speed yet) - ramping climbs through the low-speed range first.
+// Tune down if it still stalls; tune up for snappier demos.
+constexpr float RPM_ACCEL = 150.0;
+
+// A target far enough away that run() keeps accelerating/cruising and never
+// arrives (2e9 steps @ 4000 steps/s is ~138 hours), i.e. continuous rotation.
+constexpr long FAR_TARGET = 2000000000L;
+
+// Floor for setMaxSpeed so it never hits 0 (which would divide-by-zero the
+// step interval); the true stop is handled with stop().
+constexpr float MIN_SPS = 1.0;
+
+// The decel governor eases setMaxSpeed down on this cadence (see loop()).
+constexpr unsigned long GOV_INTERVAL_US = 2000;  // 2 ms -> 500 Hz
 
 AccelStepper m1(AccelStepper::DRIVER, M1_STEP, M1_DIR);
 AccelStepper m2(AccelStepper::DRIVER, M2_STEP, M2_DIR);
@@ -75,12 +84,14 @@ float rpm1 = 0.0;
 float rpm2 = 0.0;
 bool  enabled = false;
 
-// Commanded (target) and actual (ramping) speed in steps/s, signed by
-// direction. loop() nudges cur toward target by at most accelSps*dt per
-// tick, so both speeding up and slowing down go through the ramp.
-float targetSps1 = 0.0, targetSps2 = 0.0;
-float curSps1    = 0.0, curSps2    = 0.0;
-unsigned long lastRampUs = 0;
+// Cruise-speed governor state (magnitudes, steps/s). curMaxSps is what's
+// currently handed to setMaxSpeed(); tgtMaxSps is where we want it. Speed
+// INCREASES are applied to curMaxSps immediately (run() accelerates via
+// setAcceleration), but DECREASES are eased down by the governor so the
+// spinning rotor doesn't overrun an abrupt slowdown and stall.
+float curMaxSps1 = 0.0, curMaxSps2 = 0.0;
+float tgtMaxSps1 = 0.0, tgtMaxSps2 = 0.0;
+unsigned long lastGovUs = 0;
 
 // RPM -> steps per second for the current microstep setting.
 float rpmToSps(float rpm) {
@@ -90,13 +101,6 @@ float rpmToSps(float rpm) {
 // RPM/s -> steps/s^2 for the current microstep setting.
 float rpmPerSecToSpsPerSec(float rpmPerSec) {
   return rpmPerSec / 60.0 * STEPS_PER_REV * MICROSTEP;
-}
-
-// Moves cur toward target by at most maxDelta, without overshooting.
-float stepToward(float cur, float target, float maxDelta) {
-  if (cur < target) return min(cur + maxDelta, target);
-  if (cur > target) return max(cur - maxDelta, target);
-  return cur;
 }
 
 float clampRpm(float rpm) {
@@ -110,10 +114,35 @@ void setEnabled(bool on) {
   digitalWrite(EN_PIN, on ? LOW : HIGH);  // active LOW
 }
 
-// Sets the target speed; loop() ramps curSps toward it (see stepToward()).
-void applyRpm(float &store, float &targetSps, float rpm) {
+// Commands motor m to the given RPM. Aims it at a far target in the desired
+// direction so run() accelerates up to the cruise speed. Speed increases take
+// effect at once; decreases are left for the governor in loop() to ease down.
+void applyRpm(AccelStepper &m, float &store, float &curMaxSps, float &tgtMaxSps, float rpm) {
   store = clampRpm(rpm);
-  targetSps = rpmToSps(store);
+  float sps = rpmToSps(store);
+  float mag = fabs(sps);
+  tgtMaxSps = mag;
+
+  // Keep the current direction when stopping (mag ~0); otherwise aim per sign.
+  if (mag >= MIN_SPS)
+    m.moveTo(sps > 0 ? FAR_TARGET : -FAR_TARGET);
+
+  // Increase (or first command): apply now so run() accelerates immediately.
+  if (mag >= curMaxSps) {
+    curMaxSps = max(mag, MIN_SPS);
+    m.setMaxSpeed(curMaxSps);
+  }
+}
+
+// Governor step: eases curMaxSps down toward tgtMaxSps (decreases only) by at
+// most maxDelta, updating setMaxSpeed so run() slews the speed down smoothly.
+// Once it has eased down to a commanded stop, stop() kills the residual crawl.
+void governDown(AccelStepper &m, float &curMaxSps, float tgtMaxSps, float maxDelta) {
+  if (curMaxSps <= tgtMaxSps) return;             // not decreasing - nothing to do
+  curMaxSps = max(tgtMaxSps, curMaxSps - maxDelta);
+  m.setMaxSpeed(max(curMaxSps, MIN_SPS));
+  if (tgtMaxSps < MIN_SPS && curMaxSps <= MIN_SPS)
+    m.stop();                                     // fully stop once crawled down
 }
 
 void printStatus() {
@@ -139,14 +168,13 @@ void setup() {
   pinMode(EN_PIN, OUTPUT);
   setEnabled(true);            // energize on boot
 
-  // setSpeed() constrains to +/-maxSpeed internally (default 1 step/s), so
-  // this must be raised before any real speed is ever set.
   m1.setMaxSpeed(MAX_SPS);
   m2.setMaxSpeed(MAX_SPS);
-
-  applyRpm(rpm1, targetSps1, RPM_DEFAULT);
-  applyRpm(rpm2, targetSps2, RPM_DEFAULT);
-  lastRampUs = micros();
+  m1.setAcceleration(rpmPerSecToSpsPerSec(RPM_ACCEL));
+  m2.setAcceleration(rpmPerSecToSpsPerSec(RPM_ACCEL));
+  applyRpm(m1, rpm1, curMaxSps1, tgtMaxSps1, RPM_DEFAULT);
+  applyRpm(m2, rpm2, curMaxSps2, tgtMaxSps2, RPM_DEFAULT);
+  lastGovUs = micros();
 
   Serial.println(F("=== stepper_rig ready ==="));
   printHelp();
@@ -165,17 +193,17 @@ void handleCommand(const String &line) {
 
   switch (cmd) {
     case '1':
-      applyRpm(rpm1, targetSps1, arg);
+      applyRpm(m1, rpm1, curMaxSps1, tgtMaxSps1, arg);
       printStatus();
       break;
     case '2':
-      applyRpm(rpm2, targetSps2, arg);
+      applyRpm(m2, rpm2, curMaxSps2, tgtMaxSps2, arg);
       printStatus();
       break;
     case 'b':
     case 'B':
-      applyRpm(rpm1, targetSps1, arg);
-      applyRpm(rpm2, targetSps2, arg);
+      applyRpm(m1, rpm1, curMaxSps1, tgtMaxSps1, arg);
+      applyRpm(m2, rpm2, curMaxSps2, tgtMaxSps2, arg);
       printStatus();
       break;
     case 'e':
@@ -222,22 +250,26 @@ void loop() {
   }
 
   // --- Optional pot overrides motor 1 speed ------------------------------
+  // applyRpm() re-targets the motor, so only call it when the pot actually
+  // moved - otherwise run()'s acceleration state is reset every loop.
   if (USE_POT) {
     float rpm = analogRead(POT_PIN) / 1023.0 * RPM_MAX;
-    applyRpm(rpm1, targetSps1, rpm);
+    if (fabs(rpm - rpm1) > 1.0) applyRpm(m1, rpm1, curMaxSps1, tgtMaxSps1, rpm);
   }
 
-  // --- Ramp actual speed toward target, then emit step pulses (must be
-  // called as often as possible) -------------------------------------------
+  // --- Decel governor: ease setMaxSpeed down toward the target (decreases
+  // only) on a fixed cadence so a high-speed slowdown doesn't stall ---------
   unsigned long now = micros();
-  float dt = (now - lastRampUs) / 1000000.0;
-  lastRampUs = now;
-  float maxDelta = rpmPerSecToSpsPerSec(RPM_ACCEL) * dt;
+  if (now - lastGovUs >= GOV_INTERVAL_US) {
+    float dt = (now - lastGovUs) / 1000000.0;
+    lastGovUs = now;
+    float maxDelta = rpmPerSecToSpsPerSec(RPM_ACCEL) * dt;
+    governDown(m1, curMaxSps1, tgtMaxSps1, maxDelta);
+    governDown(m2, curMaxSps2, tgtMaxSps2, maxDelta);
+  }
 
-  curSps1 = stepToward(curSps1, targetSps1, maxDelta);
-  curSps2 = stepToward(curSps2, targetSps2, maxDelta);
-  m1.setSpeed(curSps1);
-  m2.setSpeed(curSps2);
-  m1.runSpeed();
-  m2.runSpeed();
+  // --- Let AccelStepper accelerate/decelerate toward the target and emit
+  // step pulses (must be called as often as possible) ----------------------
+  m1.run();
+  m2.run();
 }
