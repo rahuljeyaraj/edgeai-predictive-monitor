@@ -1,220 +1,205 @@
-"""
-MPU-side consumer of the fuser spectrum stream over the dedicated MCU<->MPU SPI
-link (docs/progress2.md tasks 4-5, chunked transport per 5.7). The bulk stream
-rides SPI; the shared Bridge UART carries RPC/control only.
+#!/usr/bin/env python3
+"""Wiring only -- ported from edgeai-predictive-monitor-unoq/mpu/main.py.
 
-Data path: the fuser (MCU) stages each ~4.1KB frame via spi_link_stage_frame()
-(framing header + CRC32). A single 4KB SPI3 slave-TX transfer underruns, so the
-MPU pulls each frame in CHUNK_SIZE-byte sub-transfers: spi_arm(offset, len) arms
-frame_buf[offset..offset+chunk] on the MCU and replies "<seq>,<total>,<chunk>";
-we clock <chunk> bytes off /dev/spi-link.sock (the root host daemon
-base-station/host/spi_bridge.py, since the app container can't open spidev0.0
-directly - docs/progress2.md 4.2), reassemble all chunks, and verify the
-whole-frame CRC32. A CRC failure retries the whole frame a few times, then drops
-it (lossy live view is fine - the next pull gets a fresh one).
+Instantiates Registry/HistoryStore/PerformanceMonitor, builds the single
+FastAPI app (REST + WebSocket push) and mounts the static dashboard
+frontend on it, starts ingestion (this device's own sensors over the SPI
+link, always on, plus optional MQTT satellite nodes), then runs the app
+with uvicorn. Every routed frame is also broadcast as a "spectrum"
+WebSocket message for the dashboard's live-spectrum/waterfall panels.
 
-SPI frame (LE): [magic u32=0x46555331][seq u16][payload_len u16][payload]
-[crc32 u32 over header+payload]. Payload = fuser frame:
-  header = mic_fs(f32) mic_fft(u16) mic_bins(u16) accel_fs(f32) accel_fft(u16)
-           accel_bins(u16)  (16B), then mic_bins f32, then accel_bins f32.
+REST, WebSocket (/ws), and the static frontend are served from one port
+(app.yaml's `ports: [8080]`).
+
+Unlike the old repo, there's no --serial-port toggle: this device's own
+SPI-connected sensors (ingestion/spi_reader.py) are always live -- there's
+no "is the base station enabled" question the way the old UART flag was
+optional across different deployments. --mqtt-host stays optional, for
+satellite nodes:
+    --mqtt-host <broker>    real satellite nodes over MQTT -- including
+                            tools/satellite_node_sim.py, a standalone script
+                            that mimics a real ESP32 satellite node over MQTT
+                            for dashboard exercising without real hardware,
+                            so everything downstream of frame ingestion
+                            (gate/features/autoencoder/inference/
+                            commissioning) is the same production code path
+                            either way.
+
+This module bootstraps sys.path to cover every subpackage it imports
+transitively (flat-import convention -- no __init__.py packages exist),
+since there's no external PYTHONPATH mechanism in the App Lab container:
+    python3 python/main.py --mqtt-host localhost
 """
-import socket
-import struct
+import argparse
+import logging
+import os
+import sys
 import threading
-import time
-import zlib
 
-from arduino.app_utils import App, Bridge
+_PYTHON_DIR = os.path.dirname(os.path.abspath(__file__))
+for _subpackage in ("common", "registry", "pipeline", "history", "monitoring",
+                     "ingestion", "api"):
+    sys.path.insert(0, os.path.join(_PYTHON_DIR, _subpackage))
 
-# --- Wire format (must match sketch/spi_link.cpp + sketch/fuser.cpp) ---------
-SOCKET_PATH = "/dev/spi-link.sock"
-SPI_MAGIC = 0x46555331
-SPI_HEADER_FMT = "<I H H"
-SPI_HEADER_LEN = struct.calcsize(SPI_HEADER_FMT)   # 8
-SPI_CRC_LEN = 4
-FUSER_HEADER_FMT = "<f H H f H H"
-FUSER_HEADER_LEN = struct.calcsize(FUSER_HEADER_FMT)  # 16
+import uvicorn
+from fastapi.staticfiles import StaticFiles
 
-# --- Transport tuning --------------------------------------------------------
-# 512B was the reliable sweet spot in the chunk-size sweep (20/20 CRC-OK, ~8 fps);
-# larger chunks are faster but the slave-TX underrun risk rises and gets flaky
-# (docs/progress2.md 5.7). CRC-retry absorbs the occasional bad frame.
-CHUNK_SIZE = 512
-FRAME_RETRIES = 3
-ARM_RETRIES = 30
-PULL_INTERVAL_S = 0.02
-SUMMARY_INTERVAL_S = 2.0
+from sensor_frame import SensorFrame
+from spi_reader import SpiConsumer
+from registry import Registry
+from status_color import color_for
+from gate import MotorStateGate
+from manager import PipelineManager
+from store import HistoryStore
+from perf import PerformanceMonitor
+from app import create_app, broadcast_threadsafe
+from commissioning_controller import CommissioningController
 
+logger = logging.getLogger("main")
 
-class SpiConsumer:
-    """Pulls fuser frames over SPI (chunked) on a background thread; keeps the
-    latest decoded spectrum + running stats for loop() (and, later, inference)."""
+FRONTEND_DIR = os.path.join(_PYTHON_DIR, "frontend")
 
-    def __init__(self):
-        self._lock = threading.Lock()
-        self._thread = None
-        self.last_seq = None
-        self.last_mic = None
-        self.last_accel = None
-        self.last_meta = None          # (mic_fs, mic_fft, accel_fs, accel_fft)
-        self.frames_ok = 0
-        self.frames_dup = 0
-        self.frames_dropped = 0        # exhausted retries
-        self.crc_fail = 0
-        self.arm_gap = 0               # empty/busy/done stalls
-
-    # -- transport ----------------------------------------------------------
-    @staticmethod
-    def _read_socket(n):
-        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        s.settimeout(5.0)
-        try:
-            s.connect(SOCKET_PATH)
-            s.sendall(struct.pack("<I", n))
-            d = b""
-            while len(d) < n:
-                c = s.recv(n - len(d))
-                if not c:
-                    break
-                d += c
-            return d
-        finally:
-            s.close()
-
-    def _pull_frame(self):
-        """Pull one whole frame in <=CHUNK_SIZE sub-transfers. Returns
-        (seq, frame_bytes) or None. Does not verify CRC (caller does)."""
-        frame = b""
-        offset = 0
-        total = None
-        seq = None
-        while total is None or offset < total:
-            reply = None
-            for _ in range(ARM_RETRIES):
-                try:
-                    reply = str(Bridge.call("spi_arm", str(offset), str(CHUNK_SIZE)))
-                except Exception:
-                    return None
-                if reply not in ("busy", "empty", "done"):
-                    break
-                time.sleep(0.005)
-            if reply in ("busy", "empty", "done", None):
-                with self._lock:
-                    self.arm_gap += 1
-                return None
-            parts = reply.split(",")
-            if len(parts) != 3:
-                return None
-            s_, t_, clen = int(parts[0]), int(parts[1]), int(parts[2])
-            if seq is None:
-                seq = s_
-            elif s_ != seq:
-                return None            # frame changed mid-pull (latched - shouldn't)
-            total = t_
-            try:
-                data = self._read_socket(clen)
-            except OSError:
-                return None
-            if len(data) != clen:
-                return None
-            frame += data
-            offset += clen
-        return seq, frame
-
-    # -- decode -------------------------------------------------------------
-    def _store(self, seq, frame):
-        if len(frame) < SPI_HEADER_LEN + SPI_CRC_LEN:
-            return False
-        magic, fseq, payload_len = struct.unpack_from(SPI_HEADER_FMT, frame, 0)
-        body_end = SPI_HEADER_LEN + payload_len
-        if magic != SPI_MAGIC or body_end + SPI_CRC_LEN != len(frame):
-            return False
-        (crc,) = struct.unpack_from("<I", frame, body_end)
-        if zlib.crc32(frame[:body_end]) & 0xFFFFFFFF != crc:
-            with self._lock:
-                self.crc_fail += 1
-            return False
-
-        payload = frame[SPI_HEADER_LEN:body_end]
-        try:
-            mic_fs, mic_fft, mic_n, accel_fs, accel_fft, accel_n = struct.unpack_from(
-                FUSER_HEADER_FMT, payload, 0)
-            off = FUSER_HEADER_LEN
-            mic = struct.unpack_from(f"<{mic_n}f", payload, off)
-            off += mic_n * 4
-            accel = struct.unpack_from(f"<{accel_n}f", payload, off)
-        except struct.error:
-            return False
-
-        with self._lock:
-            if fseq == self.last_seq:
-                self.frames_dup += 1
-                return True
-            self.last_seq = fseq
-            self.last_mic = mic
-            self.last_accel = accel
-            self.last_meta = (mic_fs, mic_fft, accel_fs, accel_fft)
-            self.frames_ok += 1
-        # TODO(inference): feed (mic, accel) full-res float32 to the autoencoder.
-        return True
-
-    def _run(self):
-        while True:
-            got = False
-            for _ in range(FRAME_RETRIES):
-                res = self._pull_frame()
-                if res and self._store(*res):
-                    got = True
-                    break
-            if not got:
-                with self._lock:
-                    self.frames_dropped += 1
-            time.sleep(PULL_INTERVAL_S)
-
-    def start(self):
-        self._thread = threading.Thread(target=self._run, name="spi-consumer", daemon=True)
-        self._thread.start()
-
-    def snapshot(self):
-        with self._lock:
-            return dict(seq=self.last_seq, mic=self.last_mic, accel=self.last_accel,
-                        meta=self.last_meta, frames_ok=self.frames_ok,
-                        frames_dup=self.frames_dup, frames_dropped=self.frames_dropped,
-                        crc_fail=self.crc_fail, arm_gap=self.arm_gap)
+# .cache/ sits alongside python/ (a sibling, not underneath it) and is the
+# one directory deploy.sh/run.sh both preserve across deploys/restarts
+# (base-station/.gitignore already ignores it, same as run.sh's own venv
+# cache) -- registry.json/history.db/models/*.pt must live here, not under
+# python/, since deploy.sh wipes every other top-level entry on each deploy.
+DEFAULT_DATA_DIR = os.path.join(os.path.dirname(_PYTHON_DIR), ".cache", "data")
 
 
-def _peak(bins):
-    idx = max(range(len(bins)), key=lambda k: bins[k])
-    return idx, bins[idx]
+def build_gate_factory(threshold: float, debounce_frames: int):
+    def factory() -> MotorStateGate:
+        return MotorStateGate(threshold=threshold, debounce_frames=debounce_frames)
+    return factory
 
 
-_consumer = SpiConsumer()
-_consumer.start()
-_last = {"frames_ok": 0, "t": time.monotonic()}
-print("main: SPI fuser consumer started (chunked pull over /dev/spi-link.sock)", flush=True)
+def run_mqtt(host: str, port: int, on_frame, stop_event: threading.Event):
+    from mqtt_subscriber import MqttSubscriber
+
+    subscriber = MqttSubscriber(host, port, on_frame=on_frame)
+    subscriber.start()
+    stop_event.wait()
+    subscriber.stop()
 
 
-def loop():
-    time.sleep(SUMMARY_INTERVAL_S)
-    snap = _consumer.snapshot()
-    now = time.monotonic()
-    dt = now - _last["t"]
-    fps = (snap["frames_ok"] - _last["frames_ok"]) / dt if dt > 0 else 0.0
-    _last["frames_ok"] = snap["frames_ok"]
-    _last["t"] = now
+def wire_status_led_publishing(registry: Registry, host: str, port: int):
+    """Pushes a STATUS_LED command to a node's own `epm/<node_id>/cmd` topic
+    every time Registry.on_status_change fires for it, so a satellite node's
+    status LED always reflects what the dashboard currently shows without
+    ever polling the REST API. Returns the MqttPublisher so callers can
+    stop() it on shutdown."""
+    from mqtt_publisher import MqttPublisher
 
-    if snap["mic"] is None:
-        print(f"main: no frames yet (dropped={snap['frames_dropped']} "
-              f"crc_fail={snap['crc_fail']} arm_gap={snap['arm_gap']})", flush=True)
-        return
-    mic_fs, mic_fft, accel_fs, accel_fft = snap["meta"]
-    mi, mv = _peak(snap["mic"])
-    ai, av = _peak(snap["accel"])
-    print(f"main: seq={snap['seq']:5d} ~{fps:4.1f}fps  "
-          f"mic bin {mi:3d} (~{(mi+1)*mic_fs/mic_fft:5.0f}Hz) mag={mv:8.0f}  |  "
-          f"accel bin {ai:3d} (~{(ai+1)*accel_fs/accel_fft:4.0f}Hz) mag={av:8.1f}  "
-          f"[ok={snap['frames_ok']} dup={snap['frames_dup']} drop={snap['frames_dropped']} "
-          f"crc_fail={snap['crc_fail']}]", flush=True)
+    publisher = MqttPublisher(host, port)
+
+    def on_status_change(node_id: str, status) -> None:
+        led = color_for(status)
+        publisher.publish_status(node_id, led.rgb, led.mode, led.period_ms)
+
+    registry.on_status_change(on_status_change)
+    return publisher
 
 
-App.run(user_loop=loop)
+def main():
+    parser = argparse.ArgumentParser(description=__doc__,
+                                      formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--data-dir", default=DEFAULT_DATA_DIR,
+                         help="Directory for registry.json, history.db, models/ "
+                              "(default: base-station/.cache/data, survives redeploys)")
+    parser.add_argument("--host", default="0.0.0.0")
+    parser.add_argument("--port", type=int, default=8080,
+                         help="Single port serving REST, WebSocket (/ws), and the dashboard frontend")
+    parser.add_argument("--no-frontend", action="store_true",
+                         help="Don't serve the static dashboard (e.g. deploying it separately)")
+
+    parser.add_argument("--mqtt-host", default=None,
+                         help="Enable real MQTT satellite ingestion against this broker")
+    parser.add_argument("--mqtt-port", type=int, default=1883)
+
+    parser.add_argument("--gate-threshold", type=float, default=0.05,
+                         help="RMS energy threshold for running/stopped")
+    parser.add_argument("--gate-debounce-frames", type=int, default=3)
+    parser.add_argument("--status-debounce-frames", type=int, default=3)
+    parser.add_argument("--min-commission-frames", type=int, default=50)
+    args = parser.parse_args()
+
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
+
+    os.makedirs(args.data_dir, exist_ok=True)
+    models_dir = os.path.join(args.data_dir, "models")
+
+    registry = Registry(os.path.join(args.data_dir, "registry.json"))
+    history = HistoryStore(os.path.join(args.data_dir, "history.db"))
+    perf_monitor = PerformanceMonitor()
+
+    def on_score(node_id: str, timestamp: float, score: float, status) -> None:
+        # Mirrors on_frame's "spectrum" broadcast below -- pushes every
+        # scored frame to the dashboard immediately instead of leaving the
+        # anomaly timeline to be sampled off the periodic /nodes poll.
+        broadcast_threadsafe(app, {
+            "type": "anomaly",
+            "node_id": node_id,
+            "timestamp": timestamp,
+            "score": score,
+            "status": status.value,
+        })
+
+    gate_factory = build_gate_factory(args.gate_threshold, args.gate_debounce_frames)
+    manager = PipelineManager(
+        registry, gate_factory, perf_monitor=perf_monitor, history_store=history,
+        status_debounce_frames=args.status_debounce_frames, on_score=on_score)
+
+    commissioning = CommissioningController(
+        registry, models_dir, gate_factory, min_frames=args.min_commission_frames)
+
+    def on_frame(frame: SensorFrame) -> None:
+        manager.route(frame)
+        commissioning.feed_frame(frame)
+        broadcast_threadsafe(app, {
+            "type": "spectrum",
+            "node_id": frame.node_id,
+            "timestamp": frame.timestamp,
+            "channels": {channel: list(bins) for channel, bins in frame.bins.items()},
+        })
+
+    spi_consumer = SpiConsumer(on_frame=on_frame)
+
+    stop_event = threading.Event()
+    mqtt_thread = None
+    status_led_publisher = None
+    if args.mqtt_host:
+        mqtt_thread = threading.Thread(
+            target=run_mqtt, args=(args.mqtt_host, args.mqtt_port, on_frame, stop_event),
+            daemon=True)
+        status_led_publisher = wire_status_led_publishing(registry, args.mqtt_host, args.mqtt_port)
+
+    def start_ingestion() -> None:
+        # Called from create_app's lifespan, after app.state.loop is set --
+        # starting these any earlier lets on_frame's broadcast_threadsafe
+        # call race app startup and silently no-op (loop is None) for any
+        # frame that arrives before uvicorn's ASGI app actually starts.
+        spi_consumer.start()
+        if mqtt_thread is not None:
+            mqtt_thread.start()
+
+    app = create_app(registry, history, commissioning, manager=manager, perf_monitor=perf_monitor,
+                      on_startup=start_ingestion)
+
+    # Mounted after every REST/WebSocket route above is registered, so
+    # this catch-all static handler can never shadow them.
+    if not args.no_frontend:
+        app.mount("/", StaticFiles(directory=FRONTEND_DIR, html=True), name="frontend")
+
+    logger.info("Serving REST + WebSocket (/ws)%s on http://%s:%d",
+                "" if args.no_frontend else " + dashboard frontend", args.host, args.port)
+    try:
+        uvicorn.run(app, host=args.host, port=args.port, log_level="info")
+    finally:
+        logger.info("shutting down")
+        stop_event.set()
+        if status_led_publisher is not None:
+            status_led_publisher.stop()
+
+
+if __name__ == "__main__":
+    main()

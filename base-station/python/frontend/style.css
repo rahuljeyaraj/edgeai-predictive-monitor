@@ -1,0 +1,352 @@
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html, body {
+  height: 100%;
+}
+
+body {
+  background-color: #0f172a;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  height: 56px;
+  padding: 0 24px;
+  background-color: #1e293b;
+  border-bottom: 1px solid #334155;
+}
+
+.topbar__title {
+  color: #f1f5f9;
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 18px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+/* ---------------------------------------------------------------------
+   Fleet status summary tiles
+   Color meaning follows docs/EPM_Dashboard_Redesign_Spec.md S2 (ISA-101):
+   emerald = healthy, amber = warning, crimson = fault. New/Paused/Offline
+   aren't health states, so they get distinct non-health colors -- these
+   are meant to also match the device's physical RGB status LED.
+   --------------------------------------------------------------------- */
+
+.summary {
+  padding: 24px;
+}
+
+.summary__row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(100px, 140px));
+  gap: 14px;
+  justify-content: center;
+}
+
+.tile {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 14px 16px;
+  background-color: #1e293b;
+  border: 3px solid var(--accent);
+  border-radius: 10px;
+}
+
+.tile__count {
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-variant-numeric: tabular-nums;
+  font-size: 34px;
+  font-weight: 700;
+  line-height: 1;
+  color: var(--accent);
+}
+
+.tile__label {
+  font-size: clamp(10px, 3vw, 12px);
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  color: #94a3b8;
+  white-space: nowrap;
+  letter-spacing: 0.01em;
+}
+
+:root {
+  --color-all: #e2e8f0;
+  --color-healthy: #10b981;
+  --color-warning: #f59e0b;
+  --color-fault: #ef4444;
+  --color-new: #22d3ee;
+  --color-paused: #717171;
+  --color-offline: #4d4d4d;
+}
+
+.tile--all { --accent: var(--color-all); }
+.tile--healthy { --accent: var(--color-healthy); }
+.tile--warning { --accent: var(--color-warning); }
+.tile--fault { --accent: var(--color-fault); }
+.tile--new { --accent: var(--color-new); }
+.tile--paused { --accent: var(--color-paused); }
+.tile--offline { --accent: var(--color-offline); }
+
+@media (max-width: 380px) {
+  .summary__row {
+    grid-template-columns: repeat(auto-fit, minmax(90px, 1fr));
+    gap: 10px;
+  }
+
+  .tile {
+    padding: 12px;
+  }
+
+  .tile__count {
+    font-size: 28px;
+  }
+}
+
+/* ---------------------------------------------------------------------
+   Asset list -- one row per registered node. Row outline color reuses
+   the same --color-* variables as the summary tiles, so the two stay
+   visually linked (a red-outlined row is a Faulty row is a red tile).
+   --------------------------------------------------------------------- */
+
+.fleet {
+  padding: 0 24px 24px;
+}
+
+.fleet__header {
+  display: flex;
+  align-items: center;
+  padding-bottom: 12px;
+}
+
+.fleet__title {
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 14px;
+  font-weight: 700;
+  color: #cbd5e1;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.fleet__list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.fleet__empty {
+  color: #64748b;
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 13px;
+  padding: 16px 0;
+}
+
+.motor-row-group--healthy { --accent: var(--color-healthy); }
+.motor-row-group--warning { --accent: var(--color-warning); }
+.motor-row-group--fault { --accent: var(--color-fault); }
+.motor-row-group--new { --accent: var(--color-new); }
+.motor-row-group--paused { --accent: var(--color-paused); }
+.motor-row-group--offline { --accent: var(--color-offline); }
+
+.motor-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px 20px;
+  padding: 14px 18px;
+  background-color: #1e293b;
+  border: 2px solid var(--accent);
+  border-radius: 10px;
+  cursor: pointer;
+}
+
+/* Squares off the bottom edge so the detail panel below reads as part
+   of the same card rather than a separate floating box. */
+.motor-row--expanded {
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+}
+
+.motor-row__main {
+  display: grid;
+  grid-template-columns: minmax(0, 180px) 150px;
+  align-items: center;
+  gap: 8px 18px;
+  min-width: 0;
+  flex: 1 1 320px;
+}
+
+.motor-row__name {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 15px;
+  font-weight: 600;
+  color: #f1f5f9;
+  cursor: pointer;
+  border-bottom: 1px dashed transparent;
+}
+
+.motor-row__name:hover {
+  border-bottom-color: #64748b;
+}
+
+.motor-row__name-input {
+  font: inherit;
+  color: #f1f5f9;
+  background-color: #0f172a;
+  border: 1px solid #334155;
+  border-radius: 4px;
+  padding: 1px 6px;
+  width: 100%;
+  max-width: 180px;
+}
+
+.motor-row__status {
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-variant-numeric: tabular-nums;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--accent);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.motor-row__actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+
+.motor-row__detail {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 28px;
+  padding: 12px 18px;
+  background-color: #0f172a;
+  border: 2px solid var(--accent);
+  border-top: none;
+  border-radius: 0 0 10px 10px;
+}
+
+.motor-row__detail-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.motor-row__detail-label {
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 10px;
+  font-weight: 600;
+  color: #64748b;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.motor-row__detail-value {
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-variant-numeric: tabular-nums;
+  font-size: 13px;
+  color: #e2e8f0;
+}
+
+/* ---------------------------------------------------------------------
+   Per-asset live charts (charts.js) -- anomaly timeline + waterfall(s)
+   share a zoomable time axis; the live-spectrum group below has zoom
+   disabled. flex-basis 100% forces this block onto its own line below
+   the two text detail-items above, regardless of available row width.
+   --------------------------------------------------------------------- */
+
+.motor-row__charts {
+  flex: 1 1 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.chart-slot {
+  width: 100%;
+  min-height: 160px;
+}
+
+.chart-plotly {
+  width: 100%;
+}
+
+.btn-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  background-color: #334155;
+  color: #e2e8f0;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  flex: 0 0 auto;
+}
+
+.btn-icon:hover:not(:disabled) {
+  background-color: #475569;
+}
+
+.btn-icon:disabled {
+  color: #475569;
+  cursor: not-allowed;
+}
+
+.btn-icon--danger:hover:not(:disabled) {
+  background-color: #7f1d1d;
+  color: #fecaca;
+}
+
+/* Record: tinted red (only while enabled) to read as "start capturing
+   data" at a glance, matching the record-dot convention. */
+.btn-icon--record:not(:disabled) {
+  color: #ef4444;
+}
+
+.btn-icon--record:not(:disabled):hover {
+  background-color: #7f1d1d;
+  color: #fecaca;
+}
+
+.btn-icon--done {
+  color: var(--color-healthy);
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.btn-icon--spin svg {
+  animation: spin 1s linear infinite;
+  transform-origin: 50% 50%;
+}
+
+@media (max-width: 640px) {
+  .motor-row__main {
+    grid-template-columns: minmax(0, 120px) 130px;
+  }
+
+  .motor-row__actions {
+    flex-basis: 100%;
+    justify-content: flex-end;
+    flex-wrap: wrap;
+  }
+}

@@ -1,0 +1,4 @@
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch
+psutil
+python-statemachine==3.2.0

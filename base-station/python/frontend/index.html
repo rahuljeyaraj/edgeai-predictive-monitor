@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>EdgeAI Predictive Monitor</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="topbar">
+    <h1 class="topbar__title">EdgeAI Predictive Monitor</h1>
+  </header>
+
+  <section class="summary" aria-label="Fleet status summary">
+    <div class="summary__row" id="summary-row"></div>
+  </section>
+
+  <section class="fleet" aria-label="Asset list">
+    <div class="fleet__header">
+      <h2 class="fleet__title">Assets</h2>
+    </div>
+    <div class="fleet__list" id="fleet-list"></div>
+  </section>
+
+  <script src="vendor/plotly-cartesian.min.js"></script>
+  <script src="charts.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
