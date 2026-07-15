@@ -94,14 +94,15 @@
       <h2>Motor 1 · X</h2>
       <div class="sub">STEP D2 · DIR D5</div>
       <div class="readout"><span id="rpm1">0</span> <small>RPM</small></div>
-      <input id="slider1" type="range" min="-300" max="300" step="5" value="0" />
-      <div class="ticks"><span>-300</span><span>0</span><span>+300</span></div>
+      <input id="slider1" type="range" min="-1200" max="1200" step="10" value="0" />
+      <div class="ticks"><span>-1200</span><span>0</span><span>+1200</span></div>
       <div class="quick" data-motor="1">
         <button data-rpm="0">0</button>
         <button data-rpm="60">60</button>
         <button data-rpm="90">90</button>
         <button data-rpm="120">120</button>
         <button data-rpm="180">180</button>
+        <button data-rpm="1200">max</button>
         <button data-rpm="-90">rev</button>
       </div>
     </div>
@@ -111,14 +112,15 @@
       <h2>Motor 2 · Y</h2>
       <div class="sub">STEP D3 · DIR D6</div>
       <div class="readout"><span id="rpm2">0</span> <small>RPM</small></div>
-      <input id="slider2" type="range" min="-300" max="300" step="5" value="0" />
-      <div class="ticks"><span>-300</span><span>0</span><span>+300</span></div>
+      <input id="slider2" type="range" min="-1200" max="1200" step="10" value="0" />
+      <div class="ticks"><span>-1200</span><span>0</span><span>+1200</span></div>
       <div class="quick" data-motor="2">
         <button data-rpm="0">0</button>
         <button data-rpm="60">60</button>
         <button data-rpm="90">90</button>
         <button data-rpm="120">120</button>
         <button data-rpm="180">180</button>
+        <button data-rpm="1200">max</button>
         <button data-rpm="-90">rev</button>
       </div>
     </div>
@@ -129,13 +131,14 @@
     <h2>Both motors</h2>
     <div class="sub">Master speed &amp; demo presets</div>
     <div class="readout"><span id="rpmB">0</span> <small>RPM (both)</small></div>
-    <input id="sliderB" type="range" min="-300" max="300" step="5" value="0" />
-    <div class="ticks"><span>-300</span><span>0</span><span>+300</span></div>
+    <input id="sliderB" type="range" min="-1200" max="1200" step="10" value="0" />
+    <div class="ticks"><span>-1200</span><span>0</span><span>+1200</span></div>
     <div class="presets" style="margin-top:16px;">
       <span class="label">Presets:</span>
       <button data-preset="baseline">Baseline (b 90)</button>
       <button data-preset="beat">Beat (120 / 90)</button>
       <button data-preset="fault">Fault (m1→220)</button>
+      <button data-preset="max">Max RPM (b 1200)</button>
       <button class="ghost" data-preset="enable">Enable</button>
       <button class="ghost" data-preset="status">Status</button>
     </div>
@@ -156,7 +159,7 @@
 <script>
 "use strict";
 
-const RPM_MAX = 300;
+const RPM_MAX = 1200;  // full-step ceiling (jumpers removed) — matches firmware RPM_MAX
 const SEND_THROTTLE_MS = 80;   // rate-limit slider spam to the serial link
 
 let port = null, writer = null, reader = null, keepReading = false;
@@ -306,6 +309,7 @@ const presets = {
   baseline() { m1.set(90); m2.set(90); mB.set(90); sendCmd("e"); sendCmd("b 90"); },
   beat()     { m1.set(120); m2.set(90); sendCmd("1 120"); sendCmd("2 90"); },
   fault()    { m1.set(220); m2.set(90); sendCmd("1 220"); sendCmd("2 90"); },
+  max()      { m1.set(1200); m2.set(1200); mB.set(1200); sendCmd("e"); sendCmd("b 1200"); },
   enable()   { sendCmd("e"); },
   status()   { sendCmd("s"); },
 };
