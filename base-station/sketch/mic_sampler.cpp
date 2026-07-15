@@ -82,13 +82,16 @@
  * process, re-arm), not double-buffered/circular, so samples produced while
  * the FFT runs between blocks are dropped - the same effective behaviour as
  * the old repo's mem-slab-queue boundary, and fine for a spectrum view.
- * Because the thread now k_msleep()s while GPDMA1 fills each block instead of
- * busy-polling DR, it no longer occupies the CPU per block and no longer has
- * to sit below Bridge/the display threads to avoid starving them (see
- * MIC_SAMPLER_THREAD_PRIORITY's comment) - the priority is left at 7 only to
- * keep this change scoped. A rare Bridge RPC or rgb_display.cpp irq_lock()
- * window overlapping a block can still cost a dropped block (caught as a
- * timeout, counted in get_mic_info), which just re-arms on the next pass.
+ * The thread BUSY-POLLS (k_busy_wait, not k_msleep) while GPDMA1 fills each
+ * block: a WFI idle between polls let the SAI RX FIFO overrun and OVR-latch
+ * the DMA dead mid-block (docs/progress2.md 6.3/6.4). Staying in run-mode keeps
+ * the DMA fed, at the cost of ~21ms of CPU per block - so, like the original
+ * DR busy-poll, this thread MUST sit below Bridge/the display threads (priority
+ * 7) so it can't starve them; only loop()/idle (priority 14) is starved while
+ * the mic streams (see MIC_SAMPLER_THREAD_PRIORITY's comment). A rare Bridge
+ * RPC or rgb_display.cpp irq_lock() window overlapping a block can still cost a
+ * dropped block (caught as a timeout, counted in get_mic_info), which just
+ * re-arms on the next pass.
  *
  * Bridge exposure is also necessarily different from the old repo, which
  * never had one: the old repo's mic_sampler_thread only ever produced a
@@ -348,11 +351,22 @@ static void mic_sampler_init_sai(void) {
   SAI1_Block_A->CR1 = SAI_xCR1_MODE_0 /* Master RX */
                      | SAI_xCR1_DS_2   /* 16-bit data size */
                      | SAI_xCR1_DMAEN  /* generate DMA requests (drained by GPDMA1 ch2) */
+                     | SAI_xCR1_NODIV  /* no master-clock divider (I2S, no MCLK pin) - see below */
                      | (MIC_SAMPLER_MCKDIV << SAI_xCR1_MCKDIV_Pos);
-                     /* CKSTR=0 (falling edge), NODIV=0 (divider enabled), PRTCFG=0 (free
-                      * protocol - I2S hand-configured via FRCR/SLOTR above), LSBFIRST=0
-                      * (MSB first), SYNCEN=0 (async - this block generates its own clock),
-                      * MONO=0, OUTDRIV=0: all left at their reset (0) value. */
+                     /* NODIV MUST be 1 here (SAI_MASTERDIVIDER_DISABLE, per
+                      * stm32u5xx_hal_sai.c SAI_Init): only with NODIV=1 does the bit
+                      * clock come out as SAI_CK / (MCKDIV * (FRL+1)), which is the exact
+                      * relation MIC_SAMPLER_MCKDIV=25 was derived from (76.8MHz /
+                      * (96000*32) = 25). With NODIV=0 the hardware instead wants
+                      * MCKDIV = SAI_CK / (FS * (OSR+1) * 256), so MCKDIV=25 is nonsense
+                      * and - confirmed on hardware via SWD (docs/progress2.md) - the SAI
+                      * clock generator never starts at all: SR stays 0x0, the FIFO never
+                      * fills, and every DMA block times out (the mic served all-zero
+                      * spectra). Setting NODIV=1 makes SR report a filling FIFO (FREQ/FLVL
+                      * set) immediately. CKSTR=0 (falling edge), PRTCFG=0 (free protocol -
+                      * I2S hand-configured via FRCR/SLOTR above), LSBFIRST=0 (MSB first),
+                      * SYNCEN=0 (async - this block generates its own clock), MONO=0,
+                      * OUTDRIV=0, MCKEN=0 (no MCLK pin), OSR=0: all left at reset (0). */
 
   /* Enable SAI once and leave it streaming continuously - the capture thread
    * only re-arms the DMA channel per block, it never stops SCK. Stopping and
@@ -380,12 +394,14 @@ static volatile uint32_t mic_windows_completed = 0;
 
 /* --- GPDMA1-backed capture -----------------------------------------------
  * Each 2048-sample block is streamed SAI1_A->DR -> mic_capture_block[] by
- * GPDMA1 channel 2 (hardware request 36 = SAI1_A), and the capture thread
- * k_msleep()s while the DMA runs instead of busy-polling DR one sample at a
- * time. The CPU is free between blocks - the whole point of moving to DMA
- * (see this file's header comment) - so, unlike the old busy-poll, this thread
- * no longer starves lower-priority threads, and the loop() heartbeat runs
- * again while the mic streams.
+ * GPDMA1 channel 2 (hardware request 36 = SAI1_A). GPDMA moving the whole block
+ * is still the point (vs the old per-sample DR read + FFT), but the thread now
+ * BUSY-POLLS the channel (k_busy_wait) rather than k_msleep()ing between checks:
+ * a WFI idle between polls let the SAI RX FIFO overrun and OVR-latch the DMA
+ * dead mid-block (docs/progress2.md 6.3/6.4). So this thread does occupy the CPU
+ * while a block fills and, like the pre-DMA busy-poll, must stay below Bridge/
+ * the display threads (priority 7) to avoid starving them; only loop()/idle
+ * (priority 14) is starved while the mic streams.
  *
  * This exact sequence is the one proven on hardware by the mic_dma_probe /
  * mic_dma_sai_probe bring-up diagnostics: a GPDMA1 memory-to-memory self-test
@@ -401,20 +417,40 @@ static volatile uint32_t mic_windows_completed = 0;
  * maintenance, so DCache coherency isn't in play for this on-chip SRAM buffer. */
 #define MIC_DMA_CHANNEL LL_DMA_CHANNEL_2
 
-/* One block == MIC_FFT_LEN halfwords == ~21.3ms at 96kHz. k_msleep(2) between
- * completion checks -> ~11 wake-ups per block; 40 ticks (~80ms) is a generous
- * ceiling before declaring a timeout - bounded like the old poll loop, so a
- * SAI/DMA misconfiguration counts timeouts (visible in get_mic_info) instead
- * of hanging the thread. */
-#define MIC_DMA_WAIT_TICK_MS 2
-#define MIC_DMA_WAIT_TICKS 40
+/* One block == MIC_FFT_LEN halfwords == ~21.3ms at 96kHz. The wait loop below
+ * BUSY-POLLS (k_busy_wait, not k_msleep) while the block fills: on this
+ * SAI-RX/GPDMA path a WFI idle between polls lets the 8-word SAI RX FIFO
+ * overrun before the DMA services it (~83us to overrun at 96kHz vs a 2ms
+ * sleep), OVR latches, and OVR latching *halts the DMA requests* for the rest
+ * of the block - so a single missed servicing window kills the whole block and
+ * BNDT freezes (root-caused via live SWD, docs/progress2.md 6.3: a debug
+ * *halt*, i.e. forced run-mode, kept the DMA fed and every block completed; a
+ * live CLRFR write unstuck a frozen channel instantly). Staying in run-mode via
+ * a tight spin keeps the FIFO drained so OVR never latches.
+ *
+ * Cost: ~21ms of priority-7 spin per block (near-100% CPU while streaming).
+ * That's the same starvation shape the earlier k_msleep move was made to avoid,
+ * but it's now scoped safely by priority: mic is 7, BELOW Bridge(5)/fuser+
+ * spi_link(6)/accel+displays(3), all of which still preempt this spin, so only
+ * loop()/idle (CONFIG_MAIN_THREAD_PRIORITY=14, below 7) is starved - i.e. the
+ * heartbeat LED stops blinking while the mic streams, an accepted trade for a
+ * working capture (docs/progress2.md 6.4, option 1).
+ *
+ * 50us poll granularity -> promptly detects TC (minimal over-spin after the
+ * block completes); MIC_DMA_WAIT_TICKS * 50us == 80ms is a generous ceiling
+ * before declaring a timeout - bounded like the old poll loop, so a SAI/DMA
+ * misconfiguration counts timeouts (visible in get_mic_info) instead of
+ * spinning forever. */
+#define MIC_DMA_WAIT_TICK_US 50
+#define MIC_DMA_WAIT_TICKS 1600 /* 1600 * 50us == 80ms ceiling (unchanged) */
 
-/* Enable GPDMA1's run- and sleep-mode clocks. Sleep-mode (AHB1SMENR) is the
- * one that matters for the k_msleep()-paced wait below: the capture thread
- * idles the CPU (WFI) while the transfer is in flight, so the controller has
- * to stay clocked through idle or the block would never complete. GPDMA1 is
- * status="disabled" in stm32u5.dtsi, so nothing in the shipped App Lab image
- * is guaranteed to have enabled either clock for us. */
+/* Enable GPDMA1's run- and sleep-mode clocks. The wait below now busy-polls in
+ * run-mode (no WFI while a block is in flight - see MIC_DMA_WAIT_TICK_US), so
+ * the run-mode clock (AHB1ENR) is what carries the transfer; the sleep-mode
+ * enable (AHB1SMENR) is kept anyway (harmless, and covers any idle window that
+ * could still overlap the channel). GPDMA1 is status="disabled" in
+ * stm32u5.dtsi, so nothing in the shipped App Lab image is guaranteed to have
+ * enabled either clock for us. */
 static void mic_sampler_init_dma(void) {
   LL_AHB1_GRP1_EnableClock(LL_AHB1_GRP1_PERIPH_GPDMA1);
   RCC->AHB1SMENR |= RCC_AHB1SMENR_GPDMA1SMEN;
@@ -501,7 +537,7 @@ static bool mic_dma_capture_block(void) {
     if (LL_DMA_IsActiveFlag_DTE(GPDMA1, MIC_DMA_CHANNEL)) {
       break;
     }
-    k_msleep(MIC_DMA_WAIT_TICK_MS);
+    k_busy_wait(MIC_DMA_WAIT_TICK_US);
   }
 
   mic_last_sr = SAI1_Block_A->SR;
@@ -562,21 +598,24 @@ static String mic_get_info(void) {
 
 #define MIC_SAMPLER_THREAD_STACK_SIZE 2048
 /* MIC_SAMPLER_THREAD_PRIORITY (app_config.h) == 7 - kept below Bridge's
- * update thread (5) and the display threads (3). HISTORY: back when capture
- * was a never-yielding busy-poll of DR, priority 3 (matching the display
- * threads) hung the *entire* Bridge link the instant this thread started - a
- * same-or-higher-priority thread that never blocks starves Zephyr's
- * preemptive scheduler out of ever running Bridge again. The DMA capture
- * (mic_dma_capture_block) removes that constraint entirely: the thread now
- * k_msleep()s while GPDMA1 fills each block, so it yields regularly and
- * could safely run at priority 3. The value is left at 7 to keep this change
- * scoped to the DMA port; raising it is a separate, safe cleanup not yet
- * done. Consequence of the yield: the loop() heartbeat, which the old
- * busy-poll starved, blinks again while the mic streams.
+ * update thread (5) and the display threads (3). This IS load-bearing again:
+ * mic_dma_capture_block() busy-polls (k_busy_wait) the GPDMA channel for the
+ * ~21ms a block takes to fill, because a WFI idle between polls OVR-latches the
+ * SAI RX FIFO and stalls the DMA dead mid-block (docs/progress2.md 6.3/6.4). A
+ * thread that spins for 21ms at a time must sit below every thread that must
+ * stay responsive: at priority 3 (matching the display threads) or anything
+ * >= Bridge's 5, that spin starves Zephyr's preemptive scheduler out of ever
+ * running Bridge again - the exact whole-link hang the pre-DMA DR busy-poll
+ * caused. At 7 it can only starve loop()/idle (CONFIG_MAIN_THREAD_PRIORITY=14):
+ * Bridge(5), fuser+spi_link(6), accel+displays(3) all preempt it. Consequence:
+ * the loop() heartbeat LED stops blinking while the mic streams - an accepted
+ * trade for a working capture.
  *
- * setup() ordering: mic_sampler_start() no longer has to be called last -
- * see sketch.ino's setup() comment and docs/PROGRESS.md's 2026-07-14 entry
- * for the hardware verification of that specific claim. */
+ * setup() ordering: because this thread busy-spins above the main/setup thread
+ * (14), mic_sampler_start() MUST be called LAST in sketch.ino's setup() - once
+ * it's created, main can't run any _start() after it. (The interim GPDMA +
+ * k_msleep() version yielded and had lifted this requirement; the busy-poll
+ * reinstates it.) See sketch.ino's setup() comment. */
 
 static void mic_sampler_thread_entry(void *p1, void *p2, void *p3) {
   ARG_UNUSED(p1);

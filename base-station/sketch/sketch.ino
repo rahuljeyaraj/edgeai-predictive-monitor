@@ -17,15 +17,9 @@
 
 void setup() {
   pinMode(LED_BUILTIN, OUTPUT);
-  /* mic no longer has to run last. It used to: its capture thread was a
-   * never-yielding busy-wait at a priority above this main/setup thread
-   * (CONFIG_MAIN_THREAD_PRIORITY=14), so it starved setup()/loop() the instant
-   * it was created. Capture moved to GPDMA1 (mic_sampler.cpp) - the thread now
-   * k_msleep()s between blocks and yields, so the constraint is gone. */
   matrix_display_start();
   rgb_display_start();
   accel_sampler_start();
-  mic_sampler_start();
   bench_start();
   /* spi_link_start() registers the "spi_arm"/"get_spi_link_stats" Bridge
    * providers and brings up SPI3-slave + GPDMA1 (spi_link.cpp) - MUST come
@@ -48,6 +42,21 @@ void setup() {
    * Bridge.notify at 115200 baud that starved mic/spi_link/loop() (4.8). Staging
    * is a sub-1ms non-blocking memcpy+CRC, so nothing here floods anything. */
   fuser_start();
+
+  /* mic_sampler_start() MUST be LAST. Its capture thread busy-polls the GPDMA
+   * channel (k_busy_wait) for the ~21ms each block takes to fill - a WFI idle
+   * between polls OVR-latches the SAI RX FIFO and stalls the DMA dead mid-block
+   * (docs/progress2.md 6.3/6.4, the bug #2 fix). At priority 7 that spin is
+   * above this main/setup thread (CONFIG_MAIN_THREAD_PRIORITY=14), so once the
+   * mic thread is created it starves setup() out of running anything after it -
+   * exactly the constraint the original DR busy-poll had, which the interim
+   * k_msleep()-DMA version had lifted. So every other provider (incl.
+   * spi_link/fuser above) must register before this call. Its own
+   * Bridge.provide()s run before the thread is created, so they still land.
+   * Consequence: the loop() heartbeat LED (priority 14) stops blinking while the
+   * mic streams - accepted (see MIC_SAMPLER_THREAD_PRIORITY). Bridge(5), fuser/
+   * spi_link(6), accel/displays(3) all still preempt the spin and stay live. */
+  mic_sampler_start();
 }
 
 void loop() {

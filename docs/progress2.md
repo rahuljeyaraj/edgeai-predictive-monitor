@@ -804,3 +804,184 @@ Transfer-side fix candidates if the residual-flush approach stalls:
   temporary `SPI_LINK_SELFTEST` scaffolding was reverted; the `sr/cr1/rem` diag
   remains (marked TEMP - remove once the transport is solid).
 - **mic/SAI** still broken (4.8 #3), independent of all this.
+
+## 6. Session 2026-07-15 (cont'd) - mic/SAI bug: TWO root causes; bug #1 (NODIV) FIXED, bug #2 (OVR-latch) ROOT-CAUSED
+
+Picked up the mic/SAI capture bug (§4.8 #3, §5.8 "mic mag=0"). Cracked it with
+**live SWD register read/write on the RUNNING target** (openocd mem-AP, no halt -
+the new unlock this session, extends §4.8's halt-based SWD). Two independent bugs
+were stacked; the first is fixed in source and deployed, the second is fully
+root-caused with the fix chosen but not yet implemented.
+
+### 6.1 Debugging method (extends §4.8's SWD)
+
+Same openocd invocation as §4.8 (`/opt/openocd/bin/openocd ... -f
+/opt/openocd/openocd_gpiod.cfg`, sudo `help100S`), but the decisive new technique
+was **reading and WRITING peripheral registers while the target runs** (`-c init`
+then `mdw`/`mww` with NO `halt`). This exposed the halt-vs-run difference that is
+the whole story of bug #2 (the DMA behaves completely differently when the core is
+halted vs running). Key register addresses (STM32U585):
+- SAI1_Block_A: base `0x40015400`; **CR1 `0x40015404`**, CR2 `0x40015408`, FRCR
+  `0x4001540C`, SLOTR `0x40015410`, **SR `0x40015418`**, **CLRFR `0x4001541C`**,
+  DR `0x40015420`.
+- GPDMA1 ch2 (mic RX): **CxCR `0x40020164`**, CxSR `0x40020160`, CxTR2(request)
+  `0x40020194`, **CxBR1/BNDT `0x40020198`**, CxSAR `0x4002019C`, CxDAR `0x400201A0`.
+- RCC `0x46020C00`: CR `+0x00`, PLL2CFGR `+0x2C`, PLL2DIVR `+0x3C`, AHB1ENR
+  `+0x88`, **APB2ENR `+0xA4`**, **AHB1SMENR `+0xB0`**, **APB2SMENR `+0xCC`**,
+  CCIPR2(SAI1SEL) `+0xE4`. (Note: earlier reads mislabeled 0xA8 as APB2SMENR - the
+  correct sleep-clock regs are 0xB0/0xCC.)
+
+### 6.2 Bug #1 - NODIV=0 (FIXED, deployed)
+
+`mic_sampler_init_sai()` computed `MIC_SAMPLER_MCKDIV=25` from the HAL's **NODIV=1**
+formula (`SAI_CK / (FS*(FRL+1))` = 76.8MHz/(96000*32) = 25, verified against
+`stm32u5xx_hal_sai.c` SAI_Init lines 541-577) but wrote **NODIV=0** in CR1
+(bit19 clear). With NODIV=0 the hardware instead wants `MCKDIV = SAI_CK /
+(FS*(OSR+1)*256)`, so MCKDIV=25 is nonsense and - confirmed on hardware - **the SAI
+clock generator never starts at all**: `SR=0x0` forever, FIFO never fills, every
+DMA block times out. This is why §4.8/§5.8 saw `mic mag=0`.
+
+Proven by SWD: on the running board `get_mic_info` showed `sr=0x0`; a live
+write of NODIV=1 into CR1 (`mww 0x40015404 0x019b0081`) made SR jump to
+**`0x50009`** (FLVL=full, FREQ set, OVRUDR set) - the SAI immediately started
+clocking and filling its FIFO.
+
+**Fix (in working tree, DEPLOYED):** added `| SAI_xCR1_NODIV` to the CR1 write in
+`mic_sampler.cpp` `mic_sampler_init_sai()`, with a long comment citing the HAL
+formula. After a clean deploy (push -> start -> router restart -> stop/start),
+`get_mic_info` reports `sr=0x50009` steadily (was `0x0`). **Bug #1 is genuinely
+fixed** - the SAI now produces data.
+
+### 6.3 Bug #2 - SAI RX overrun (OVR) latches and halts the DMA (ROOT-CAUSED, not yet fixed)
+
+With the SAI now producing, **the mic still times out** (`get_mic_info`:
+`sr=0x50009`, `timeouts` still climbing). Live SWD on the RUNNING target nailed it:
+- GPDMA1 ch2 is **enabled** (`CxCR=0x00c10001`, EN=1), request line correct
+  (`CxTR2=0x24`=36=SAI1_A), addresses correct (SAR=`0x40015420`=SAI DR,
+  DAR=SRAM incrementing).
+- But **`BNDT` is frozen** at ~4092 (started 4096 = MIC_FFT_LEN*2): only ~4 bytes
+  moved, then dead-stalled for 60ms+ while the **SAI FIFO stays full** (SR=0x50009,
+  OVRUDR set). The DMA drains **nothing**.
+- Under a debug **halt**, the same channel **free-runs** (watched BNDT count
+  4096->3358->2418 at ~96kHz) and drains the FIFO. Halt = forced run-mode keeps
+  the DMA perfectly fed; the FIFO never overruns; the block completes.
+
+**Decisive confirmation:** on the stuck running channel, a live `mww 0x4001541C 1`
+(clear OVRUDR via CLRFR) **immediately resumed the DMA** - SAI SR went
+`0x50009 -> 0x0` (FIFO drained) and BNDT started counting down (moved ~3880 bytes
+in 20ms). So **the SAI RX overrun latch gates the DMA requests**: the instant the
+DMA falls behind (the 8-word FIFO overruns in ~83us at 96kHz - one `k_msleep(2)`
+gap is 24x that), OVR latches and the rest of the block is unrecoverable. This is
+the **exact RX analog of §5.7's SPI-TX finding** ("UDR latches and halts the TX DMA
+requests") - answering §5.8's open question "Confirm whether UDR halts DMA requests
+on this SPI IP": **yes, the STM32U5 SAI/SPI FIFO IP latches under/overrun and stops
+DMA requests until the flag is cleared.**
+
+Why the DMA falls behind during normal run but not under halt is **not fully
+resolved**: the GPDMA (94KB/s is trivial) *should* keep up, and both `GPDMA1SMEN`
+(AHB1SMENR=0xffffffff) and `SAI1SMEN` (APB2SMENR=0xffffffff) are set so both should
+stay clocked in WFI sleep (CONFIG_PM is NOT in the firmware, so idle is plain WFI,
+not STOP - pm_policy locks would be no-ops). Yet BNDT never advances across 30ms of
+normal running (which includes other threads' awake windows), so the channel is
+truly OVR-latched-dead, not merely WFI-paused. Working model: during the mic
+thread's `k_msleep(2)` the GPDMA effectively isn't servicing the SAI request long
+enough for the FIFO to overrun once, and then OVR kills it. (spi_link survives the
+same IP because the MPU's continuous `spi_arm` RPC keeps waking the MCU, and its
+512B chunks are small enough to finish inside an awake window.)
+
+### 6.4 Fix options for bug #2 (decision pending - START HERE next session)
+
+The mechanism is "keep the DMA fed so the SAI FIFO never overruns even once."
+Ranked candidates:
+1. **Busy-poll the transfer** (replace the `k_msleep(2)` in
+   `mic_dma_capture_block()`'s wait loop with a `k_busy_wait`/tight spin so the CPU
+   stays in run-mode). Proven to work (halt = run-mode = completes). Simplest,
+   highest-confidence. Cost: ~21ms of prio-7 spin per block starves loop()/idle
+   (the very regression §-header's k_msleep move fixed) - but Bridge(5),
+   fuser/spi_link(6), accel/displays(3) all still preempt. Check the Arduino
+   `loop()` thread priority before accepting this. **Recommended first try.**
+2. **Word-width (32-bit) DMA + higher SAI FIFO threshold** (the §5.7 lever that
+   fixed the SPI-TX throughput) so the DMA moves 4 bytes/txn and keeps ahead with
+   margin. May reintroduce §5.7's FIFO-sync issues; RX may be cleaner than TX.
+3. **Continuous circular double-buffered DMA** (arm once, never stop) - removes the
+   per-block re-arm gap. But if the DMA truly pauses in WFI it would still overrun;
+   needs the WFI question (above) resolved first.
+4. **Periodically clear OVRUDR mid-wait** - rejected: an overrun means lost samples
+   and byte-misaligned slots, so the recovered block would be corrupt.
+
+### 6.5 Board + tree state at session end
+
+- **Board:** running the **NODIV=1 firmware** (bug #1 fix deployed). SAI produces
+  data (`sr=0x50009`) but the mic DMA still times out (bug #2 unfixed), so mic
+  spectra are still functionally zeros for now. Bridge/fuser/SPI transport all
+  HEALTHY (unaffected by this work). A transient live `CLRFR` write was made during
+  testing - harmless, re-latches on the next overrun; not persisted.
+- **Tree:** one uncommitted change this session - `base-station/sketch/mic_sampler.cpp`
+  (the NODIV=1 fix + comment). The §5.8 fuser-onto-SPI work is already committed
+  (HEAD = `69fe75b`). Nothing else touched.
+- **Next session:** implement a bug-#2 fix from §6.4 (try #1 busy-poll first),
+  redeploy, and verify `timeouts` stops climbing + `mic_windows_completed` advances
+  + fuser mic magnitudes track live sound. Then commit both fixes together.
+
+## 6.6 Session 2026-07-15 (cont'd) - bug #2 busy-poll fix DONE; mic capturing live audio
+
+Implemented §6.4 option 1 (busy-poll, "recommended first try") and verified on
+hardware. **The mic now captures live audio** - windows complete continuously and
+the spectra track sound, where before (bug #2) every block timed out and the mic
+served zeros.
+
+### What changed (in the working tree, this is the commit)
+- **`mic_sampler.cpp` - the wait loop in `mic_dma_capture_block()` now busy-polls.**
+  `k_msleep(MIC_DMA_WAIT_TICK_MS=2)` between completion checks -> `k_busy_wait(
+  MIC_DMA_WAIT_TICK_US=50)`. Staying in run-mode (no WFI idle between polls) keeps
+  the GPDMA feeding the SAI RX FIFO so OVR never latches - the exact "halt = forced
+  run-mode = block completes" behaviour from §6.3, now the steady state. The 80ms
+  timeout ceiling is unchanged (1600 * 50us). Comments across the file
+  (header, GPDMA section, init_dma, priority block) updated: the interim k_msleep-DMA
+  version's "thread yields, so priority/ordering no longer load-bearing" claims are
+  reversed - the busy-poll reinstates them.
+- **`sketch.ino` - `mic_sampler_start()` moved back to LAST in `setup()`.** REQUIRED,
+  not cosmetic: the capture thread (priority 7) now busy-spins ~21ms/block above the
+  main/setup thread (`CONFIG_MAIN_THREAD_PRIORITY=14`), so once it's created main
+  can't run any `_start()` after it. Left in its old 4th-of-7 slot it would have
+  starved `bench`/`spi_link`/`fuser` out of ever registering. This restores the
+  ordering discipline the original DR busy-poll needed (the interim DMA+k_msleep
+  version had lifted it). mic's own `Bridge.provide()`s run before the thread is
+  created, so they still land.
+- The NODIV=1 fix (§6.2, bug #1) rides in the same `mic_sampler.cpp` change and is
+  committed together, as §6.5 planned.
+
+### Verified on hardware (fresh deploy: push -> app start -> router restart -> app start)
+- **`mic_windows_completed` advances continuously:** ~23 windows/s sustained
+  (`mic_win` 2455 -> 2687 over 10s; `mic_fps`≈23), vs the ~47/s theoretical max
+  (rest is the per-block 2048-pt FFT time). Before this fix it was frozen at 0.
+- **Spectra track live sound:** `get_mic_spectrum`'s 32 bins are non-zero, real
+  audio shape (energy concentrated in low bins, decaying up), and vary/track sound
+  level read-to-read (peak bin swung 17515 -> 43443, sum 51k -> 102k as ambient
+  level rose). A frozen/dead capture reads identical or zero every call - this is
+  live. SAI `sr=0x50009` (FLVL=full, FREQ, OVR-latched-post-block as expected).
+- **Link + pipeline healthy throughout:** Bridge answered every RPC; fuser streaming
+  to SPI (`fus_fps`≈15.6, `fus_ovr=0`, `fus_frm` climbing); accel advancing. The
+  busy-poll starves only `loop()`/idle (heartbeat LED stops blinking while the mic
+  streams) - the accepted §6.4 trade; everything at priority <= 6 still preempts it.
+
+### Residual (NOT the bug, a minor imperfection - candidate for later tightening)
+`mic_to` still climbs slowly, ~1.8/s (~8% of blocks). Since OVR-latch *halts* the
+DMA for the rest of a block (§6.3), these are blocks that hit an unrecoverable
+mid-block overrun and the 80ms ceiling correctly abandons them (a stalled block can
+never complete, so waiting longer only wastes spin). Likely brief GPDMA1 port
+contention with spi_link's TX channel (both on ALLOCATED_PORT0) or the SPI/accel
+preemption windows. Capture went from 0% to ~92% of blocks with live audio, which
+resolves bug #2; driving the last ~8% to zero is a separate optimization (§6.4
+option 2 word-width RX DMA, or splitting the GPDMA src/dest across both ports),
+not required for a working mic.
+
+### Board + tree state at session end
+- **Board:** running the busy-poll + NODIV=1 firmware. Mic capturing live audio
+  (~23 fps, spectra tracking). Bridge/fuser/SPI transport HEALTHY. Heartbeat LED
+  intentionally dark while streaming (busy-poll trade).
+- **Tree:** `mic_sampler.cpp` (NODIV + busy-poll) and `sketch.ino` (mic-last
+  reorder) committed together with this doc update. Both mic bugs (§6.2 #1, §6.3 #2)
+  are now fixed.
+- **Next:** re-run the extended UART stability monitor with the bulk stream off the
+  UART (plan task 6); optionally tighten the residual mic timeout rate (above).
