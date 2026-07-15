@@ -1,11 +1,12 @@
 /*
  * Sensor fusion / transport (port of the old repo's fuser_thread.c).
  * Reads the latest full-resolution mic + accel spectra, packs them into one
- * self-describing frame, and PUSHES it to the MPU over Bridge as a sequence of
- * binary chunks (Bridge.notify("spec_chunk", <msgpack bin>)) - not the old
- * poll/response model, and not the 32-bucket downsampled Bridge providers the
- * samplers expose for their standalone tests. See fuser.cpp's header comment
- * for the full rationale (why push, why chunked, why float32/full-res).
+ * self-describing frame, and hands it to the dedicated MCU<->MPU SPI transport
+ * (spi_link_stage_frame()) for the MPU to pull - NOT over the shared Bridge UART
+ * (which the old chunked notify stream recurringly wedged; docs/progress2.md),
+ * and not the 32-bucket downsampled Bridge providers the samplers expose for
+ * their standalone tests. See fuser.cpp's header comment for the full rationale
+ * (why SPI, why float32/full-res).
  */
 #pragma once
 

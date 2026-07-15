@@ -1,7 +1,6 @@
 /*
  * fuser / transport - port of the old repo's fuser_thread.c + frame_types.h
- * (spectrum_fused_payload) onto the App Lab Bridge, with one fundamental
- * transport difference forced by being back on App Lab.
+ * (spectrum_fused_payload) onto the App Lab structure.
  *
  * Each epoch (FUSER_EPOCH_MS) this samples-and-holds the latest full-resolution
  * mic + accel spectra (mic_copy_full_spectrum()/accel_copy_full_spectrum() -
@@ -9,40 +8,32 @@
  * 32-bucket get_*_spectrum Bridge views), packs them into one self-describing
  * frame (a fuser_frame_header mirroring the old repo's
  * spectrum_fused_payload_header, then mic_bin_count float32s, then
- * accel_bin_count float32s), and pushes that frame to the MPU.
+ * accel_bin_count float32s), and hands that frame to the SPI transport.
  *
- * The push, not the frame layout, is what differs from the old repo. That repo
- * owned a dedicated raw UART and sent the whole ~4KB frame via one
- * transport_send() over its own wire protocol. This repo has exactly one
- * MCU<->MPU link - Serial1<->ttyHS1, owned by arduino-router, shared with every
- * other Bridge provider - and a hard 256-byte per-message RPClite ceiling, so
- * the frame cannot go out as one message. Instead it is split into
- * FUSER_CHUNK_DATA-byte slices, each sent fire-and-forget as
- * Bridge.notify("spec_chunk", <msgpack bin>) with a small header
- * (magic | frame_seq | chunk_idx | chunk_count) so the MPU side
- * (Bridge.provide "spec_chunk") reassembles frames by seq and drops partial
- * ones on a seq jump (lossy = correct for a live view). A poll/response model
- * would instead stall the shared write mutex on every call.
+ * Transport = the dedicated MCU<->MPU SPI bus (spi_link.{h,cpp}), NOT the shared
+ * Bridge UART. This is the fix documented in docs/progress2.md ("THE NEXT
+ * CHANGE"): the old repo owned a dedicated raw UART and sent the whole ~4 KB
+ * frame in one transport_send(); this project's single MCU<->MPU UART is shared
+ * with every Bridge provider and its continuous notify stream recurringly
+ * wedged the router's msgpack framer (section 2). So the frame no longer goes
+ * over Bridge at all - fuser just calls spi_link_stage_frame(), which wraps it
+ * (framing header + CRC32) and holds it as the latest pending frame; the MPU
+ * pulls it over SPI on its own schedule via the "spi_arm" RPC (spi_link.cpp).
+ * This thread's only job is to keep a fresh frame staged at the epoch rate; the
+ * actual transfer is DMA-driven and owned by spi_link.
  *
  * float32 is kept (not quantized): the MPU consumer is the autoencoder
  * inference pipeline, whose features are these exact magnitudes, so any
- * quantization would inject noise into the model input. The UART baud was
- * raised to 1 Mbaud for a while to carry this stream, but that's since been
- * reverted (BRIDGE_BAUD, app_config.h) - baud was never the actual bottleneck,
- * the link's recurring wedge is a msgpack framing desync independent of baud
- * (docs/progress2.md section 2). The real fix in progress is moving this
- * stream off the UART entirely onto the dedicated MCU<->MPU SPI bus
- * (spi_link.{h,cpp}, docs/progress2.md "THE NEXT CHANGE").
- *
- * The chunked binary-push transport was validated on hardware first (a
- * synthetic-pattern probe stage, since replaced by this real assembler):
- * zero corruption / zero drops streaming the full ~4KB-frame load.
+ * quantization would inject noise into the model input. SPI has ample bandwidth
+ * for full float32 (docs/progress2.md decision 1), so unlike the old UART path
+ * there's no byte-pressure motive to prescale.
  */
 #include "fuser.h"
 
 #include "accel_sampler.h"
 #include "app_config.h"
 #include "mic_sampler.h"
+#include "spi_link.h"
 
 #include <Arduino_RouterBridge.h>
 #include <zephyr/kernel.h>
@@ -58,16 +49,6 @@
  * (MIC_FFT_BIN_COUNT / ACCEL_FFT_BIN_COUNT, app_config.h); the runtime counts
  * from the accessors are asserted against this. */
 #define FUSER_MAX_BINS 512
-
-/* Chunk framing. 200-byte total chunk (5-byte header + 195 data) stays under
- * the 256-byte RPClite ceiling and the msgpack bin8 255-byte limit with room
- * to spare. chunk_count fits a u8 (a full 4112-byte frame is 22 chunks). */
-#define FUSER_CHUNK_TOTAL 200
-#define FUSER_CHUNK_HEADER 5
-#define FUSER_CHUNK_DATA (FUSER_CHUNK_TOTAL - FUSER_CHUNK_HEADER)
-
-/* Magic first byte of every chunk so the MPU side can sanity-check framing. */
-#define FUSER_FRAME_MAGIC 0xF5
 
 /* FUSER_THREAD_PRIORITY (app_config.h) == one below Bridge's own update
  * thread (5), NOT matching it as originally set. At equal priority (5) the
@@ -144,8 +125,6 @@ static void fuser_thread_entry(void *p1, void *p2, void *p3) {
   header.accel_fft_size = (uint16_t)accel_fft_size();
   header.accel_bin_count = (uint16_t)accel_bins;
 
-  uint16_t frame_seq = 0;
-
   /* Let setup() finish first. This thread (FUSER_THREAD_PRIORITY, app_config.h)
    * is created mid-setup() and would otherwise preempt the priority-14 setup()
    * thread and start flooding the link before the other modules' Bridge
@@ -157,11 +136,14 @@ static void fuser_thread_entry(void *p1, void *p2, void *p3) {
   k_msleep(FUSER_STARTUP_DELAY_MS);
 
   while (1) {
-    /* Fixed-period pacing: time the whole build+send below and sleep only the
-     * remainder of the epoch, so the frame rate is a true 1000/FUSER_EPOCH_MS
-     * (~15.6 fps) instead of (send_time + FUSER_EPOCH_MS). Sending 22 chunks
-     * takes ~21ms at 2 Mbaud, well under the 64ms budget; if a frame ever runs
-     * over budget it just yields instead of sleeping (never a negative sleep). */
+    /* Fixed-period pacing: time the whole build+stage below and sleep only the
+     * remainder of the epoch, so the production rate is a true 1000/FUSER_EPOCH_MS
+     * (~15.6 fps) instead of (build_time + FUSER_EPOCH_MS). Staging is just a
+     * couple of ~4KB memcpys + a CRC pass (well under 1ms), so this practically
+     * always sleeps; the over-budget path is kept only as a safety net. Note the
+     * MPU's actual pull rate (spi_arm) is independent of this - a slower puller
+     * just skips staged frames, a faster one re-reads the latest (lossy live
+     * view). */
     int64_t frame_start = k_uptime_get();
 
     /* Sample-and-hold: copy the latest published spectra (each mutex-guarded
@@ -181,28 +163,12 @@ static void fuser_thread_entry(void *p1, void *p2, void *p3) {
     pos += accel_bins * sizeof(float);
 
     size_t frame_len = pos;
-    uint8_t chunk_count =
-        (uint8_t)((frame_len + FUSER_CHUNK_DATA - 1) / FUSER_CHUNK_DATA);
 
-    /* Split into chunks and push each fire-and-forget. */
-    for (uint8_t chunk_idx = 0; chunk_idx < chunk_count; chunk_idx++) {
-      size_t off = (size_t)chunk_idx * FUSER_CHUNK_DATA;
-      size_t len = frame_len - off;
-      if (len > FUSER_CHUNK_DATA) len = FUSER_CHUNK_DATA;
-
-      MsgPack::bin_t<uint8_t> payload;
-      payload.resize(FUSER_CHUNK_HEADER + len);
-      payload[0] = FUSER_FRAME_MAGIC;
-      payload[1] = (uint8_t)(frame_seq & 0xFF);
-      payload[2] = (uint8_t)((frame_seq >> 8) & 0xFF);
-      payload[3] = chunk_idx;
-      payload[4] = chunk_count;
-      memcpy(&payload[FUSER_CHUNK_HEADER], &fuser_frame_buf[off], len);
-
-      Bridge.notify("spec_chunk", payload);
-    }
-
-    frame_seq++;
+    /* Hand the assembled frame to the SPI transport. It wraps the payload with
+     * its own framing header + CRC32, stamps a sequence number, and holds it as
+     * the latest pending frame for the MPU to pull over SPI (spi_link.cpp).
+     * Non-blocking: one mutex-guarded memcpy + CRC, no wire I/O on this thread. */
+    spi_link_stage_frame(fuser_frame_buf, (uint16_t)frame_len);
 
     int64_t elapsed = k_uptime_get() - frame_start;
 
@@ -220,15 +186,17 @@ static void fuser_thread_entry(void *p1, void *p2, void *p3) {
     if (elapsed < FUSER_EPOCH_MS) {
       k_msleep(FUSER_EPOCH_MS - elapsed);
     } else {
-      /* Over budget - MUST actually sleep, not k_yield(): k_yield() only
-       * yields to threads of the SAME priority, so a permanently-over-budget
-       * fuser (e.g. after the Bridge baud revert to 115200, where one
-       * ~4.3KB frame takes ~375ms > the 64ms epoch) became a busy loop at
-       * priority 6 that starved mic (7), spi_link (8) and loop()/setup()
-       * (14) forever - proven on hardware 2026-07-14 via SWD thread-state
-       * forensics (all three QUEUED-ready, never scheduled again; see
-       * docs/progress2.md 4.8). One tick of real sleep gives every
-       * lower-priority thread a scheduling window each frame. */
+      /* Over budget - MUST actually sleep, not k_yield(): k_yield() only yields
+       * to threads of the SAME priority, so a permanently-over-budget fuser
+       * would become a busy loop at priority 6 that starves mic (7), spi_link
+       * and loop()/setup() (14) forever. This bit us hard on the old UART
+       * transport, where the fuser spun inside Bridge.notify at 115200 baud
+       * (one ~4.3KB frame took ~375ms > the 64ms epoch) - proven on hardware
+       * 2026-07-14 via SWD thread-state forensics (docs/progress2.md 4.8). With
+       * the SPI transport staging is sub-1ms so this path realistically never
+       * triggers, but one tick of real sleep is the correct safety net
+       * regardless: it guarantees every lower-priority thread a scheduling
+       * window each frame. */
       k_msleep(1);
     }
   }

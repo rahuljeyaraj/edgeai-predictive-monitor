@@ -57,6 +57,18 @@ echo
 step "Installing python3-spidev (apt)"
 adb shell "echo '${SUDO_PW}' | sudo -S -p '' apt-get install -y python3-spidev"
 
+step "Raising spidev bufsiz (needed for the ~4.1KB fuser frame)"
+# spidev's default bufsiz is 4096 - one byte under our 4124-byte SPI frame, so
+# an unraised bufsiz rejects a full-frame SPI_IOC_MESSAGE with -EMSGSIZE (and
+# py-spidev's xfer2() has its own hardcoded 4096 cap besides - which is why the
+# daemon does the transfer via a raw single-message ioctl, see host/spi_bridge.py).
+# spidev is a loadable module here, so set the param via modprobe.d + reload.
+adb shell "echo '${SUDO_PW}' | sudo -S -p '' bash -c '
+  echo \"options spidev bufsiz=65536\" > /etc/modprobe.d/spidev.conf &&
+  (rmmod spidev 2>/dev/null || true) && modprobe spidev
+'"
+adb shell "cat /sys/module/spidev/parameters/bufsiz"
+
 step "Pushing ${DAEMON_DST} and ${UNIT_DST}"
 adb push "${DAEMON_SRC}" /tmp/spi_bridge.py >/dev/null
 adb push "${UNIT_SRC}" /tmp/spi-bridge.service >/dev/null

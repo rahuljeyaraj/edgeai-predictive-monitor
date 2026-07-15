@@ -534,3 +534,273 @@ side.
 2. Fix the real mic/SAI capture bug (see #3 above).
 3. Re-run the extended UART stability monitor with the bulk stream gone
    (plan task 6).
+
+## 5. Session 2026-07-15 - fuser ported onto SPI (code done); 4KB slave-TX underrun is the new blocker
+
+Implemented tasks 4-5 end-to-end in code. The software architecture works and
+is deployed; a **hardware/timing blocker remains**: the SPI3 slave cannot
+sustain a gapless ~4.1KB DMA-fed transfer - it underruns and only ~a handful of
+frames per thousand complete. Root cause narrowed but not yet fixed.
+
+### 5.1 What was built (all committed-worthy, in the working tree)
+
+- **`spi_link.{h,cpp}` - generalized from the 64-byte spike into a real frame
+  transport.** New `spi_link_stage_frame(payload, len)`: wraps the payload in a
+  minimal SPI framing header + CRC32 trailer and holds it as the latest
+  "pending" frame under a mutex. Wire frame (little-endian):
+  `[magic u32 = 0x46555331][seq u16][payload_len u16][payload...][crc32 u32 over
+  header+payload]`. CRC32 is the standard reflected/zlib variant (table built in
+  `spi_link_crc_init`), so the MPU verifies with a plain `zlib.crc32`. `spi_arm`
+  now serves the **latest staged frame** (copies pending -> DMA buffer,
+  variable-length TSIZE/DMA), replies `"<seq>,<total_len>"` (or `"empty"`/
+  `"busy"`). Two buffers (pending vs DMA source) so the fuser can stage while a
+  frame is still clocking. Stats string extended:
+  `checkpoint,staged,armed,completed,timeouts,errors,last_error_flags` +
+  (TEMP diag) `,sr=,cr1=,rem=`.
+- **`fuser.cpp` - transport swapped.** Dropped the `Bridge.notify("spec_chunk")`
+  chunking entirely; the thread now builds the same 4112-byte payload and calls
+  `spi_link_stage_frame()`. Full float32, sample-and-hold, epoch pacing all
+  unchanged. `fuser_start()` re-enabled in `sketch.ino`; priority/epoch comments
+  reconciled in `app_config.h` (fuser + spi_link coexist at prio 6, cooperative,
+  priority-inheriting mutex).
+- **`python/main.py` - the real SPI consumer** (background thread: `spi_arm` ->
+  socket read -> CRC/magic/seq verify -> decode header+spectra -> dedup by seq,
+  `loop()` prints a live fps/peak/health summary). `tests/spi_link_test.py`
+  rewritten for the SPI fuser frame; obsolete UART `tests/fuser_test.py` deleted.
+- **`host/spi_bridge.py` - two real fixes** (see 5.2): the transfer is now a
+  single raw `SPI_IOC_MESSAGE` ioctl (kernel bufsiz raised to 65536), and the
+  daemon catches all per-client exceptions so a bad request can't kill it.
+  `provision-spi.sh` now also installs `/etc/modprobe.d/spidev.conf`
+  (`bufsiz=65536`) - **this was set by hand on-device this session; the script
+  change makes it reproducible but has NOT been re-run through provision-spi.sh.**
+
+### 5.2 spidev/daemon fixes (needed before the MCU issue was even visible)
+
+- **spidev `bufsiz` (default 4096) < our 4124-byte frame.** The daemon's
+  `spi.xfer2([0]*4124)` first died with `OverflowError: Argument list size
+  exceeds 4096 bytes` and, being uncaught, crashed the daemon and removed the
+  socket (-> app-side `ENOENT`). Raised the kernel module param to 65536
+  (`/etc/modprobe.d/spidev.conf` + `rmmod/modprobe spidev`; spidev is a loadable
+  module here, `/dev/spidev0.0` auto-rebinds on reload).
+- **py-spidev has its OWN hardcoded 4096 cap on `xfer2`** independent of kernel
+  bufsiz (still `OverflowError` after raising bufsiz). Its `xfer3` splits into
+  multiple `SPI_IOC_MESSAGE` calls, each toggling CS - which would break the
+  MCU's single-CS-per-frame contract (TSIZE-bounded slave transfer; a mid-frame
+  NSS deassert aborts it). **Fix: do the transfer as ONE raw `SPI_IOC_MESSAGE`
+  ioctl** (`_SPI_IOC_MESSAGE_1 = 0x40206B00`, `struct spi_ioc_transfer` packed
+  as `"QQIIHBBBBBB"`), one CS assertion for the whole frame. Validated
+  standalone on the host: 4124 bytes in one transfer, `spi.fileno()` works.
+
+### 5.3 THE BLOCKER - SPI3 slave TX underruns on the 4KB frame (root cause narrowed)
+
+Symptom: with fuser enabled and streaming, `get_spi_link_stats` shows
+`completed` ~= 4 while `timeouts` climbs into the hundreds; the MPU reads the
+right length but wrong content (`bad_magic`, and the "magic" values decode to
+mic-magnitude floats -> the read is byte-shifted into the payload / mostly
+underrun zeros). The 64-byte spike (4.8) still worked 40/40; only the jump to
+4KB frames (and fuser being enabled) is new.
+
+Register truth (TEMP `sr/cr1/rem` diag added to `spi_link_wait_transfer`, read
+via `get_spi_link_stats`), captured at 1 MHz:
+`sr=0x907f, cr1=0x1, rem=~3600`.
+- `cr1=0x1` -> SPE=1 (SPI still enabled at capture, expected).
+- `sr=0x907f` decodes to RXP|TXP|DXP|**EOT**|TXTF|**UDR**|OVR|TXC set, **CTSIZE=0**.
+  i.e. the SPI clocked ALL 4124 frames (EOT, CTSIZE=0), TXP=1 (SPI still wants
+  data), and **UDR=1 (transmit underrun)**.
+- `rem=~3600` -> the GPDMA only moved ~500 of 4124 bytes before the master
+  finished and EOT cut it off. The other ~3600 clocked out as underrun zeros.
+
+So: the master (spidev/GENI) clocks the whole frame gaplessly in one window
+(measured 36 ms @ 1 MHz = ~8.7 us/byte, genuinely 1 MHz - not secretly faster),
+but the **GPDMA feeds TXDR far slower than the master consumes it** (~14 KB/s
+effective, ~70 us/byte), so most of the frame underruns and EOT then halts the
+DMA with `rem` still high.
+
+Clock-sweep (daemon `SPI_MAX_HZ`, reverted to 1 MHz afterwards) ruled out a
+simple rate story: 1 MHz -> ~500 B moved; 100 kHz -> ~3800 B; 50 kHz -> ~3200 B.
+Slowing the master does NOT reliably fix it and 50 kHz was *worse* than 100 kHz -
+consistent with "any single stall/underrun in the window kills the frame, and a
+longer transfer is exposed to more stalls," NOT "DMA just needs more time."
+
+`mic_sampler.cpp`'s GPDMA1-ch2 config is byte-for-byte the same shape (mirror
+direction) and worked; the only material deltas vs the working 64B spike are
+**(a) frame size 64 -> 4124 and (b) fuser now enabled** (extra threads + a 4KB
+memcpy+CRC every 64 ms, though its duty cycle is <1% so a *sustained* 14 KB/s
+throttle from fuser contention alone is hard to explain).
+
+### 5.4 The decisive next experiment (was mid-setup when paused)
+
+Isolate size vs fuser-contention: **disable `fuser_start()` and have `spi_link`
+self-stage one fixed 4112-byte pattern at start**, then read it repeatedly.
+- If `completed` climbs -> a 4KB transfer is fine on its own -> the fuser's
+  presence (bus contention / scheduling) is the cause -> fix by reducing
+  contention (e.g. move the CRC/memcpy off the hot path, dedicate an SRAM bank
+  for `spi_link_frame_buf`, or pace/lower fuser load).
+- If it still fails -> the underrun is intrinsic to the large DMA-fed slave
+  transfer -> fix on the transfer side (candidates below).
+
+A `SPI_LINK_SELFTEST` #define + a `// fuser_start()` toggle were half-added then
+reverted so the tree stays coherent; re-add them for this experiment. (The
+`sr/cr1/rem` TEMP diag in `spi_link.cpp` was LEFT IN - it's useful and marked.)
+
+### 5.6 Isolation experiment DONE - underrun is INTRINSIC to the 4KB transfer
+
+Ran the 5.4 experiment (2026-07-15): `SPI_LINK_SELFTEST 1` (spi_link self-stages
+one fixed 4112-B pattern), `fuser_start()` commented out, rebuilt/flashed.
+
+**Result: the 4KB transfer STILL underruns with the fuser fully disabled.**
+`completed=0`, `sr=0x907f` (UDR again), but the DMA got FURTHER before dying:
+`rem`≈2500-2800 (~1300-1600 B moved) vs ~500 B with the fuser on. So:
+- The underrun is **intrinsic to sustaining a gapless ~4KB DMA-fed slave TX** -
+  NOT caused by the fuser. The fuser only makes it worse (more bus contention ->
+  the DMA falls behind sooner: ~500 B vs ~1500 B before the fatal stall).
+- Mechanism (best model): the master (GENI) clocks the whole frame **gaplessly**
+  at 1 MHz; the GPDMA keeps pace for a while, then a momentary bus-contention
+  stall (CPU doing mic/accel FFTs, etc.) lets the 16-byte TX FIFO run dry; **UDR
+  latches and halts the TX DMA requests**, so that one underrun kills the whole
+  remaining frame (rem stuck). The stall interval scales with system load:
+  ~1 per ~1500 B (fuser off) to ~1 per ~500 B (fuser on).
+
+**Ruled out this session (no rebuild needed):**
+- `word_delay_usecs` in the SPI ioctl to add inter-byte gaps (would let the DMA
+  refill the FIFO between bytes): **the GENI master ignores it** - 4124 B took
+  ~33 ms at word_delay 0/10/30/60 µs alike. The master is inherently gapless.
+- Lowering SCK (100 kHz/50 kHz): does NOT help and 50 kHz was worse - a longer
+  transfer window is exposed to MORE stalls (5.3).
+
+**Also found:** spidev `bufsiz` does NOT survive a board power-cycle
+(`/etc/modprobe.d/spidev.conf` is applied too late - spidev auto-loads at boot
+before modprobe.d, comes up 4096). Manual `rmmod spidev; modprobe spidev` picks
+up the conf (65536). `provision-spi.sh` now writes the conf but that's not enough
+at boot - **make the daemon self-heal it** (spi-bridge.service `ExecStartPre` that
+reloads spidev with bufsiz before the daemon opens the fd), or use the kernel
+cmdline `spidev.bufsiz=`. The daemon's broad per-client `except` DID hold through
+the EMSGSIZE storm (it logged `[Errno 90] Message too long` and kept the socket).
+
+### 5.7 BREAKTHROUGH: word-width DMA fixes the underrun (throughput); a FIFO-sync desync remains
+
+The underrun was a **DMA throughput** problem: the byte-width GPDMA (1 byte per TX
+request) couldn't stay ahead of the gapless 1 MHz master. Fix that landed the
+completion:
+- **32-bit WORD-width TX DMA** (`spi_link_configure_dma`: `SRC/DEST_DATAWIDTH_WORD`,
+  buffers `__attribute__((aligned(4)))`) - a 32-bit write to `SPI3->TXDR` with
+  8-bit frames packs 4 bytes into the FIFO, so the DMA does 1/4 the bus
+  transactions. Our framing is always a multiple of 4.
+- **SPI FIFO threshold `TH_04DATA`** (was `TH_01DATA`) - required so TXP / the TX
+  DMA request fires only when >=4 slots are free, matching the word write. With
+  threshold 1 the DMA wrote a full word whenever >=1 slot was free, overran the
+  FIFO, and raced to a **false completion with no master clock** (verified: `armed`
+  and `completed` both incremented on a bare `spi_arm` with no socket read).
+
+**Result: `completed` == `armed`, `timeouts=0`, `errors=0`, `rem=0`, `sr=0x0`
+clean - the transfer now completes on real master clocks only. The gross underrun
+is solved.**
+
+**BUT the frame content is still wrong** (single-consumer, fuser off, SELFTEST
+ramp payload `0,1,2,...`): each read is missing the 8-byte header (magic never
+appears anywhere), the last 4 bytes are always zero (small tail underrun), and the
+read's start byte advances **exactly +28 every transfer** (0x54,0x70,0x8c,... ;
+4124 mod 256 = 28). So there's (a) an ~28-byte tail underrun still, and (b) an
+accumulating phase desync where the wire position isn't reset to `frame_buf[0]`
+per transfer - a stale-FIFO / SPI-transfer-state carry-over that `SPE=0` + the
+IFCR flag clears + `DMA ResetChannel` don't fully clear with word packing. The
+header (magic) never reaching the wire is the practical blocker.
+
+**Tried: full RCC APB3 SPI3 reset per disarm** (`spi_link_reset_spi()`, refactored
+`spi_link_configure_spi()` out of init_hw, called from `spi_link_wait_transfer`'s
+disarm). It made the **first transfer after a fresh boot byte-perfect** (magic +
+seq + len + ramp all correct - proof the whole path CAN deliver a clean frame),
+but did NOT fix subsequent transfers, and deeper measurement showed the
+corruption is **inconsistent and multi-layered**, not a single clean shift:
+- Some reads deliver a long valid ramp then underrun; one fresh transfer delivered
+  only 28 valid bytes (hdr + ramp 0..19) then jumped to `0x0c` and zeros. The
+  valid-length and start-offset vary run to run.
+- So there are several interacting failure modes at once: a tail/early underrun
+  whose onset varies, residual FIFO/word-ordering carry-over between transfers,
+  and word-packing alignment. `SPE=0`, IFCR clears, DMA ResetChannel, AND a full
+  RCC reset all together still don't make transfer N match transfer 0.
+
+**Assessment / decision needed:** the register-level word-DMA slave-TX path for a
+single ~4KB frame is a deep STM32U5-SPI-FIFO bring-up problem that likely needs a
+logic analyzer or live SWD register watching to finish (watching CTSIZE/BNDT/FIFO
+level during a transfer). The alternative is to **pivot to chunking**: 64-byte
+transfers were rock-solid (40/40, §4.8), so send the frame as a sequence of small
+CS-delimited sub-transfers the DMA can reliably deliver, reassembled on the MPU
+(byte-width DMA is fine at small sizes - no word-packing needed, no FIFO-residual
+problem). Cost: more sub-reads per frame -> lower fps, a chunk state machine on
+both ends, per-chunk CRC/retry. Given how solid the small path is, chunking is the
+lower-risk route to a working link; the word-DMA work stays valuable if we later
+want single-shot 4KB.
+
+### 5.8 RESOLVED - chunked pull works end to end (tasks 4-5 DONE)
+
+Pivoted to chunking (user's call). Reverted the word-DMA experiment back to
+**byte-width DMA** (rock solid for small transfers) and made `spi_arm(offset, len)`
+arm an arbitrary sub-range of the latched frame, so the MPU pulls each ~4.1KB
+frame as a sequence of small sub-transfers and reassembles + CRC-checks them.
+Chunk size is MPU-chosen (tunable without reflashing).
+
+Chunk-size sweep (SELFTEST ramp, fuser off): **512B = 20/20 CRC-OK in both runs,
+~8 fps** and was the reliable sweet spot; larger sizes were faster but flaky and
+non-monotonic (2048 hit 20/20 once, but 1536/1024/768 partially failed - the
+slave-TX underrun risk is probabilistic above ~512B). So `CHUNK_SIZE = 512` in
+`python/main.py`, with a whole-frame CRC retry (3x) that absorbs the rare bad
+chunk.
+
+**End-to-end on the real pipeline (fuser ON, SELFTEST off, real chunked
+main.py):** full-res float32 spectra flow MCU->SPI->MPU at **~6.5 fps, drop=0,
+crc_fail=0** sustained (600+ frames), the **accel peak tracks live motion** (bins
+move with shaking), and **Bridge RPC stays healthy** the whole time
+(get_bench_stats responds; ZERO steady-state router "invalid packet" errors - the
+§2 UART wedge is gone now that the bulk stream is off the UART). `mic mag=0` is the
+separate pre-existing SAI capture bug (§4.8 #3), NOT a transport issue.
+
+**This closes plan tasks 4-5.** The fuser frame rides the dedicated SPI link;
+`python/main.py` is the reassembler/consumer; the UART carries RPC only and is
+stable.
+
+**Board/tree state:** working build deployed (byte-DMA, chunked, fuser ON,
+`SPI_LINK_SELFTEST 0`, real main.py). The `sr/cr1/rem` diag is still in
+get_spi_link_stats (harmless, can be trimmed later). Board healthy and streaming.
+All changes **uncommitted** - ready to commit when desired. `bufsiz` note (5.6)
+still applies: it reverts to 4096 on a board power-cycle; add a spi-bridge.service
+`ExecStartPre` (or kernel cmdline) so the daemon self-heals it.
+
+### Remaining (separate from this transport work)
+- **mic/SAI capture bug** (§4.8 #3): SAI1 delivers no data (`mic mag=0`), so the
+  mic half of every frame is zeros. Needs its own session.
+- **Extended UART stability monitor** (plan task 6): now worth running long with
+  the bulk stream permanently off the UART.
+- Tune up from 6.5 fps if needed (bigger chunks with retry, or fewer RPC
+  round-trips per frame - e.g. one arm that auto-advances chunks).
+
+Transfer-side fix candidates if the residual-flush approach stalls:
+- **Chunk the frame** into pieces that reliably complete (the 64B path is rock
+  solid), pulled efficiently (avoid one UART-RPC `spi_arm` per chunk - ~10 ms
+  each would cap fps hard; batch multiple chunk-reads per arm, or re-arm on the
+  spi_link thread between the master's chunk reads).
+- **Deeper FIFO buffering / burst DMA** (raise `LL_SPI_SetFIFOThreshold`, use a
+  source burst) so momentary DMA stalls are absorbed by a fuller TX FIFO (only
+  16 bytes deep, so limited headroom).
+- **Check GPDMA port allocation** - both src+dest are on `ALLOCATED_PORT0`
+  (serialized); try splitting SRAM-read and APB3-write across the two GPDMA
+  ports so they pipeline.
+- Confirm whether **UDR halts TX DMA requests** on this SPI IP (if so, the frame
+  is unrecoverable after the first underrun regardless of everything else).
+
+### 5.5 Current board + tree state
+
+- **Board:** flashed with the instrumented firmware (fuser ENABLED, `sr/cr1/rem`
+  diag present); `main.py` = the real SPI consumer, running but logging
+  "no frames yet / bad_magic" (the 5.3 blocker). Bridge is HEALTHY throughout
+  (this is NOT the section-2 UART wedge - RPC works fine, `get_bench_stats`/
+  `get_spi_link_stats` respond). `spi-bridge` daemon = the fixed raw-ioctl
+  version, `SPI_MAX_HZ` restored to 1_000_000, `active`. spidev `bufsiz`=65536
+  (persisted). Deploy discipline held: push -> app start -> router restart ->
+  app start (the 4.8 rule).
+- **Tree:** all of 5.1's code changes are uncommitted in the working tree
+  (`git status`: modified sketch/*, python/main.py, host/spi_bridge.py,
+  provision-spi.sh, tests/spi_link_test.py; deleted tests/fuser_test.py). The
+  temporary `SPI_LINK_SELFTEST` scaffolding was reverted; the `sr/cr1/rem` diag
+  remains (marked TEMP - remove once the transport is solid).
+- **mic/SAI** still broken (4.8 #3), independent of all this.

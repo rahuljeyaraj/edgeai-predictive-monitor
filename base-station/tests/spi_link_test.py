@@ -1,110 +1,148 @@
 #!/usr/bin/env python3
 """
-MCU<->MPU dedicated SPI link verification - the Risk-1 spike from
-docs/progress2.md's "THE NEXT CHANGE". Unlike the other tests/ scripts, this
-one does NOT go through Bridge for the bulk data (that's the whole point of
-moving off the UART) - it talks to base-station/host/spi_bridge.py's Unix
-socket at /dev/spi-link.sock, which is the root daemon that owns
-/dev/spidev0.0 on the MCU's behalf (see docs/progress2.md 4.2 for why a plain
-spidev.open() from inside the app container doesn't work).
+SPI fuser-frame verification (MPU side), CHUNKED pull - docs/progress2.md 5.7.
 
-Protocol (the RPC-triggered handshake, docs/progress2.md decision 3/task 3):
-each round first calls the "spi_arm" Bridge provider - the MCU stages one
-64-byte frame (4-byte little-endian counter + 0..59 ramp, see
-sketch/spi_link.cpp) and replies with that frame's counter - then clocks the
-frame out over the socket and checks BOTH that the ramp survived the wire
-intact AND that the counter is exactly the one spi_arm promised. A "busy"
-reply (previous arm still in flight) is retried briefly.
+A single ~4KB SPI3 slave-TX transfer underruns, but small byte-DMA sub-transfers
+are rock solid, so the MPU pulls each frame in chunks: spi_arm(offset, len) arms
+frame_buf[offset..offset+chunk] on the MCU, the MPU clocks <chunk> bytes over
+/dev/spi-link.sock, reassembles all chunks, and verifies the whole-frame CRC32.
+Chunk size is chosen here (MPU side), so this script sweeps a few sizes and
+reports the success rate + throughput of each - use it to pick a reliable size.
 
-Earlier free-running variant for reference: without the arm handshake the
-MCU re-armed on its own 1s timeout cycle and blind reads only landed on a
-fresh frame ~1-2 times in 10 (2026-07-14 hardware run) - which is why the
-handshake exists.
+SPI frame (little-endian): [magic u32=0x46555331][seq u16][payload_len u16]
+[payload][crc32 u32 over header+payload]. Payload = the fuser frame
+(header + mic f32 + accel f32).
 
-Run on the board while the app is running (needs spi-bridge.service - see
-base-station/provision-spi.sh):
+Run on the board while the app is running (needs spi-bridge.service):
     adb shell "docker exec edgeai-predictive-monitor-base-station-main-1 python3 /app/tests/spi_link_test.py"
 """
 import socket
 import struct
 import time
+import zlib
 
 from arduino.app_utils import Bridge
 
 SOCKET_PATH = "/dev/spi-link.sock"
-FRAME_LEN = 64
-ROUND_COUNT = 20
-ARM_RETRIES = 5
+SPI_MAGIC = 0x46555331
+SPI_HEADER_FMT = "<I H H"
+SPI_HEADER_LEN = struct.calcsize(SPI_HEADER_FMT)   # 8
+SPI_CRC_LEN = 4
+FUSER_HEADER_FMT = "<f H H f H H"
+FUSER_HEADER_LEN = struct.calcsize(FUSER_HEADER_FMT)  # 16
+
+CHUNK_SIZES = [512, 256, 128, 64]
+FRAMES_PER_SIZE = 20
+ARM_RETRIES = 40
 
 
-def read_frame():
+def read_socket(n):
     s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     s.settimeout(5.0)
     try:
         s.connect(SOCKET_PATH)
-        s.sendall(struct.pack("<I", FRAME_LEN))
-        data = b""
-        while len(data) < FRAME_LEN:
-            chunk = s.recv(FRAME_LEN - len(data))
-            if not chunk:
+        s.sendall(struct.pack("<I", n))
+        d = b""
+        while len(d) < n:
+            c = s.recv(n - len(d))
+            if not c:
                 break
-            data += chunk
-        return data
+            d += c
+        return d
     finally:
         s.close()
 
 
-def arm():
-    """Ask the MCU to stage a frame; returns its counter, or None."""
-    for _ in range(ARM_RETRIES):
-        reply = Bridge.call("spi_arm")
-        if reply != "busy":
-            return int(reply)
-        time.sleep(0.1)
-    return None
+def pull_frame(chunk_size):
+    """Pull one whole frame in <=chunk_size sub-transfers. Returns (seq, frame)
+    or None on give-up. Does NOT verify CRC (caller does)."""
+    frame = b""
+    offset = 0
+    total = None
+    seq = None
+    while total is None or offset < total:
+        r = "busy"
+        for _ in range(ARM_RETRIES):
+            r = str(Bridge.call("spi_arm", str(offset), str(chunk_size)))
+            if r not in ("busy", "empty", "done"):
+                break
+            time.sleep(0.01)
+        if r in ("busy", "empty", "done"):
+            return None
+        parts = r.split(",")
+        if len(parts) != 3:
+            return None
+        s, t, clen = int(parts[0]), int(parts[1]), int(parts[2])
+        if seq is None:
+            seq = s
+        elif s != seq:
+            return None  # frame changed mid-pull (shouldn't happen - latched)
+        total = t
+        data = read_socket(clen)
+        if len(data) != clen:
+            return None
+        frame += data
+        offset += clen
+    return seq, frame
 
 
-def check_pattern(data, expected_counter):
-    if len(data) != FRAME_LEN:
-        return f"short read: {len(data)}/{FRAME_LEN} bytes"
-    (counter,) = struct.unpack("<I", data[:4])
-    expected_ramp = bytes((i - 4) & 0xFF for i in range(4, FRAME_LEN))
-    if data[4:] != expected_ramp:
-        return "ramp mismatch - bytes did not survive the wire intact"
-    if counter != expected_counter:
-        return f"counter mismatch: armed {expected_counter}, read {counter}"
-    return None
+def frame_crc_ok(frame):
+    if len(frame) < SPI_HEADER_LEN + SPI_CRC_LEN:
+        return False
+    magic, seq, payload_len = struct.unpack_from(SPI_HEADER_FMT, frame, 0)
+    if magic != SPI_MAGIC:
+        return False
+    body_end = SPI_HEADER_LEN + payload_len
+    if body_end + SPI_CRC_LEN != len(frame):
+        return False
+    (crc,) = struct.unpack_from("<I", frame, body_end)
+    return (zlib.crc32(frame[:body_end]) & 0xFFFFFFFF) == crc
+
+
+def decode_peaks(frame):
+    payload = frame[SPI_HEADER_LEN:-SPI_CRC_LEN]
+    mic_fs, mic_fft, mic_n, accel_fs, accel_fft, accel_n = struct.unpack_from(
+        FUSER_HEADER_FMT, payload, 0)
+    off = FUSER_HEADER_LEN
+    mic = struct.unpack_from(f"<{mic_n}f", payload, off)
+    off += mic_n * 4
+    accel = struct.unpack_from(f"<{accel_n}f", payload, off)
+    mi = max(range(len(mic)), key=lambda k: mic[k])
+    ai = max(range(len(accel)), key=lambda k: accel[k])
+    return (mi, mic[mi], (mi + 1) * mic_fs / mic_fft,
+            ai, accel[ai], (ai + 1) * accel_fs / accel_fft)
 
 
 def main():
     try:
-        stats = Bridge.call("get_spi_link_stats")
-        print(f"get_spi_link_stats: checkpoint,transfers,completed,timeouts,errors,last_error_flags = {stats}")
+        print("get_spi_link_stats:", Bridge.call("get_spi_link_stats"))
     except Exception as exc:
-        print(f"get_spi_link_stats unavailable ({exc}) - continuing anyway")
+        print("stats unavailable:", exc)
     print()
 
-    ok_count = 0
-    for i in range(ROUND_COUNT):
-        counter = arm()
-        if counter is None:
-            print(f"[{i + 1:2d}/{ROUND_COUNT}] FAIL: spi_arm stayed busy after {ARM_RETRIES} retries")
-            continue
-        data = read_frame()
-        error = check_pattern(data, counter)
-        if error:
-            print(f"[{i + 1:2d}/{ROUND_COUNT}] FAIL: {error} (raw={data!r})")
-        else:
-            print(f"[{i + 1:2d}/{ROUND_COUNT}] OK  counter={counter}")
-            ok_count += 1
+    for cs in CHUNK_SIZES:
+        ok = 0
+        t0 = time.monotonic()
+        last = None
+        for _ in range(FRAMES_PER_SIZE):
+            res = pull_frame(cs)
+            if res and frame_crc_ok(res[1]):
+                ok += 1
+                last = res[1]
+        dt = time.monotonic() - t0
+        fps = ok / dt if dt > 0 else 0
+        line = f"chunk={cs:4d}B : {ok:2d}/{FRAMES_PER_SIZE} CRC-OK  ~{fps:4.1f} fps"
+        if last:
+            try:
+                mi, mv, mhz, ai, av, ahz = decode_peaks(last)
+                line += f"  | mic bin {mi}(~{mhz:.0f}Hz) mag={mv:.0f}  accel bin {ai}(~{ahz:.0f}Hz) mag={av:.1f}"
+            except (struct.error, ValueError, IndexError):
+                line += "  | (payload not fuser data - SELFTEST ramp)"
+        print(line)
 
     print()
-    print(f"{ok_count}/{ROUND_COUNT} armed frames read back correct and in sync.")
-    try:
-        stats = Bridge.call("get_spi_link_stats")
-        print(f"final stats: {stats}")
-    except Exception:
-        pass
+    print("Pick the largest chunk with a solid CRC-OK rate. If peaks move with "
+          "sound/motion, live capture is flowing end to end over SPI.")
 
 
 if __name__ == "__main__":

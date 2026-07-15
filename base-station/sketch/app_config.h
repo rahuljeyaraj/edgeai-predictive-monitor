@@ -60,30 +60,31 @@
  * priority 3 would very likely be safe - left at 7 pending the hardware
  * verification called out in that same doc entry, not because it's still
  * required.
- * fuser (6): one band below Bridge, NOT equal to it (5) - at equal priority
- * the continuous ~15.8fps notify stream starved Bridge's own update thread
- * badly enough that every Bridge.provide() provider went "method not
- * available" for as long as the fuser streamed (2026-07-14, see
- * docs/PROGRESS.md). One band below lets Bridge always preempt the stream
- * to service a pending register/call.
- * spi_link (6): BELOW Bridge (5), ABOVE mic (7). Two constraints, both
- * learned the hard way on hardware (docs/progress2.md 4.8):
- * - Must be below Bridge: it ran at 3 (the matrix/rgb/accel tier) through
- *   both failed SPI3-slave bring-up attempts, where any non-yielding path
- *   through its loop starved Bridge (5) and main/setup() (14) forever -
- *   total silent Bridge death with zero router-log errors, the exact hang
- *   signature of docs/progress2.md 4.3/4.7. Nothing about the slave path
- *   needs to preempt Bridge (GPDMA feeds the SPI FIFO regardless of the
- *   scheduler), and staying below it keeps get_spi_link_stats readable
- *   through any spi_link misbehaviour.
- * - Must be above mic: at 8 (below mic's 7) it was starved outright - mic's
- *   capture loop was a near-100%-CPU spinner off a latched DMA TC flag
- *   (fixed in mic_dma_capture_block(), but mic remains the heaviest
- *   continuous compute in the system and anything below it inherits
- *   whatever CPU mic happens to leave over).
- * 6 is fuser's old slot; fuser's UART stream is disabled during the SPI
- * bring-up (sketch.ino), and the plan's endgame is this link replacing that
- * stream entirely, so the slot is spi_link's to inherit. */
+ * fuser (6): one band below Bridge, NOT equal to it (5) - back on the old UART
+ * transport, at equal priority the continuous ~15.8fps notify stream starved
+ * Bridge's own update thread badly enough that every Bridge.provide() provider
+ * went "method not available" for as long as the fuser streamed (2026-07-14,
+ * see docs/PROGRESS.md). One band below keeps Bridge able to preempt it. Since
+ * 2026-07-15 the fuser no longer streams over Bridge at all - it stages frames
+ * for the SPI transport (fuser.cpp) - so the flood is gone, but 6 (below Bridge,
+ * above mic) is still the right slot for a steady per-epoch producer.
+ * spi_link (6): BELOW Bridge (5), ABOVE mic (7). Two constraints, both learned
+ * the hard way on hardware (docs/progress2.md 4.8):
+ * - Must be below Bridge: it ran at 3 (the matrix/rgb/accel tier) through both
+ *   failed SPI3-slave bring-up attempts, where any non-yielding path through its
+ *   loop starved Bridge (5) and main/setup() (14) forever - total silent Bridge
+ *   death with zero router-log errors, the exact hang signature of
+ *   docs/progress2.md 4.3/4.7. Nothing about the slave path needs to preempt
+ *   Bridge (GPDMA feeds the SPI FIFO regardless of the scheduler), and staying
+ *   below it keeps get_spi_link_stats readable through any spi_link misbehaviour.
+ * - Must be above mic: at 8 (below mic's 7) it was starved outright - mic
+ *   remains the heaviest continuous compute in the system and anything below it
+ *   inherits whatever CPU mic leaves over.
+ * fuser and spi_link share priority 6 and coexist fine: both are cooperative
+ * (each k_msleep()s regularly and yields), fuser only stages (sub-1ms) while
+ * spi_link only waits on DMA, and the one lock they share (the pending-frame
+ * mutex) is priority-inheriting so Bridge's spi_arm can never be blocked on it
+ * for long. */
 #define MATRIX_DISPLAY_THREAD_PRIORITY 3
 #define RGB_DISPLAY_THREAD_PRIORITY 3
 #define ACCEL_SAMPLER_THREAD_PRIORITY 3
@@ -95,19 +96,18 @@
 #define HEARTBEAT_PERIOD_MS 500     /* loop()'s LED_BUILTIN blink period */
 #define MATRIX_DISPLAY_TICK_MS 20
 #define RGB_DISPLAY_TICK_MS 20
-#define FUSER_EPOCH_MS 64           /* ~15.6 fused frames/s - see fuser.cpp.
-                                     * NOTE: this rate's continuous ~65KB/s notify
-                                     * stream over the shared Bridge UART is what
-                                     * recurringly wedges the Bridge link (msgpack
-                                     * framer desync; root-caused 2026-07-14, see
-                                     * docs/progress2.md). Lowering it to ~10fps
-                                     * only extended time-to-wedge (~5->~15min),
-                                     * it did NOT fix it - so the rate is NOT the
-                                     * mitigation lever and is left at the native
-                                     * 64ms. The real fix is moving this stream off
-                                     * the UART onto the dedicated MCU<->MPU SPI
-                                     * (docs/progress2.md); that removes the byte-
-                                     * pressure entirely and keeps full float32. */
+#define FUSER_EPOCH_MS 64           /* ~15.6 fused frames/s - see fuser.cpp. This is
+                                     * now the frame *production* rate (how often the
+                                     * fuser stages a fresh frame for the SPI
+                                     * transport); the MPU's pull rate over SPI is
+                                     * independent. The old concern here - that this
+                                     * rate's ~65KB/s stream over the shared Bridge
+                                     * UART wedged the link's msgpack framer
+                                     * (root-caused 2026-07-14) - no longer applies:
+                                     * the bulk stream moved off the UART onto the
+                                     * dedicated MCU<->MPU SPI (spi_link.{h,cpp}),
+                                     * which removes the byte-pressure entirely and
+                                     * keeps full float32. */
 
 /* --- Bridge link ----------------------------------------------------------
  * MCU<->MPU serial baud (Serial1 <-> /dev/ttyHS1). MUST match the router's
