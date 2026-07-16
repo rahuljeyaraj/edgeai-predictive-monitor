@@ -1,0 +1,14 @@
+# Deps for tools/ei_dataset_prep.py (imports satellite_node_sim.py +
+# pipeline/features.py, which transitively import registry.py). Kept
+# separate from ../requirements.txt: on the target App Lab container,
+# paho-mqtt is installed via apt (see satellite_node_sim.py's docstring)
+# and numpy ships with the image, so neither is pip-managed there. This
+# file is only for running the EI prep/upload tooling from an ordinary dev
+# machine.
+#
+#   python3 -m venv .venv
+#   .venv/bin/pip install -r tools/requirements-ei.txt
+#   .venv/bin/python tools/ei_dataset_prep.py --data-dir ... --out-dir ...
+numpy==2.5.1
+paho-mqtt==2.1.0
+python-statemachine==3.2.0

@@ -1,6 +1,8 @@
 # Plan — Edge Impulse fault *classification* + AWS Greengrass
 
-Status: **PLAN / not started. All §9 decisions resolved (2026-07-15).** This doc
+Status: **In progress — T1 done (2026-07-16), data uploaded to EI project 1060830
+(2026-07-16), impulse design/train still to do. All §9 decisions resolved
+(2026-07-15).** This doc
 proposes how to add a second AI model — a supervised **fault-type classifier**
 trained in Edge Impulse — on top of the existing per-node autoencoder, fed by the
 simulated satellite node replaying the Kaggle vibration dataset, surfaced on the
@@ -219,17 +221,45 @@ one 1024-sample window; DSP = **Flatten/Raw**; learning = **4-class Classificati
 
 ### 3.2 Step-by-step (recommended path)
 
-1. **Prep script — `tools/ei_dataset_prep.py` (new).** Walk `--data-dir`, and for
-   each file: slide a 1024-sample window (same size/stride as the sim), compute the
-   **same** `compute_spectrum()` feature (reuse the sim's function so it's byte-for-
-   byte identical), peak-normalize (reuse [`normalize_bins()`](../base-station/python/pipeline/features.py)),
-   and emit one row/sample per window into an **EI-uploader-friendly layout** —
-   either `label.sampleid.csv` files or EI's CSV/JSON with a `label` column. Label =
-   top-level folder name. Hold out ~20% per class as the Test set (or let the
-   uploader `--category split`).
-2. **Create an Edge Impulse project**, install the CLI
-   (`npm i -g edge-impulse-cli`), and upload:
-   `edge-impulse-uploader --category split --label <auto-from-filename> prepared/*`.
+1. **Prep script — [`tools/ei_dataset_prep.py`](../base-station/python/tools/ei_dataset_prep.py)
+   (done 2026-07-16).** Walks `--data-dir`, and for each file: slides a 1024-sample
+   window at stride = window size (non-overlapping, same as the sim reading a file
+   sequentially), computes the **same** `compute_spectrum()` feature (imports it
+   straight from `satellite_node_sim.py`, so it's byte-for-byte identical), peak-
+   normalizes (imports [`normalize_bins()`](../base-station/python/pipeline/features.py)),
+   and writes one `<label>/<label>.<n>.csv` sample per window (`timestamp,accel`
+   time-series CSV, 512 rows — a single-row/512-column CSV gets rejected by EI's
+   ingestion API with "need exactly one line with values (but found 512)"; a
+   `timestamp` column is what tells EI this is one windowed sample, not 512
+   separate ones) — label = top-level folder name. Verified run against the real dataset:
+   **433 samples** (`Ideal` 88, `Cracking` 88, `Offset_Pulley` 90, `Wear` 167 — the
+   class imbalance is inherited from the source file counts, see §2's table).
+   Requires `numpy` + `paho-mqtt` + `python-statemachine` (the last two only because
+   they're transitively imported via `satellite_node_sim`/`registry`) — deliberately
+   **not** in [requirements.txt](../base-station/python/requirements.txt) (on the
+   target App Lab container, `paho-mqtt` comes from apt and `numpy` ships with the
+   image — see `satellite_node_sim.py`'s docstring), so a dev machine needs its own
+   venv: [`tools/requirements-ei.txt`](../base-station/python/tools/requirements-ei.txt)
+   pins the three packages; set up with
+   `cd base-station/python && python3 -m venv .venv && .venv/bin/pip install -r tools/requirements-ei.txt`
+   (`.venv/` is already gitignored). Run the script as
+   `.venv/bin/python tools/ei_dataset_prep.py --data-dir ... --out-dir ...`.
+   Prepared output for this run lives at
+   `~/workspace/vibration-based-fault-diagnosis-of-machines-prepared/` (outside the
+   repo — it's derived data, ~5MB of CSVs, not meant to be committed).
+   If 433 samples trains poorly, `--stride` (e.g. half the window size) gives more
+   overlapping-window samples per file at the cost of some correlation between them.
+2. **Create an Edge Impulse project** (studio.edgeimpulse.com, free tier) and upload
+   the prepared samples (done 2026-07-16, project ID 1060830). This dev machine has
+   **no `node`/`npm`**, so instead of the `edge-impulse-cli` uploader, use the
+   curl-only [`tools/ei_upload.sh`](../base-station/python/tools/ei_upload.sh), which
+   hits the [ingestion API](https://docs.edgeimpulse.com/reference/ingestion-api)
+   directly and splits ~80/20 train/test deterministically per class:
+   `EI_API_KEY=ei_xxx tools/ei_upload.sh ~/workspace/vibration-based-fault-diagnosis-of-machines-prepared`
+   (API key: project dashboard → **Keys** → **Add new API key**). All 433 samples
+   uploaded 200 (71/17 Cracking, 71/17 Ideal, 72/18 Offset_Pulley, 134/33 Wear,
+   training/testing). If you'd rather use the official CLI instead, install Node.js
+   first, then `npm i -g edge-impulse-cli && edge-impulse-uploader --category split prepared/*/*.csv`.
 3. **Design the impulse:** input = spectrum window; processing = **Flatten/Raw**;
    learning = **Classification**. Generate features, open the **feature explorer** —
    confirm the classes separate.
@@ -377,8 +407,9 @@ dashboard can show *actual vs predicted*.
 
 - [x] **T0 — Kaggle labels enumerated** → `Ideal` (healthy) / `Cracking` /
       `Offset_Pulley` / `Wear`; accel-only, axis-agnostic. *(done 2026-07-15)*
-- [ ] **T1 — `tools/ei_dataset_prep.py`**: window + FFT (reuse sim's `compute_spectrum`)
-      + normalize + emit labeled, split EI upload files.
+- [x] **T1 — `tools/ei_dataset_prep.py`**: window + FFT (reuse sim's `compute_spectrum`)
+      + normalize + emit labeled EI upload files. *(done 2026-07-16 — 433 samples
+      generated; see §3.2 for the venv/upload notes.)*
 - [ ] **T2 — Edge Impulse**: create project, upload, design impulse
       (spectrum→Flatten→Classification), train, read confusion matrix, model-test,
       export **TFLite** + label order. Commit a model card.
