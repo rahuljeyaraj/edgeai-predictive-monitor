@@ -1,4 +1,4 @@
-# Progress 3 — RGB ring: SPI+DMA landed, 1-pixel glitch open, next = Timer+PWM+DMA
+# Progress 3 — RGB ring: SPI+DMA landed, 1-pixel glitch FIXED via Timer+PWM+DMA (2026-07-16)
 
 Condensed handoff for the next session. Predecessor: [progress2.md](progress2.md) (fuser/SPI
 transport + mic/SAI bring-up - all DONE, unrelated to this file). This file is scoped to
@@ -132,6 +132,69 @@ proven in this codebase):
 whether pixel 0 now matches the rest. If yes, run the full `tests/display_rgb_test.py`
 end-to-end (incl. BREATHE/STROBE) to reconfirm neither original bug regressed, then decide
 whether to also tackle the drift issue (§3) as a separate, later investigation.
+
+---
+
+## 6. UPDATE 2026-07-16: plan's premise was wrong for PA12 - implemented on PB0/D3 instead
+
+Before writing any code, checked `modules/hal/stm32/dts/st/u5/stm32u585aiix-pinctrl.dtsi`
+for `pa12` pinmux entries as §4 said to. **PA12 has no `TIMx_CHy` alternate function at
+all** on this exact package - only `spi1_mosi`, `fdcan1_tx`, `octospim_p2_ncs`,
+`usart1_de`/`usart1_rts`, `usb_otg_fs_dp`, and analog. So the Timer+PWM+DMA design could
+not be built on D4 in place; it requires moving the ring's physical DIN wire to a header
+pin that has a timer channel.
+
+Surveyed the rest of the Arduino header (`arduino_r3_connector.dtsi`) against both the
+pinctrl dtsi and this sketch's existing pin usage: D0(PB7)/D1(PB6) are the board's console
+UART (`usart1_rx_pb7`/`usart1_tx_pb6`, wired in `arduino_uno_q-common.dtsi`) - off limits.
+D9(PB9) is already `mic_sampler.cpp`'s SAI1 FS/WS pin. D5(PA11)/D7(PB2) only expose
+complementary-only timer channels (TIM1_CH4 is fine actually, but D2/D3/D6 were cleaner:
+plain positive channels on simple general-purpose timers, no break-input complexity).
+User chose **D3 (PB0, `tim3_ch3_pb0` = AF2)**.
+
+**Implemented** in `base-station/sketch/rgb_display.cpp` (not yet flashed/verified - no
+local build toolchain in this checkout, builds via `arduino-app-cli` on-device only):
+- TIM3 CH3 PWM, ARR=255 (256-count period @ 160 MHz APB1 = 1.6 us/bit, matching the old
+  SPI version's byte period exactly), OC preload enabled, DMA-on-UPDATE-event (not
+  compare-match) - the standard glitch-free "DMA writes next period's CCR on each
+  rollover" pattern.
+- TIM3 is configured and enabled **once** at init and never disabled again - only the
+  GPDMA1 channel is armed/disarmed per frame. This is the one non-negotiable design point
+  from §4: no per-frame timer restart, so there's no analogue of SPI1's CSTART cold-start.
+- Reused the SPI version's hardware-validated T0H/T1H verbatim as CCR fractions of 256:
+  '0' -> CCR=64 (400 ns high, was `0xC0`), '1' -> CCR=192 (1200 ns high, was `0xFC` - this
+  ring's confirmed-wider-than-datasheet T1H, see §1 bug 1). Buffer shape (192 data slots +
+  200 zero-slot reset tail) carried over unchanged, just `uint16_t` CCR values instead of
+  SPI bytes.
+- GPDMA1 stays on channel 4 (same as before), now width HALFWORD (was BYTE), request line
+  `LL_GPDMA1_REQUEST_TIM3_UP`, destination `&TIM3->CCR3` (was `&SPI1->TXDR`).
+- `get_rgb_stats` DIAG provider updated to report TIM3/DMA state instead of SPI1/DMA state.
+
+**CONFIRMED FIXED on hardware, same session:** wire moved D4->D3, redeployed via the §5
+sequence (one flash attempt hit `Error: verify failed in bank at 0x08000000` + an extra
+erase-range retry mid-flash - self-recovered, second full redeploy flashed clean with no
+verify errors). `get_rgb_stats` showed `rem=0` (DMA completing every frame, TIM3 `cr1=0x1`
+confirms CEN running) both before and after a `set_rgb` call. User confirmed on the
+physical ring: **CONST red renders correctly on all 8 pixels, including pixel 0** - the
+glitch is gone.
+
+**Full `tests/display_rgb_test.py` re-run, same session, by the user:** all 6 steps
+completed - CONST and STROBE look correct. **BREATHE is visibly glitchy** under the new
+Timer+PWM+DMA transport (not characterized further yet - no detail on what "glitchy" looks
+like beyond the user's one-line report). This is a NEW, still-open issue, distinct from
+the original pixel-0 glitch (which is confirmed fixed) - next session should reproduce and
+narrow it down. One candidate area to check first: `rgb_pwm_show()` fully tears down and
+reconfigures the GPDMA1 channel every tick (`LL_DMA_ResetChannel` + full reconfigure) while
+TIM3 keeps free-running underneath and generating UPDATE-event DMA requests throughout -
+unlike the old SPI version where CSTART/SPE cleanly gated the peripheral's own clock per
+frame, there's no equivalent gate here, so a request landing mid-reconfigure is a new
+category of race that didn't exist before. BREATHE re-renders every `RGB_DISPLAY_TICK_MS`
+(20ms), 50x/s, so it's the mode most likely to expose a rare per-frame race; CONST renders
+once and STROBE only toggles between two fixed extremes, so both would be far less likely
+to show a race hitting a fraction of frames.
+
+The §3 white/high-brightness color-drift issue remains separately deferred (unrelated,
+predates all of this work).
 
 ---
 
