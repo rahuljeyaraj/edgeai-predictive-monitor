@@ -44,10 +44,11 @@ for _subpackage in ("common", "registry", "pipeline", "history", "monitoring",
 import uvicorn
 from fastapi.staticfiles import StaticFiles
 
-from sensor_frame import SensorFrame
+from sensor_frame import BASE_STATION_NODE_ID, SensorFrame
 from spi_reader import SpiConsumer
 from registry import Registry
 from status_color import color_for
+from wire_protocol import LED_MODE_TO_INT
 from gate import MotorStateGate
 from manager import PipelineManager
 from store import HistoryStore
@@ -100,6 +101,30 @@ def wire_status_led_publishing(registry: Registry, host: str, port: int):
     return publisher
 
 
+def wire_local_status_led(registry: Registry) -> None:
+    """On-device analog of wire_status_led_publishing for this board's own
+    RGB ring: base_station has no MQTT client to receive its own
+    epm/base_station/cmd command back, so instead of publishing over MQTT
+    this drives the ring directly through the local Bridge RPC link
+    (rgb_display.cpp's `set_rgb` provider, the same one spi_reader.py's
+    spi_arm calls prove is reachable from this process). Filters to
+    BASE_STATION_NODE_ID because Registry.on_status_change fires for every
+    node, satellite nodes included, and those already get their LED over
+    MQTT."""
+    from arduino.app_utils import Bridge
+
+    def on_status_change(node_id: str, status) -> None:
+        if node_id != BASE_STATION_NODE_ID:
+            return
+        led = color_for(status)
+        try:
+            Bridge.call("set_rgb", f"{led.rgb.lstrip('#')},{LED_MODE_TO_INT[led.mode]},{led.period_ms}")
+        except Exception:
+            logger.exception("failed to push local status LED for %r", node_id)
+
+    registry.on_status_change(on_status_change)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__,
                                       formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -131,6 +156,11 @@ def main():
     registry = Registry(os.path.join(args.data_dir, "registry.json"))
     history = HistoryStore(os.path.join(args.data_dir, "history.db"))
     perf_monitor = PerformanceMonitor()
+
+    # Always on, unlike wire_status_led_publishing below (which needs
+    # --mqtt-host) -- the local ring is reachable over Bridge regardless of
+    # whether MQTT satellite ingestion is enabled for this run.
+    wire_local_status_led(registry)
 
     def on_score(node_id: str, timestamp: float, score: float, status) -> None:
         # Mirrors on_frame's "spectrum" broadcast below -- pushes every
