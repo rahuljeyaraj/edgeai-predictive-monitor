@@ -276,8 +276,27 @@ static void rgb_pwm_show(uint8_t r, uint8_t g, uint8_t b) {
 
   rgb_pwm_fill(r, g, b);
 
+  /* Gate TIM3's UPDATE->DMA request off for the reset+reconfigure below. TIM3
+   * never stops counting (see header comment - no CSTART-equivalent), so
+   * unlike spi_link.cpp/mic_sampler.cpp's peripherals (SPI3/SAI1, which only
+   * request while a transfer is actively being clocked by data movement),
+   * this channel's hardware request line is continuously live at 1/1.6us
+   * regardless of whether DMA is listening. docs/progress3.md §8/§9: a solid
+   * color that is repeatedly re-rendered (never a single one-shot send)
+   * flickers whenever it isn't pure 0x00/0xFF per channel, and removing the
+   * per-frame LL_DMA_ResetChannel() entirely (in favor of a configure-once/
+   * rearm-only split) fixed it but introduced an unrelated intermittent
+   * cold-boot failure - suggesting the reset itself is fine (it's what every
+   * other GPDMA1 user in this sketch does every transfer) but doing it while
+   * TIM3's request line is live can let a stray/latched request from
+   * mid-reset land against a not-yet-consistent channel state, which for a
+   * mixed 0/1-bit pattern shows up as a misaligned slot - invisible for
+   * uniform 0x00/0xFF. Disabling the request bit (not CEN) brackets exactly
+   * the reset+reconfigure window without touching the free-running counter. */
+  LL_TIM_DisableDMAReq_UPDATE(TIM3);
   rgb_pwm_configure_dma();
   LL_DMA_EnableChannel(GPDMA1, RGB_DISPLAY_DMA_CHANNEL);
+  LL_TIM_EnableDMAReq_UPDATE(TIM3);
   /* No CSTART-equivalent: TIM3 is already running (started once in
    * rgb_pwm_configure_tim) and will pull rgb_pwm_buf[0] into CCR3 at its very
    * next UPDATE event, whenever that naturally falls. */
