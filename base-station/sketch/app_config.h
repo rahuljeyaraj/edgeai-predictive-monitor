@@ -109,6 +109,23 @@
                                      * which removes the byte-pressure entirely and
                                      * keeps full float32. */
 
+/* Data-collection build toggle: 0 (default) is the normal fused SPECTRUM
+ * stream fuser.cpp has always sent. 1 rebuilds fuser.cpp to instead stream
+ * raw, un-FFT'd time-series windows (3 accel axes kept separate + raw mic)
+ * for offline experimentation (docs/SENSOR_TELEMETRY_FRAME_PLAN.md) - not
+ * meant to run permanently, flip back to 0 and reflash once a rig capture
+ * session is done. See fuser.cpp's raw-mode block for the frame layout. */
+#define FUSER_RAW_CAPTURE_MODE 0
+
+/* Raw-mode-only epoch. One accel raw window (1024 samples @ 1600Hz ODR)
+ * takes ~640ms to fill; a faster epoch than that would resend the same
+ * window twice (a byte-for-byte duplicate landing in two different labeled
+ * capture files - worse than window overlap, straightforward leakage if the
+ * dupe crosses a train/test split). 1000ms gives margin and keeps the raw
+ * frame's data rate (~20KB every other epoch, accel/mic alternate - see
+ * fuser.cpp) far under the SPI link's budget; no reason to rush capture. */
+#define FUSER_RAW_EPOCH_MS 1000
+
 /* --- Bridge link ----------------------------------------------------------
  * MCU<->MPU serial baud (Serial1 <-> /dev/ttyHS1). MUST match the router's
  * --serial-baudrate on the Linux side (the stock per-board systemd generator

@@ -37,6 +37,13 @@
  * quantization would inject noise into the model input. SPI has ample bandwidth
  * for full float32 (docs/progress2.md decision 1), so unlike the old UART path
  * there's no byte-pressure motive to prescale.
+ *
+ * FUSER_RAW_CAPTURE_MODE (app_config.h, default 0) rebuilds this whole thread
+ * body to instead stream raw, un-FFT'd TIME_SERIES windows (3 accel axes kept
+ * separate + raw mic) at a slower FUSER_RAW_EPOCH_MS cadence, alternating one
+ * accel frame / one mic frame per epoch - for offline sensor/bin-count
+ * experimentation off a labeled rig capture, not normal operation. See the
+ * `#if FUSER_RAW_CAPTURE_MODE` blocks below.
  */
 #include "fuser.h"
 
@@ -83,6 +90,15 @@
  * thread entry). Generous vs. the few ms setup() actually needs. */
 #define FUSER_STARTUP_DELAY_MS 1000
 
+/* Which epoch constant actually paces the thread loop below - normal mode
+ * uses FUSER_EPOCH_MS (~15.6 fps), raw-capture mode the much slower
+ * FUSER_RAW_EPOCH_MS (app_config.h). */
+#if FUSER_RAW_CAPTURE_MODE
+#define FUSER_ACTIVE_EPOCH_MS FUSER_RAW_EPOCH_MS
+#else
+#define FUSER_ACTIVE_EPOCH_MS FUSER_EPOCH_MS
+#endif
+
 /* Worst-case section count the frame buffer is sized for. Two today (mic +
  * accel); headroom for the near-term experiments the plan is for (per-axis
  * triaxial accel = 3, + mic, + a SCALAR_SET of RMS/kurtosis/...). Only affects
@@ -102,11 +118,40 @@
  * byte + FUSER_MAX_SECTIONS max-bin SPECTRUM sections); SPI_LINK_MAX_PAYLOAD
  * (spi_link.cpp) must be >= this, and spi_link_stage_frame() clamps defensively.
  */
+#if FUSER_RAW_CAPTURE_MODE
+/* Raw window lengths mirror each sampler file's own FFT_LEN derivation
+ * (app_config.h's "each file derives its own *_FFT_LEN locally" comment:
+ * mic *4, accel *2) - fuser.cpp has no direct access to those file-local
+ * #defines, only the runtime accel_fft_size()/mic_fft_size() accessors, so
+ * these compile-time twins exist solely to size the static scratch/frame
+ * buffers below. Keep in sync if either sampler's multiplier ever changes. */
+#define FUSER_RAW_ACCEL_SAMPLES (ACCEL_FFT_BIN_COUNT * 2)
+#define FUSER_RAW_MIC_SAMPLES (MIC_FFT_BIN_COUNT * 4)
+/* TIME_SERIES section overhead: 5-byte section header + fs f32 + sample_count
+ * u16 (no bin_count field, unlike SPECTRUM). */
+#define FUSER_RAW_TS_OVERHEAD (5 + 4 + 2)
+#define FUSER_RAW_ACCEL_FRAME_LEN \
+  (1 + 3 * (FUSER_RAW_TS_OVERHEAD + FUSER_RAW_ACCEL_SAMPLES * sizeof(float)))
+#define FUSER_RAW_MIC_FRAME_LEN \
+  (1 + (FUSER_RAW_TS_OVERHEAD + FUSER_RAW_MIC_SAMPLES * sizeof(float)))
+/* The two raw frame kinds (3-axis accel / mono mic) alternate, never both in
+ * one frame - buffer only needs to cover the larger of the two. */
+#define FUSER_RAW_FRAME_BUF_LEN \
+  (FUSER_RAW_ACCEL_FRAME_LEN > FUSER_RAW_MIC_FRAME_LEN ? FUSER_RAW_ACCEL_FRAME_LEN \
+                                                        : FUSER_RAW_MIC_FRAME_LEN)
+
+static float fuser_accel_raw_x[FUSER_RAW_ACCEL_SAMPLES];
+static float fuser_accel_raw_y[FUSER_RAW_ACCEL_SAMPLES];
+static float fuser_accel_raw_z[FUSER_RAW_ACCEL_SAMPLES];
+static float fuser_mic_raw[FUSER_RAW_MIC_SAMPLES];
+static uint8_t fuser_frame_buf[FUSER_RAW_FRAME_BUF_LEN];
+#else
 static float fuser_mic_bins[FUSER_MAX_BINS];
 static float fuser_accel_bins[FUSER_MAX_BINS];
 static uint8_t fuser_frame_buf[1 + FUSER_MAX_SECTIONS *
                                        (FUSER_SECTION_OVERHEAD +
                                         FUSER_MAX_BINS * sizeof(float))];
+#endif
 
 /* Little-endian appenders (the Cortex-M and the Linux MPU are both LE, matching
  * the wire format's documented byte order - same assumption the old direct
@@ -146,6 +191,26 @@ static void write_spectrum_section(uint8_t *buf, size_t *pos, uint8_t channel_id
   *pos += (size_t)bin_count * sizeof(float);
 }
 
+#if FUSER_RAW_CAPTURE_MODE
+/* Append one TIME_SERIES section (source_id fixed to this base station).
+ * Body is [fs f32][sample_count u16][samples f32...] - the raw-capture
+ * counterpart to write_spectrum_section() above, minus the un-FFT'd data's
+ * fft_size/bin_count fields (a raw window has no bins yet). */
+static void write_timeseries_section(uint8_t *buf, size_t *pos, uint8_t channel_id,
+                                     float fs, const float *samples,
+                                     uint16_t sample_count) {
+  uint16_t section_len = (uint16_t)(4 + 2 + (uint32_t)sample_count * sizeof(float));
+  put_u8(buf, pos, TELEM_SOURCE_BASE_STATION);
+  put_u8(buf, pos, channel_id);
+  put_u8(buf, pos, TELEM_KIND_TIME_SERIES);
+  put_u16(buf, pos, section_len);
+  put_f32(buf, pos, fs);
+  put_u16(buf, pos, sample_count);
+  memcpy(&buf[*pos], samples, (size_t)sample_count * sizeof(float));
+  *pos += (size_t)sample_count * sizeof(float);
+}
+#endif
+
 #if BENCHMARK_STATS_ENABLED
 /* Single writer (fuser_thread_entry), read by fuser_get_stats() from
  * whatever thread bench.cpp's Bridge handler runs on - same "torn read is
@@ -161,6 +226,7 @@ static void fuser_thread_entry(void *p1, void *p2, void *p3) {
   ARG_UNUSED(p2);
   ARG_UNUSED(p3);
 
+#if !FUSER_RAW_CAPTURE_MODE
   /* Metadata is fixed at bring-up (compile-time constants behind the
    * accessors), read once. Bin counts are clamped to the buffer ceiling
    * defensively; in practice both are FUSER_MAX_BINS. */
@@ -168,14 +234,24 @@ static void fuser_thread_entry(void *p1, void *p2, void *p3) {
   int accel_bins = accel_full_bin_count();
   if (mic_bins > FUSER_MAX_BINS) mic_bins = FUSER_MAX_BINS;
   if (accel_bins > FUSER_MAX_BINS) accel_bins = FUSER_MAX_BINS;
+#endif
 
   /* Per-channel metadata, fixed at bring-up, read once and re-sent in every
-   * frame's SPECTRUM section headers (fs/fft_size travel on the wire so the MPU
-   * never needs them out of band). */
+   * frame's section headers (fs/fft_size travel on the wire so the MPU never
+   * needs them out of band). In raw-capture mode, mic_fft/accel_fft double as
+   * the raw window's sample_count - the un-FFT'd window IS the FFT input, so
+   * its length is exactly *_fft_size(), no separate accessor needed. */
   float mic_fs = mic_sample_rate_hz();
   uint16_t mic_fft = (uint16_t)mic_fft_size();
   float accel_fs = accel_sample_rate_hz();
   uint16_t accel_fft = (uint16_t)accel_fft_size();
+
+#if FUSER_RAW_CAPTURE_MODE
+  /* Alternates which raw frame kind goes out each epoch (accel 3-axis, then
+   * mic, ...) - see this file's header comment and FUSER_RAW_FRAME_BUF_LEN's
+   * comment on why they're never combined into one frame. */
+  bool send_mic_next = false;
+#endif
 
   /* Let setup() finish first. This thread (FUSER_THREAD_PRIORITY, app_config.h)
    * is created mid-setup() and would otherwise preempt the priority-14 setup()
@@ -198,6 +274,30 @@ static void fuser_thread_entry(void *p1, void *p2, void *p3) {
      * view). */
     int64_t frame_start = k_uptime_get();
 
+#if FUSER_RAW_CAPTURE_MODE
+    /* Sample-and-hold, same as normal mode, but only the channel this epoch
+     * is sending - see FUSER_RAW_EPOCH_MS's comment (app_config.h) for why
+     * this cadence can't outrun accel's ~640ms window-fill time. */
+    size_t pos = 0;
+    if (send_mic_next) {
+      mic_copy_raw_window(fuser_mic_raw);
+      put_u8(fuser_frame_buf, &pos, 1);  // num_sections: mic raw only
+      write_timeseries_section(fuser_frame_buf, &pos, TELEM_CHANNEL_MIC_RAW,
+                               mic_fs, fuser_mic_raw, mic_fft);
+    } else {
+      accel_copy_raw_window(fuser_accel_raw_x, fuser_accel_raw_y, fuser_accel_raw_z);
+      put_u8(fuser_frame_buf, &pos, 3);  // num_sections: accel x/y/z raw
+      write_timeseries_section(fuser_frame_buf, &pos, TELEM_CHANNEL_ACCEL_X_RAW,
+                               accel_fs, fuser_accel_raw_x, accel_fft);
+      write_timeseries_section(fuser_frame_buf, &pos, TELEM_CHANNEL_ACCEL_Y_RAW,
+                               accel_fs, fuser_accel_raw_y, accel_fft);
+      write_timeseries_section(fuser_frame_buf, &pos, TELEM_CHANNEL_ACCEL_Z_RAW,
+                               accel_fs, fuser_accel_raw_z, accel_fft);
+    }
+    send_mic_next = !send_mic_next;
+
+    size_t frame_len = pos;
+#else
     /* Sample-and-hold: copy the latest published spectra (each mutex-guarded
      * inside the accessor). Between epochs where a sampler produced nothing
      * new, its buffer simply still holds the previous block - same behaviour
@@ -217,6 +317,7 @@ static void fuser_thread_entry(void *p1, void *p2, void *p3) {
                            accel_fft, fuser_accel_bins, (uint16_t)accel_bins);
 
     size_t frame_len = pos;
+#endif
 
     /* Hand the assembled frame to the SPI transport. It wraps the payload with
      * its own framing header + CRC32, stamps a sequence number, and holds it as
@@ -232,13 +333,13 @@ static void fuser_thread_entry(void *p1, void *p2, void *p3) {
     if ((uint32_t)elapsed > fuser_send_ms_max) {
       fuser_send_ms_max = (uint32_t)elapsed;
     }
-    if (elapsed >= FUSER_EPOCH_MS) {
+    if (elapsed >= FUSER_ACTIVE_EPOCH_MS) {
       fuser_overrun_count++;
     }
 #endif
 
-    if (elapsed < FUSER_EPOCH_MS) {
-      k_msleep(FUSER_EPOCH_MS - elapsed);
+    if (elapsed < FUSER_ACTIVE_EPOCH_MS) {
+      k_msleep(FUSER_ACTIVE_EPOCH_MS - elapsed);
     } else {
       /* Over budget - MUST actually sleep, not k_yield(): k_yield() only yields
        * to threads of the SAME priority, so a permanently-over-budget fuser

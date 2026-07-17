@@ -24,3 +24,7 @@ Thumbs.db
 # Claude Code personal overrides (not shared with team)
 .claude/settings.local.json
 .claude/CLAUDE.local.md
+
+# Raw sensor data captures (tools/raw_capture.py output, pulled off-device
+# via adb pull) -- large labeled .npz files, not source, not shared via git.
+captures/

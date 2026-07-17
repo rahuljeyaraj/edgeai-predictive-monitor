@@ -300,6 +300,18 @@ static float accel_spectrum_latest[ACCEL_SPECTRUM_BINS];
  * Guarded by the same accel_spectrum_mtx. */
 static float accel_full_latest[ACCEL_FFT_BIN_COUNT];
 
+#if FUSER_RAW_CAPTURE_MODE
+/* Raw, un-FFT'd per-axis windows for offline experimentation (see
+ * app_config.h's FUSER_RAW_CAPTURE_MODE). Published from the same point the
+ * thread loop below hands accel_window_{x,y,z} to accel_fft_magnitude() -
+ * the last moment before frames_accumulated resets and starts overwriting
+ * them for the next window. Guarded by accel_spectrum_mtx, same as
+ * accel_full_latest - one lock for everything this thread publishes. */
+static float accel_raw_latest_x[ACCEL_FFT_LEN];
+static float accel_raw_latest_y[ACCEL_FFT_LEN];
+static float accel_raw_latest_z[ACCEL_FFT_LEN];
+#endif
+
 static void accel_fft_init_twiddles() {
   for (int k = 0; k < ACCEL_FFT_LEN / 2; k++) {
     float angle = -2.0f * ACCEL_FFT_PI * (float)k / (float)ACCEL_FFT_LEN;
@@ -473,6 +485,14 @@ static void accel_sampler_thread_entry(void *p1, void *p2, void *p3) {
       continue;
     }
 
+#if FUSER_RAW_CAPTURE_MODE
+    k_mutex_lock(&accel_spectrum_mtx, K_FOREVER);
+    memcpy(accel_raw_latest_x, accel_window_x, sizeof(accel_raw_latest_x));
+    memcpy(accel_raw_latest_y, accel_window_y, sizeof(accel_raw_latest_y));
+    memcpy(accel_raw_latest_z, accel_window_z, sizeof(accel_raw_latest_z));
+    k_mutex_unlock(&accel_spectrum_mtx);
+#endif
+
     accel_fft_magnitude(accel_window_x, accel_mag_x);
     accel_fft_magnitude(accel_window_y, accel_mag_y);
     accel_fft_magnitude(accel_window_z, accel_mag_z);
@@ -515,6 +535,19 @@ void accel_copy_full_spectrum(float *out) {
   memcpy(out, accel_full_latest, sizeof(accel_full_latest));
   k_mutex_unlock(&accel_spectrum_mtx);
 }
+
+#if FUSER_RAW_CAPTURE_MODE
+/* Raw per-axis window access for the fuser's raw-capture mode - the window
+ * length is accel_fft_size() (ACCEL_FFT_LEN), the same accessor the normal
+ * spectrum path already uses; no separate raw sample-count accessor needed. */
+void accel_copy_raw_window(float *out_x, float *out_y, float *out_z) {
+  k_mutex_lock(&accel_spectrum_mtx, K_FOREVER);
+  memcpy(out_x, accel_raw_latest_x, sizeof(accel_raw_latest_x));
+  memcpy(out_y, accel_raw_latest_y, sizeof(accel_raw_latest_y));
+  memcpy(out_z, accel_raw_latest_z, sizeof(accel_raw_latest_z));
+  k_mutex_unlock(&accel_spectrum_mtx);
+}
+#endif
 
 #if BENCHMARK_STATS_ENABLED
 void accel_sampler_get_stats(struct accel_bench_stats *out) {

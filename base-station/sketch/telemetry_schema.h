@@ -20,6 +20,10 @@
 /* channel_id: opaque per-channel identity (meaning lives in the schema, not here). */
 #define TELEM_CHANNEL_MIC 0
 #define TELEM_CHANNEL_ACCEL 1
+#define TELEM_CHANNEL_ACCEL_X_RAW 2
+#define TELEM_CHANNEL_ACCEL_Y_RAW 3
+#define TELEM_CHANNEL_ACCEL_Z_RAW 4
+#define TELEM_CHANNEL_MIC_RAW 5
 #define TELEM_CHANNEL_PERF 255
 
 /* scalar ids for SCALAR_SET bodies (u16 keys against the schema). */

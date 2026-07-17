@@ -175,6 +175,15 @@ static float mic_spectrum_latest[MIC_SPECTRUM_BINS];
  * under Bridge's 256-byte ceiling. Guarded by the same mic_spectrum_mtx. */
 static float mic_full_latest[MIC_FFT_BIN_COUNT];
 
+#if FUSER_RAW_CAPTURE_MODE
+/* Raw, un-FFT'd window for offline experimentation (see app_config.h's
+ * FUSER_RAW_CAPTURE_MODE). Published as float32 (matching the TIME_SERIES
+ * wire body) from mic_capture_block[] right after a block completes, before
+ * the next mic_dma_capture_block() call overwrites it. Guarded by
+ * mic_spectrum_mtx, same as mic_full_latest. */
+static float mic_raw_latest[MIC_FFT_LEN];
+#endif
+
 static void mic_fft_init_twiddles(void) {
   for (int k = 0; k < MIC_FFT_LEN / 2; k++) {
     float angle = -2.0f * MIC_FFT_PI * (float)k / (float)MIC_FFT_LEN;
@@ -634,6 +643,15 @@ static void mic_sampler_thread_entry(void *p1, void *p2, void *p3) {
       mic_fft_re[i] = (float)mic_capture_block[i];
       mic_fft_im[i] = 0.0f;
     }
+
+#if FUSER_RAW_CAPTURE_MODE
+    k_mutex_lock(&mic_spectrum_mtx, K_FOREVER);
+    for (int i = 0; i < MIC_FFT_LEN; i++) {
+      mic_raw_latest[i] = mic_fft_re[i];  /* == mic_capture_block[i], already cast */
+    }
+    k_mutex_unlock(&mic_spectrum_mtx);
+#endif
+
     mic_fft_run();
     mic_fft_magnitude();
 
@@ -668,6 +686,17 @@ void mic_copy_full_spectrum(float *out) {
   memcpy(out, mic_full_latest, sizeof(mic_full_latest));
   k_mutex_unlock(&mic_spectrum_mtx);
 }
+
+#if FUSER_RAW_CAPTURE_MODE
+/* Raw window access for the fuser's raw-capture mode - the window length is
+ * mic_fft_size() (MIC_FFT_LEN), the same accessor the normal spectrum path
+ * already uses; no separate raw sample-count accessor needed. */
+void mic_copy_raw_window(float *out) {
+  k_mutex_lock(&mic_spectrum_mtx, K_FOREVER);
+  memcpy(out, mic_raw_latest, sizeof(mic_raw_latest));
+  k_mutex_unlock(&mic_spectrum_mtx);
+}
+#endif
 
 #if BENCHMARK_STATS_ENABLED
 void mic_sampler_get_stats(struct mic_bench_stats *out) {

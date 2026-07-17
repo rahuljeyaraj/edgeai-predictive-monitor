@@ -21,19 +21,31 @@ DATA_KIND = {
 
 CHANNEL_ID_BY_NAME = {
     "mic": 0,
-    "accel": 1
+    "accel": 1,
+    "accel_x_raw": 2,
+    "accel_y_raw": 3,
+    "accel_z_raw": 4,
+    "mic_raw": 5
 }
 
 CHANNEL_NAME_BY_ID = {
     "0": "mic",
-    "1": "accel"
+    "1": "accel",
+    "2": "accel_x_raw",
+    "3": "accel_y_raw",
+    "4": "accel_z_raw",
+    "5": "mic_raw"
 }
 # JSON object keys are strings; re-key to int for wire (u8) lookups.
 CHANNEL_NAME_BY_ID = {int(k): v for k, v in CHANNEL_NAME_BY_ID.items()}
 
 CHANNEL_KIND_BY_ID = {
     "0": "SPECTRUM",
-    "1": "SPECTRUM"
+    "1": "SPECTRUM",
+    "2": "TIME_SERIES",
+    "3": "TIME_SERIES",
+    "4": "TIME_SERIES",
+    "5": "TIME_SERIES"
 }
 CHANNEL_KIND_BY_ID = {int(k): v for k, v in CHANNEL_KIND_BY_ID.items()}
 

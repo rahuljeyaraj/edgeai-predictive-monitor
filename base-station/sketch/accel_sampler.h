@@ -33,6 +33,14 @@ int accel_fft_size(void);
 float accel_sample_rate_hz(void);
 void accel_copy_full_spectrum(float *out);
 
+#if FUSER_RAW_CAPTURE_MODE
+/* Raw, un-FFT'd per-axis window access for fuser.cpp's raw-capture mode
+ * (see app_config.h's FUSER_RAW_CAPTURE_MODE). accel_copy_raw_window()
+ * copies accel_fft_size() float32 samples into each of out_x/y/z - same
+ * mutex-guarded latest-window handoff as accel_copy_full_spectrum(). */
+void accel_copy_raw_window(float *out_x, float *out_y, float *out_z);
+#endif
+
 #if BENCHMARK_STATS_ENABLED
 /* Cumulative-since-boot pipeline-stage counters, read by fuser.cpp's
  * periodic "get_bench_stats" Bridge report - ported from the old repo's

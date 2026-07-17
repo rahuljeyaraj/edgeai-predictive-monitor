@@ -38,7 +38,7 @@ from typing import Callable, Optional
 from arduino.app_utils import Bridge
 
 from sensor_frame import BASE_STATION_NODE_ID, FrameSource, SensorFrame
-from telemetry_frame import MalformedFrameError, decode_frame
+from telemetry_frame import DecodedFrame, MalformedFrameError, decode_frame
 
 # --- SPI transport envelope (must match sketch/spi_link.cpp) -----------------
 SOCKET_PATH = "/dev/spi-link.sock"
@@ -63,8 +63,14 @@ class SpiConsumer:
     the push-model counterpart to MqttSubscriber, feeding PipelineManager the
     same way. Keeps running stats for diagnostics (snapshot())."""
 
-    def __init__(self, on_frame: Callable[[SensorFrame], None]):
+    def __init__(self, on_frame: Callable[[SensorFrame], None],
+                 on_decoded: Optional[Callable[[DecodedFrame], None]] = None):
         self._on_frame = on_frame
+        # Optional hook for whatever a decoded frame carried beyond .bins
+        # (e.g. .time_series -- see tools/raw_capture.py). Not used by the
+        # live pipeline (main.py); SensorFrame.bins is still the only thing
+        # PipelineManager.route ever sees.
+        self._on_decoded = on_decoded
         self._lock = threading.Lock()
         self._thread = None
         self.last_seq = None
@@ -163,6 +169,9 @@ class SpiConsumer:
             self.last_meta = {name: (s.fs, s.fft_size)
                               for name, s in decoded.spectra.items()}
             self.frames_ok += 1
+
+        if self._on_decoded is not None:
+            self._on_decoded(decoded)
 
         self._on_frame(SensorFrame(
             node_id=BASE_STATION_NODE_ID,
