@@ -1,8 +1,10 @@
 # Plan — Edge Impulse fault *classification* + AWS Greengrass
 
-Status: **In progress — T1 done (2026-07-16), data uploaded to EI project 1060830
-(2026-07-16), impulse design/train still to do. All §9 decisions resolved
-(2026-07-15).** This doc
+Status: **In progress — T1 done (2026-07-16), data uploaded to EI project 1060830,
+first training runs done + a real train/test leakage bug found and fixed
+(2026-07-17). Honest current accuracy is weak (~42%, see §3.3) — next session picks
+up at feature dimensionality (band-power aggregation), not plumbing. All §9
+decisions resolved (2026-07-15).** This doc
 proposes how to add a second AI model — a supervised **fault-type classifier**
 trained in Edge Impulse — on top of the existing per-node autoencoder, fed by the
 simulated satellite node replaying the Kaggle vibration dataset, surfaced on the
@@ -250,16 +252,20 @@ one 1024-sample window; DSP = **Flatten/Raw**; learning = **4-class Classificati
    If 433 samples trains poorly, `--stride` (e.g. half the window size) gives more
    overlapping-window samples per file at the cost of some correlation between them.
 2. **Create an Edge Impulse project** (studio.edgeimpulse.com, free tier) and upload
-   the prepared samples (done 2026-07-16, project ID 1060830). This dev machine has
-   **no `node`/`npm`**, so instead of the `edge-impulse-cli` uploader, use the
-   curl-only [`tools/ei_upload.sh`](../base-station/python/tools/ei_upload.sh), which
-   hits the [ingestion API](https://docs.edgeimpulse.com/reference/ingestion-api)
-   directly and splits ~80/20 train/test deterministically per class:
+   the prepared samples (project ID 1060830). This dev machine has **no `node`/`npm`**,
+   so instead of the `edge-impulse-cli` uploader, use the curl-only
+   [`tools/ei_upload.sh`](../base-station/python/tools/ei_upload.sh), which hits the
+   [ingestion API](https://docs.edgeimpulse.com/reference/ingestion-api) directly,
+   batching many files per request (see its docstring):
    `EI_API_KEY=ei_xxx tools/ei_upload.sh ~/workspace/vibration-based-fault-diagnosis-of-machines-prepared`
-   (API key: project dashboard → **Keys** → **Add new API key**). All 433 samples
-   uploaded 200 (71/17 Cracking, 71/17 Ideal, 72/18 Offset_Pulley, 134/33 Wear,
-   training/testing). If you'd rather use the official CLI instead, install Node.js
-   first, then `npm i -g edge-impulse-cli && edge-impulse-uploader --category split prepared/*/*.csv`.
+   (API key: project dashboard → **Keys** → **Add new API key**). **The train/test
+   split is decided entirely by `ei_dataset_prep.py`, at the file level, before this
+   script ever runs** — see §3.3 for why that matters. If you'd rather use the
+   official CLI instead, install Node.js first, then
+   `npm i -g edge-impulse-cli && edge-impulse-uploader --category split prepared/*/*.csv`
+   (note: the CLI's own split wouldn't know about our file-level split either, so
+   stick with `ei_upload.sh` unless you point the CLI at `prepared/training/*/*.csv`
+   and `prepared/testing/*/*.csv` separately with explicit `--category`).
 3. **Design the impulse:** input = spectrum window; processing = **Flatten/Raw**;
    learning = **Classification**. Generate features, open the **feature explorer** —
    confirm the classes separate.
@@ -274,6 +280,87 @@ one 1024-sample window; DSP = **Flatten/Raw**; learning = **4-class Classificati
    link) to `docs/`. Drop the model into `base-station/.cache/models/`
    (that dir survives redeploys — see [main.py](../base-station/python/main.py)'s
    `DEFAULT_DATA_DIR`).
+
+### 3.3 First training runs (2026-07-17): a leakage bug, and the honest number
+
+**Attempt 1 — Flatten block (default 7 statistical features/axis).** 38.6% validation
+accuracy; confusion matrix showed the model collapsed to predicting the majority
+class (`Wear`) almost everywhere. Root cause: Flatten's default config computes 7
+scalar summary stats (avg/min/max/RMS/std/skew/kurtosis) per axis, not a passthrough
+of the 512-bin spectrum — the model never saw the spectrum shape at all.
+
+**Attempt 2 — switched DSP block to Raw Data** (true 512-feature passthrough). 47.1%
+validation accuracy — real signal, no longer collapsed, but still weak, and
+concerningly `Ideal` (healthy) was getting confused with the fault classes.
+
+**Attempt 3 — EON Tuner** (search over Raw Data + dense-net architectures/hyperparams).
+Leaderboard's top trials showed **60%/54%/50% validation accuracy but only 24%/16%/9%
+Test accuracy** — a massive validation-vs-test collapse, worse than random guessing on
+Test for 2 of 3 trials. Root cause diagnosed: `ei_upload.sh` was splitting
+train/test **at the window level** (every 5th window, globally), not the file level.
+Since each source file produced only ~3 non-overlapping windows, windows from the
+*same physical recording* could land on both sides of the split — so a model could
+partly "recognize the file" rather than learn a fault signature that generalizes,
+and EON Tuner's leaderboard (which ranks entirely by validation accuracy across dozens
+of trials) rewarded exactly that.
+
+**Fix — file-level split, done in `ei_dataset_prep.py` (see its docstring for the
+full rationale):** files are now assigned to train or test *before* windowing (every
+5th file per class → test, deterministic), so no window from a test file can ever
+share a file with a training window. Training files get windowed at `--train-stride`
+(default window-size/8, ~8x overlap → more samples); test files at a smaller
+`--test-stride` (default window-size/4, ~4x) — deliberately less overlap than
+training, so the test set isn't mostly near-duplicate crops of a handful of held-out
+files (that would inflate its apparent size without adding real independent
+evidence). Regenerated + re-uploaded: **2936 samples (2595 training / 341 testing)**,
+up from the original 433 non-augmented ones. `ei_upload.sh` no longer does any
+splitting itself — it just uploads whatever's under
+`prepared/{training,testing}/<label>/` to the matching EI category.
+
+**Attempt 4 — retrained on the file-split, augmented data.** Validation accuracy:
+**97.7%**, suspiciously perfect (F1=1.00 on `Offset_Pulley`). **Model Testing (the
+`testing` category, evaluated separately): 42.52%.** Another big validation-vs-test
+gap — but this time it's a *different* leak: our training windows now overlap ~87.5%
+with their neighbors (stride 128 of a 1024 window), and Edge Impulse's automatic
+train/validation carve-out **inside** the `training` category splits at the window
+level too, so near-duplicate overlapping windows from the same file can land on both
+sides of *that* internal split. The model doesn't have to generalize to ace EI's
+reported "validation accuracy" — it just has to recognize an 87.5%-identical twin of
+something it trained on.
+
+**The number that matters: 42.52%, and it's trustworthy.** Unlike validation, Model
+Testing evaluates against the `testing` category, which was never part of `training`
+in any capacity (not the weights, not EI's internal validation carve-out) — so this
+figure has no leakage path available, regardless of how "training" gets carved up
+internally. **From now on, ignore the Validation accuracy EI reports during
+training/EON Tuner — it's inflated by the overlap-leakage above and not a useful
+signal. Only trust the separate Model Testing page.**
+
+**What 42.52% (barely above the 25% random baseline for 4 classes) actually means:**
+this isn't a pipeline bug anymore — the split is now provably clean. It means a plain
+dense net over the raw 512-value spectrum is a hard problem given how little
+*independent* data really exists (~150 distinct physical recordings total, ~120 of
+them in training, no matter how many correlated overlapping windows get generated
+from them). Confusion matrix still leans toward `Wear`/uncertain for `Cracking` and
+`Ideal` — the same majority-class-ish bias as attempt 2, just clearer now that
+leakage isn't muddying the picture.
+
+**Next session, not yet done:**
+- **Band-power feature aggregation** (most promising next lever, not yet
+  implemented): aggregate the 512 raw magnitude bins into ~32 band-power features
+  (sum/mean magnitude per frequency band) computed ourselves in `ei_dataset_prep.py`,
+  directly on the already-FFT'd spectrum. Keeps the physically meaningful "where is
+  the energy concentrated" shape (unlike Flatten's whole-spectrum stats, attempt 1)
+  while cutting dimensionality ~16x — a much better match for ~120 independent
+  training files. This is *not* the same as re-enabling EI's Spectral Analysis DSP
+  block, which would re-FFT an already-FFT'd spectrum (double-transform, meaningless)
+  — the aggregation needs to happen in our own script, on data that's still
+  conceptually "one spectrum snapshot."
+- **Dial training `--stride` back down** (less overlap) purely so EI's own
+  Validation accuracy becomes trustworthy again during quick iteration — right now
+  it's unusable as a signal, so every change requires a full Model Testing run to
+  judge. Cheap, orthogonal to the band-power change.
+- Re-run Model Testing after each change; that page is the only number to trust.
 
 ---
 
@@ -408,11 +495,15 @@ dashboard can show *actual vs predicted*.
 - [x] **T0 — Kaggle labels enumerated** → `Ideal` (healthy) / `Cracking` /
       `Offset_Pulley` / `Wear`; accel-only, axis-agnostic. *(done 2026-07-15)*
 - [x] **T1 — `tools/ei_dataset_prep.py`**: window + FFT (reuse sim's `compute_spectrum`)
-      + normalize + emit labeled EI upload files. *(done 2026-07-16 — 433 samples
-      generated; see §3.2 for the venv/upload notes.)*
-- [ ] **T2 — Edge Impulse**: create project, upload, design impulse
-      (spectrum→Flatten→Classification), train, read confusion matrix, model-test,
-      export **TFLite** + label order. Commit a model card.
+      + normalize + emit labeled EI upload files. *(done 2026-07-16, reworked
+      2026-07-17 to split at the file level + separate train/test strides — see §3.3.
+      Currently 2936 samples: 2595 training / 341 testing.)*
+- [~] **T2 — Edge Impulse**: create project (done, ID 1060830), upload (done via
+      `ei_upload.sh`), design impulse (Raw Data→Classification, not Flatten — see
+      §3.3 attempt 1), train (done, several iterations), read confusion matrix (done),
+      **model-test: done, honest accuracy is 42.52%** (see §3.3) — not yet good enough
+      to export/deploy. Next session: band-power feature aggregation (§3.3), not yet
+      built. Export TFLite + model card come after accuracy is actually acceptable.
 - [ ] **T3 — `pipeline/classifier.py`** (`FaultClassifier`, TFLite) + `requirements.txt`
       dep + drop model into `.cache/models/`.
 - [ ] **T4 — Registry fields** `classifier_enabled` / `last_classification`.

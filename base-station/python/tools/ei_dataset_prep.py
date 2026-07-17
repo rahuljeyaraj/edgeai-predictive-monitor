@@ -8,21 +8,30 @@ so the training features have zero drift from what flows through the real
 pipeline at inference time.
 
 Walks --data-dir (the dataset root -- top-level folder name is the class
-label, e.g. Ideal/Cracking/Offset_Pulley/Wear), slides a --window-size
-window (default 1024, matching the sim) over every .csv file at --stride
-(default = --window-size, i.e. non-overlapping -- same as the sim reading a
-file sequentially), computes the peak-normalized 512-bin accel spectrum per
-window, and writes one Edge Impulse CSV sample per window to
---out-dir/<label>/<label>.<n>.csv: a "timestamp,accel" time-series CSV, one
-bin value per row (see write_ei_sample()'s docstring for why it's not a
-single-row/512-column CSV instead). Upload with the curl-only
-tools/ei_upload.sh (no node/edge-impulse-cli needed), or the official CLI:
+label, e.g. Ideal/Cracking/Offset_Pulley/Wear) and splits **files** (not
+windows) into train/test up front -- every TEST_HOLDOUT_EVERY_Nth file (in
+sorted order) per class is held out for test, the rest are training files.
+This file-level split happens before any windowing, so no window from a
+test file's signal can ever share a file with a training window -- windows
+from the same physical recording run are highly correlated, so splitting
+at the window level (the first version of this script did) let information
+leak between train and test/validation, which is exactly what produced a
+60%-validation/24%-test accuracy gap in EON Tuner runs.
 
-    npm i -g edge-impulse-cli
-    edge-impulse-uploader --category split prepared/*/*.csv
+Training files are windowed at --train-stride (default window-size/8, i.e.
+~8x overlap -- more samples to learn from) and test files at --test-stride
+(default window-size/4, i.e. ~4x overlap -- some more samples for a less
+noisy metric, without manufacturing thousands of near-duplicate crops of a
+handful of held-out files, which would inflate the test set's apparent size
+without adding real independent evidence).
 
---category split lets the uploader do the ~80/20 train/test split himself
-per the plan; label comes from each file's "<label>." prefix.
+Computes the peak-normalized 512-bin accel spectrum per window and writes
+one Edge Impulse CSV sample per window to
+--out-dir/{training,testing}/<label>/<label>.<n>.csv: a "timestamp,accel"
+time-series CSV, one bin value per row (see write_ei_sample()'s docstring
+for why it's not a single-row/512-column CSV instead). Upload with the
+curl-only tools/ei_upload.sh (no node/edge-impulse-cli needed), which reads
+the training/testing category straight from this directory layout.
 """
 import argparse
 import os
@@ -41,6 +50,7 @@ from features import normalize_bins  # noqa: E402
 
 DEFAULT_WINDOW_SIZE = 1024
 DEFAULT_SAMPLE_RATE_HZ = 12800.0
+TEST_HOLDOUT_EVERY_N = 5  # every Nth file (~20%) held out for test, per class
 
 
 def list_class_dirs(data_dir):
@@ -59,6 +69,20 @@ def list_csv_files(class_dir):
             if name.lower().endswith(".csv"):
                 matches.append(os.path.join(root, name))
     return sorted(matches)
+
+
+def split_files(files):
+    """Every TEST_HOLDOUT_EVERY_Nth file (by sorted order) -> test, rest ->
+    train. Modulo (not a contiguous tail slice) so the split isn't skewed
+    toward whichever axis subfolder happens to sort last (list_csv_files's
+    sort clusters files by their <label>_<axis>/ subfolder)."""
+    train_files, test_files = [], []
+    for i, path in enumerate(files):
+        if i % TEST_HOLDOUT_EVERY_N == TEST_HOLDOUT_EVERY_N - 1:
+            test_files.append(path)
+        else:
+            train_files.append(path)
+    return train_files, test_files
 
 
 def sliding_windows(signal, window_size, stride):
@@ -85,44 +109,62 @@ def write_ei_sample(path, bins):
         f.writelines(f"{i},{value}\n" for i, value in enumerate(bins))
 
 
+def prepare_category(files, stride, label, out_class_dir, window_size, sample_rate_hz):
+    os.makedirs(out_class_dir, exist_ok=True)
+    count = 0
+    for path in files:
+        signal = load_signal(path)
+        for window in sliding_windows(signal, window_size, stride):
+            spectrum = compute_spectrum(window, sample_rate_hz)
+            bins = normalize_bins(spectrum.bins)
+            write_ei_sample(os.path.join(out_class_dir, f"{label}.{count}.csv"), bins)
+            count += 1
+    return count
+
+
 def main():
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--data-dir", required=True,
                          help="Kaggle dataset root (contains Ideal/Cracking/Offset_Pulley/Wear)")
     parser.add_argument("--out-dir", required=True,
-                         help="Where to write prepared/<label>/<label>.<n>.csv")
+                         help="Where to write {training,testing}/<label>/<label>.<n>.csv")
     parser.add_argument("--window-size", type=int, default=DEFAULT_WINDOW_SIZE)
-    parser.add_argument("--stride", type=int, default=None,
-                         help="default = --window-size (non-overlapping, matches the sim); "
-                              "pass a smaller value for overlapping windows / more samples")
+    parser.add_argument("--train-stride", type=int, default=None,
+                         help="default = --window-size // 8 (~8x overlap for more training samples)")
+    parser.add_argument("--test-stride", type=int, default=None,
+                         help="default = --window-size // 4 (~4x overlap; kept lower than "
+                              "--train-stride so the test set isn't mostly near-duplicate crops "
+                              "of a handful of held-out files)")
     parser.add_argument("--sample-rate-hz", type=float, default=DEFAULT_SAMPLE_RATE_HZ,
                          help="only affects the spectrum's fs metadata, not the FFT magnitudes")
     args = parser.parse_args()
-    stride = args.stride or args.window_size
+    train_stride = args.train_stride or max(1, args.window_size // 8)
+    test_stride = args.test_stride or max(1, args.window_size // 4)
 
     classes = list_class_dirs(args.data_dir)
     if not classes:
         parser.error(f"no class folders found under {args.data_dir!r}")
 
-    grand_total = 0
+    grand_totals = {"training": 0, "testing": 0}
     for label in classes:
         files = list_csv_files(os.path.join(args.data_dir, label))
-        out_class_dir = os.path.join(args.out_dir, label)
-        os.makedirs(out_class_dir, exist_ok=True)
+        train_files, test_files = split_files(files)
 
-        count = 0
-        for path in files:
-            signal = load_signal(path)
-            for window in sliding_windows(signal, args.window_size, stride):
-                spectrum = compute_spectrum(window, args.sample_rate_hz)
-                bins = normalize_bins(spectrum.bins)
-                write_ei_sample(os.path.join(out_class_dir, f"{label}.{count}.csv"), bins)
-                count += 1
-        print(f"{label}: {len(files)} files -> {count} samples", flush=True)
-        grand_total += count
+        train_count = prepare_category(
+            train_files, train_stride, label,
+            os.path.join(args.out_dir, "training", label), args.window_size, args.sample_rate_hz)
+        test_count = prepare_category(
+            test_files, test_stride, label,
+            os.path.join(args.out_dir, "testing", label), args.window_size, args.sample_rate_hz)
 
-    print(f"Total: {grand_total} samples written under {args.out_dir}", flush=True)
+        print(f"{label}: {len(train_files)} train files -> {train_count} samples, "
+              f"{len(test_files)} test files -> {test_count} samples", flush=True)
+        grand_totals["training"] += train_count
+        grand_totals["testing"] += test_count
+
+    print(f"Total: {grand_totals['training']} training + {grand_totals['testing']} testing "
+          f"samples written under {args.out_dir}", flush=True)
 
 
 if __name__ == "__main__":
