@@ -355,8 +355,52 @@ python3 tools/raw_capture.py --label healthy --duration 180 --out /tmp/captures
 
 One label per file, never mixed, by construction — so a later train/test split can be
 done at the file level and is leakage-free without any extra care at split time.
-Files are pulled off-device with `adb pull` (`.gitignore`'s `captures/` entry keeps
-them out of the repo — they're data, not source).
+
+Files are pulled off-device with
+[pull_captures.sh](../base-station/pull_captures.sh) (`./pull_captures.sh` from
+`base-station/`, default destination `base-station/captures/` —
+`.gitignore`'s `captures/` entry keeps them out of the repo, they're data, not
+source). Not a thin `adb pull` wrapper: the capture files live inside the app's
+docker container, not on the board's own host filesystem `adb` normally reaches, so
+it bridges that with `docker cp` first; pulls files individually rather than the
+whole directory (`adb pull <dir>` nests the directory into an already-existing
+local one on every re-run, `captures/captures/...`, `captures/captures/captures/...`
+— this bit us once); and, once every file is verified byte-size-correct locally,
+deletes the originals from the container so the board isn't the long-term archive of
+its own limited storage.
+
+**Bug found and fixed while adding that device-cleanup step:** the verification loop
+originally iterated with `while read -r f; do ... done <<< "$FILES"`, calling `adb
+shell`/`adb pull` inside the loop body — those inner commands silently consumed the
+loop's own remaining stdin (a classic `while read <<< ...` + stdin-reading-subcommand
+interaction), so the loop actually processed only the first file before hitting EOF,
+yet the script still went on to delete *every* container original, believing all had
+verified clean. No data was lost that particular run (the untouched files happened to
+already be correctly pulled from an earlier run), but it was a live data-loss risk for
+any run with genuinely new files. Fixed with array iteration
+(`mapfile -t FILE_LIST <<< "$FILES"; for f in "${FILE_LIST[@]}"`, which never touches
+stdin regardless of what inner commands do with theirs) plus a hard processed-count
+check before the delete step is allowed to run at all.
+
+[tools/offline_experiment.py](../base-station/python/tools/offline_experiment.py)
+(same 2026-07-17) is the consumer — loads these captures and tries feature
+combinations entirely in numpy/torch on a laptop (see its own module docstring for
+usage). First real sweep against actual rig data (healthy vs. an induced imbalance
+fault) found RMS/kurtosis scalars are doing essentially all the separating work:
+every config without them scored 0.6–3.2σ (below the 8σ warning threshold — not
+flagged at all); every config with them scored 74–87σ (past even the 15σ fault
+threshold), almost regardless of bin count or accel axis fusion.
+
+Two additions the same day: **`--axis-mode none`** — a third option alongside
+`summed`/`separate` that excludes accel entirely (mic-only), the accel-side symmetric
+counterpart to the pre-existing `--exclude-mic`; confirmed accel, not mic, carries
+this fault's signal (mic-only scored only +6σ even with scalars enabled). And
+**`--plot-out PATH`** — saves a 3-panel PNG (an example raw window, that window's
+spectrum as the model actually sees it, and the healthy-vs-fault score histogram
+against the 8σ/15σ reference lines) via a new laptop-only `matplotlib` dependency
+([tools/requirements-offline-experiment.txt](../base-station/python/tools/requirements-offline-experiment.txt),
+mirrors `requirements-ei.txt`'s pattern — never touches the on-device app's own
+`requirements.txt`).
 
 **Verified live 2026-07-17:** a 10s test capture produced 21 windows across all 4
 channels; data was physically sane, not corrupted/zero — one accel axis showed a
@@ -392,3 +436,5 @@ after flipping back** — don't rediscover this as a bug later.
 | Raw window access | [sketch/accel_sampler.cpp/h](../base-station/sketch/accel_sampler.cpp), [sketch/mic_sampler.cpp/h](../base-station/sketch/mic_sampler.cpp) | **new**, pre-FFT window accessors gated behind the raw-capture flag (§9) |
 | Raw-capture data tool | [python/tools/raw_capture.py](../base-station/python/tools/raw_capture.py) | **new**, labeled `.npz` capture over `SpiConsumer` (§9) |
 | SPI consumer hook | [python/ingestion/spi_reader.py](../base-station/python/ingestion/spi_reader.py) | `SpiConsumer` gained an optional `on_decoded` callback for `raw_capture.py` (§9) |
+| Device-to-laptop pull | [pull_captures.sh](../base-station/pull_captures.sh) | **new**, nesting-safe individual-file pull + verified device-side cleanup (§9) |
+| Offline experiment harness | [python/tools/offline_experiment.py](../base-station/python/tools/offline_experiment.py) | **new**, sweeps FFT bins/axis-fusion/mic/scalars against captured data, trains the real autoencoder per config (§9) |

@@ -1,0 +1,8 @@
+# Deps for tools/offline_experiment.py, beyond what ../requirements.txt
+# (the on-device app's requirements, torch/psutil/statemachine) already
+# covers -- matplotlib is only used by this local, laptop-side tool's
+# --plot-out output and is never deployed to the device.
+#
+#   .venv/bin/pip install -r requirements.txt -r tools/requirements-offline-experiment.txt
+#   .venv/bin/python tools/offline_experiment.py --sweep
+matplotlib==3.11.0
