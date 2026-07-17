@@ -12,3 +12,4 @@
 numpy==2.5.1
 paho-mqtt==2.1.0
 python-statemachine==3.2.0
+scikit-learn==1.7.2  # only for tools/paper_knn_baseline.py's KNN classifier
