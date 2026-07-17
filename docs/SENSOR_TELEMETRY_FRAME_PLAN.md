@@ -6,10 +6,14 @@ the SPI base-station link and the MQTT satellite link (`satellite_node_sim.py` +
 `mqtt_subscriber.py`) — and both ends of each are generated from / decode against the
 one schema file. Verified live on the UNO Q: firmware reflashed, base station ingesting
 **6.66 fps / 569+ frames, no drops** with correct mic+accel peaks; all three test suites
-(telemetry_frame, features, mqtt_subscriber) pass in the on-device venv. T6 (run the
-experiments) is next; T7 (Phase B collapse) is deferred and per the current call
-**likely never happens** — treat Phase A as the durable format, not a scaffold. Only the
-*real* (non-simulated) satellite firmware remains for T8. See §8 for per-task status.
+(telemetry_frame, features, mqtt_subscriber) pass in the on-device venv. T7 (Phase B
+collapse) is deferred and per the current call **likely never happens** — treat Phase A
+as the durable format, not a scaffold. Only the *real* (non-simulated) satellite firmware
+remains for T8. **Raw-capture mode** (§9) — a firmware toggle + host tool for recording
+labeled raw sensor data off a physical test rig, so the T6 experiments run offline
+against real data instead of per-combination reflashes — was built and verified live the
+same day; running the actual offline experiments is the next session's work. See §8 for
+per-task status.
 
 This doc is the output of a design discussion about generalizing the MCU→MPU (and
 future satellite→MPU) sensor data frame so different sensor combinations and bin sizes
@@ -264,7 +268,12 @@ node is fixed for its lifetime.
 - [ ] **T6 — Run the actual bin-size/combination experiments** this was all in service
       of (ties back into
       [EDGE_IMPULSE_FAULT_CLASSIFICATION_PLAN.md](EDGE_IMPULSE_FAULT_CLASSIFICATION_PLAN.md)
-      §3.3's next-session item: band-power / dimensionality experiments).
+      §3.3's next-session item: band-power / dimensionality experiments). **Tooling to
+      run these offline is now built** (§9, 2026-07-17) — raw-capture firmware mode +
+      `tools/raw_capture.py`, verified live against a real test rig. The experiments
+      themselves (an offline notebook trying FFT size / bin count / per-axis-vs-summed
+      accel / +scalar combinations against the captured data) are the next session's
+      work, not yet started.
 - [ ] **T7 — Finalize.** Once a combination is chosen, freeze the schema and collapse
       to the flat, rigid Phase B struct (§3) — drop section headers, all fields
       required, positional layout. **Likely never happens** (call made 2026-07-17): the
@@ -286,7 +295,87 @@ node is fixed for its lifetime.
 
 ---
 
-## 9. Appendix — where each change lands in existing code
+## 9. Raw-capture mode (offline experimentation tooling)
+
+Built and verified live on hardware 2026-07-17, to unblock T6 without a firmware
+reflash per combination. **Not a production feature** — a data-collection mode you
+turn on, run a labeled rig session with, then turn back off.
+
+**Why raw, not spectra:** a *recorded spectrum* freezes FFT size, bin count, and
+accel axis-fusion at capture time — none of those could be revisited later. A
+*recorded raw time-series* lets every combination (bin count, FFT size, 3-axis vs
+combined accel, +RMS/kurtosis scalars) be tried later, offline, from **one**
+recording. Capture once per rig state, experiment forever.
+
+**Toggle:** `FUSER_RAW_CAPTURE_MODE` in
+[app_config.h](../base-station/sketch/app_config.h) (default `0` — normal fused
+SPECTRUM stream, unchanged from §3). Setting it to `1` and reflashing rebuilds the
+whole `fuser_thread_entry` loop ([fuser.cpp](../base-station/sketch/fuser.cpp)) to
+instead stream un-FFT'd windows:
+
+- Accel's 3 axes are kept **separate** here (unlike the normal path, which sums them
+  — [accel_sampler.cpp](../base-station/sketch/accel_sampler.cpp)'s deliberate prior
+  decision), because the raw capture is exactly what makes "3-axis vs combined" an
+  experiment you can still run later instead of a decision baked in at capture time.
+- The frame alternates one **3-axis accel raw** frame and one **mic raw** frame per
+  epoch (`FUSER_RAW_EPOCH_MS = 1000`) — never combined into one frame, since together
+  they'd exceed the frame buffer. 1000ms was chosen because a full accel window takes
+  ~640ms to fill; anything faster would re-send a byte-identical duplicate window,
+  which is worse than window overlap — a straight leakage bug if a duplicate lands on
+  both sides of a later train/test split (see the sensor-independent leakage note
+  below).
+- Four new schema channels carry this:
+  `accel_x_raw`/`accel_y_raw`/`accel_z_raw`/`mic_raw`
+  ([telemetry_schema.json](../base-station/telemetry_schema.json), ids 2-5, kind
+  `TIME_SERIES`) alongside the untouched `mic`/`accel` SPECTRUM channels. These are
+  inert to the live autoencoder pipeline — `decode_frame()` puts `TIME_SERIES` data
+  into `DecodedFrame.time_series`, never `SensorFrame.bins`, so registry/features.py
+  never see them.
+- Both raw-mode frame kinds fit the **existing** `SPI_LINK_MAX_PAYLOAD` (12480 B, set
+  in T2) unchanged — no transport-layer change was needed for this.
+
+**No overlapping/sliding windows, ever.** Every captured window is a fresh, disjoint
+block of samples — more training examples come from running the rig **longer**, not
+from denser/overlapping windows. This project already paid for the alternative once
+(see
+[EDGE_IMPULSE_FAULT_CLASSIFICATION_PLAN.md](EDGE_IMPULSE_FAULT_CLASSIFICATION_PLAN.md)
+§3.3's train/test leakage incident) and isn't repeating it here.
+
+**Host tool:**
+[tools/raw_capture.py](../base-station/python/tools/raw_capture.py) runs inside the
+App Lab container (needs `arduino.app_utils.Bridge`, like `spi_reader.py`/`main.py`).
+It pulls frames via `SpiConsumer` (which gained an optional `on_decoded` callback in
+[spi_reader.py](../base-station/python/ingestion/spi_reader.py) for this, backward
+compatible — `main.py`'s live pipeline doesn't use it) and saves one labeled `.npz`
+per run:
+
+```
+python3 tools/raw_capture.py --label healthy --duration 180 --out /tmp/captures
+```
+
+One label per file, never mixed, by construction — so a later train/test split can be
+done at the file level and is leakage-free without any extra care at split time.
+Files are pulled off-device with `adb pull` (`.gitignore`'s `captures/` entry keeps
+them out of the repo — they're data, not source).
+
+**Verified live 2026-07-17:** a 10s test capture produced 21 windows across all 4
+channels; data was physically sane, not corrupted/zero — one accel axis showed a
+clear gravity-offset mean (the board's vertical axis at rest/running), the other two
+hovered near zero (vibration-only), and mic samples were non-zero and non-clipping.
+
+**Known interaction to handle when switching back to normal mode:** `main.py`'s own
+live `SpiConsumer` is not stopped while raw-capture mode runs. Every raw frame decodes
+with empty `SensorFrame.bins`, so `PipelineManager._infer_sensor_config` commits the
+`base_station` registry entry with `sensor_config=frozenset()` (0-dim) from the first
+raw frame onward — harmless while raw mode is active (0 expected == 0 actual, so
+`_validate_frame_bins` never raises), but it means real spectrum frames after
+reverting to `FUSER_RAW_CAPTURE_MODE=0` will then mismatch that committed 0-dim config
+and raise. **Decommission/reset the `base_station` registry entry before or right
+after flipping back** — don't rediscover this as a bug later.
+
+---
+
+## 10. Appendix — where each change lands in existing code
 
 | Concern | Existing file | Change |
 |---|---|---|
@@ -299,3 +388,7 @@ node is fixed for its lifetime.
 | Schema file (new) | — | **new**, single source of truth per §2 |
 | Satellite sim | [python/tools/satellite_node_sim.py](../base-station/python/tools/satellite_node_sim.py) | eventually publish section-list payload over MQTT per §6/T8 |
 | MQTT ingestion | [python/ingestion/mqtt_subscriber.py](../base-station/python/ingestion/mqtt_subscriber.py) | parse same section-list payload from real satellite nodes (T8) |
+| Raw-capture toggle | [sketch/app_config.h](../base-station/sketch/app_config.h) | **new**, `FUSER_RAW_CAPTURE_MODE` + `FUSER_RAW_EPOCH_MS` (§9) |
+| Raw window access | [sketch/accel_sampler.cpp/h](../base-station/sketch/accel_sampler.cpp), [sketch/mic_sampler.cpp/h](../base-station/sketch/mic_sampler.cpp) | **new**, pre-FFT window accessors gated behind the raw-capture flag (§9) |
+| Raw-capture data tool | [python/tools/raw_capture.py](../base-station/python/tools/raw_capture.py) | **new**, labeled `.npz` capture over `SpiConsumer` (§9) |
+| SPI consumer hook | [python/ingestion/spi_reader.py](../base-station/python/ingestion/spi_reader.py) | `SpiConsumer` gained an optional `on_decoded` callback for `raw_capture.py` (§9) |
