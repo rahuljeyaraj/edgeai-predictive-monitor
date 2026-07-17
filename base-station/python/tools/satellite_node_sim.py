@@ -100,27 +100,46 @@ _signal_cache_lock = threading.Lock()
 def load_signal(path: str) -> np.ndarray:
     """Reader matched to the actual Kaggle vibration-fault-diagnosis
     dataset's file shape: a free-form metadata header (Com/Node/SN/
-    Firmware/Time/Units -- the latter containing a non-UTF-8 "m/s²"
-    byte) followed by "<index>,<amplitude>" data rows. np.genfromtxt can't
-    handle this directly (choppy encoding, ragged header row lengths), so
-    this reads line-by-line instead: a line's last comma-separated field
-    is kept as one sample whenever it parses as a float, which naturally
-    skips every header line (dates, serial numbers, channel names -- none
-    of those parse as a bare float) while keeping just the amplitude
-    column. Rare false positives from a header value that happens to
-    parse as a float too (e.g. a calibration offset) are one-sample noise
-    against ~4000 real samples per file -- negligible."""
+    Firmware/Time/Units -- the latter containing a non-UTF-8 "m/s²" byte,
+    and on some files padded with trailing empty columns) followed by a
+    "Sweeps,Channel N[,...]" marker line, then "<index>,<amplitude>[,...]"
+    data rows. np.genfromtxt can't handle this directly (choppy encoding,
+    ragged header row lengths), so this reads line-by-line instead: skip
+    everything up to and including the "Sweeps," marker (confirmed present
+    exactly once in all 150 dataset files), then take each following
+    line's *second* comma-separated field (index, amplitude, ...) as one
+    sample.
+
+    An earlier version of this reader kept whichever line's *last*
+    comma-separated field parsed as a float, with no data-start marker.
+    Two real bugs that caused, both confirmed against the actual dataset:
+    (1) header lines like "Node, 264" or a Channel filter row's trailing
+    "...Offset,-259.011" also parse as bare floats, so they leaked in as
+    ~5 fake leading samples per file -- a huge outlier (Node ID 264) sitting
+    exactly where every window's first slice starts, silently wrecking that
+    window's peak-normalization; (2) some files (e.g.
+    Wear/Wear_Z/M(1).csv) are exported with trailing empty padding columns
+    on every row ("0,-16.10222244,,,,,,,"), so the amplitude was never the
+    *last* field and got skipped entirely -- that file alone lost ~3660 of
+    its ~3669 real samples, collapsing to 2 (both header artifacts)."""
     with _signal_cache_lock:
         cached = _signal_cache.get(path)
     if cached is not None:
         return cached
 
     samples = []
+    in_data = False
     with open(path, encoding="latin-1", errors="replace") as f:
         for line in f:
-            field = line.rsplit(",", 1)[-1].strip()
+            if not in_data:
+                if line.strip().lower().startswith("sweeps"):
+                    in_data = True
+                continue
+            fields = line.split(",")
+            if len(fields) < 2:
+                continue
             try:
-                samples.append(float(field))
+                samples.append(float(fields[1].strip()))
             except ValueError:
                 continue
 
