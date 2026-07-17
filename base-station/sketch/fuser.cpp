@@ -6,9 +6,19 @@
  * mic + accel spectra (mic_copy_full_spectrum()/accel_copy_full_spectrum() -
  * the un-downsampled float32 bins the samplers publish for us, NOT their
  * 32-bucket get_*_spectrum Bridge views), packs them into one self-describing
- * frame (a fuser_frame_header mirroring the old repo's
- * spectrum_fused_payload_header, then mic_bin_count float32s, then
- * accel_bin_count float32s), and hands that frame to the SPI transport.
+ * generic section-list frame (docs/SENSOR_TELEMETRY_FRAME_PLAN.md S3, Phase A),
+ * and hands that frame to the SPI transport.
+ *
+ * Frame = [num_sections u8] then, per section,
+ * [source_id u8][channel_id u8][data_kind u8][section_len u16][body]; a
+ * SPECTRUM body is [fs f32][fft_size u16][bin_count u16][bins f32...]. Channel/
+ * source/kind ids come from telemetry_schema.h, generated from the one schema
+ * file (telemetry_schema.json) the MPU parser (common/telemetry_frame.py) is
+ * also generated from, so the two ends can't drift. This replaced a fixed
+ * fuser_frame_header + two hardcoded mic/accel blocks: to change which channels
+ * a frame carries (per-axis accel, add a SCALAR_SET, ...) you now just edit
+ * num_sections + which write_*_section() calls run below, and the MPU side needs
+ * no code change at all (it loops over sections and dispatches on data_kind).
  *
  * Transport = the dedicated MCU<->MPU SPI bus (spi_link.{h,cpp}), NOT the shared
  * Bridge UART. This is the fix documented in docs/progress2.md ("THE NEXT
@@ -34,6 +44,7 @@
 #include "app_config.h"
 #include "mic_sampler.h"
 #include "spi_link.h"
+#include "telemetry_schema.h"
 
 #include <Arduino_RouterBridge.h>
 #include <zephyr/kernel.h>
@@ -72,27 +83,68 @@
  * thread entry). Generous vs. the few ms setup() actually needs. */
 #define FUSER_STARTUP_DELAY_MS 1000
 
-/* Self-describing frame header, byte-for-byte the old repo's
- * spectrum_fused_payload_header (frame_types.h): the receiver reads sample
- * rate / FFT size / bin count per sensor off the wire rather than hardcoding
- * them. Little-endian on both ends (Cortex-M and the Linux host), packed, so a
- * direct memcpy into the frame buffer matches the documented wire layout. */
-struct __attribute__((packed)) fuser_frame_header {
-  float mic_fs;
-  uint16_t mic_fft_size;
-  uint16_t mic_bin_count;
-  float accel_fs;
-  uint16_t accel_fft_size;
-  uint16_t accel_bin_count;
-};
+/* Worst-case section count the frame buffer is sized for. Two today (mic +
+ * accel); headroom for the near-term experiments the plan is for (per-axis
+ * triaxial accel = 3, + mic, + a SCALAR_SET of RMS/kurtosis/...). Only affects
+ * the static buffer ceiling below - the actual num_sections written each frame
+ * is chosen in the thread loop. */
+#define FUSER_MAX_SECTIONS 6
+
+/* Per-section wire overhead: the 5-byte section header (source/channel/kind +
+ * section_len u16) plus a SPECTRUM body's own fs/fft_size/bin_count preamble
+ * (4 + 2 + 2). A SPECTRUM section is the largest kind, so sizing every slot as
+ * a max-bin spectrum is the true worst case. */
+#define FUSER_SECTION_OVERHEAD (5 + 4 + 2 + 2)
 
 /* BSS scratch, not thread stack - same reason the samplers use static working
  * buffers (see mic_sampler.cpp): a few KB of frame/bin data shouldn't inflate
- * the thread stack. */
+ * the thread stack. fuser_frame_buf is sized for the worst case (1 num_sections
+ * byte + FUSER_MAX_SECTIONS max-bin SPECTRUM sections); SPI_LINK_MAX_PAYLOAD
+ * (spi_link.cpp) must be >= this, and spi_link_stage_frame() clamps defensively.
+ */
 static float fuser_mic_bins[FUSER_MAX_BINS];
 static float fuser_accel_bins[FUSER_MAX_BINS];
-static uint8_t fuser_frame_buf[sizeof(fuser_frame_header) +
-                               2 * FUSER_MAX_BINS * sizeof(float)];
+static uint8_t fuser_frame_buf[1 + FUSER_MAX_SECTIONS *
+                                       (FUSER_SECTION_OVERHEAD +
+                                        FUSER_MAX_BINS * sizeof(float))];
+
+/* Little-endian appenders (the Cortex-M and the Linux MPU are both LE, matching
+ * the wire format's documented byte order - same assumption the old direct
+ * memcpy of the packed header relied on). Each advances *pos past what it
+ * wrote; the caller guarantees room via fuser_frame_buf's worst-case sizing. */
+static inline void put_u8(uint8_t *buf, size_t *pos, uint8_t v) {
+  buf[(*pos)++] = v;
+}
+static inline void put_u16(uint8_t *buf, size_t *pos, uint16_t v) {
+  memcpy(&buf[*pos], &v, sizeof(v));
+  *pos += sizeof(v);
+}
+static inline void put_f32(uint8_t *buf, size_t *pos, float v) {
+  memcpy(&buf[*pos], &v, sizeof(v));
+  *pos += sizeof(v);
+}
+
+/* Append one SPECTRUM section (source_id fixed to this base station). Body is
+ * [fs f32][fft_size u16][bin_count u16][bins f32...]; section_len covers only
+ * the body, so a receiver that doesn't know this channel can skip it by length.
+ * A structurally-absent channel (plan S4) is sent by calling this with an
+ * all-zero bins buffer and its real bin_count - a present, zero-valued section,
+ * NOT an omitted one. */
+static void write_spectrum_section(uint8_t *buf, size_t *pos, uint8_t channel_id,
+                                   float fs, uint16_t fft_size,
+                                   const float *bins, uint16_t bin_count) {
+  uint16_t section_len =
+      (uint16_t)(4 + 2 + 2 + (uint32_t)bin_count * sizeof(float));
+  put_u8(buf, pos, TELEM_SOURCE_BASE_STATION);
+  put_u8(buf, pos, channel_id);
+  put_u8(buf, pos, TELEM_KIND_SPECTRUM);
+  put_u16(buf, pos, section_len);
+  put_f32(buf, pos, fs);
+  put_u16(buf, pos, fft_size);
+  put_u16(buf, pos, bin_count);
+  memcpy(&buf[*pos], bins, (size_t)bin_count * sizeof(float));
+  *pos += (size_t)bin_count * sizeof(float);
+}
 
 #if BENCHMARK_STATS_ENABLED
 /* Single writer (fuser_thread_entry), read by fuser_get_stats() from
@@ -117,13 +169,13 @@ static void fuser_thread_entry(void *p1, void *p2, void *p3) {
   if (mic_bins > FUSER_MAX_BINS) mic_bins = FUSER_MAX_BINS;
   if (accel_bins > FUSER_MAX_BINS) accel_bins = FUSER_MAX_BINS;
 
-  struct fuser_frame_header header;
-  header.mic_fs = mic_sample_rate_hz();
-  header.mic_fft_size = (uint16_t)mic_fft_size();
-  header.mic_bin_count = (uint16_t)mic_bins;
-  header.accel_fs = accel_sample_rate_hz();
-  header.accel_fft_size = (uint16_t)accel_fft_size();
-  header.accel_bin_count = (uint16_t)accel_bins;
+  /* Per-channel metadata, fixed at bring-up, read once and re-sent in every
+   * frame's SPECTRUM section headers (fs/fft_size travel on the wire so the MPU
+   * never needs them out of band). */
+  float mic_fs = mic_sample_rate_hz();
+  uint16_t mic_fft = (uint16_t)mic_fft_size();
+  float accel_fs = accel_sample_rate_hz();
+  uint16_t accel_fft = (uint16_t)accel_fft_size();
 
   /* Let setup() finish first. This thread (FUSER_THREAD_PRIORITY, app_config.h)
    * is created mid-setup() and would otherwise preempt the priority-14 setup()
@@ -153,14 +205,16 @@ static void fuser_thread_entry(void *p1, void *p2, void *p3) {
     mic_copy_full_spectrum(fuser_mic_bins);
     accel_copy_full_spectrum(fuser_accel_bins);
 
-    /* Assemble the frame: header, then mic bins, then accel bins. */
+    /* Assemble the section-list frame: [num_sections u8] then one SPECTRUM
+     * section per channel. To experiment with a different channel set, change
+     * num_sections and the write_*_section() calls here (ids from
+     * telemetry_schema.h) - nothing else on either end needs editing. */
     size_t pos = 0;
-    memcpy(&fuser_frame_buf[pos], &header, sizeof(header));
-    pos += sizeof(header);
-    memcpy(&fuser_frame_buf[pos], fuser_mic_bins, mic_bins * sizeof(float));
-    pos += mic_bins * sizeof(float);
-    memcpy(&fuser_frame_buf[pos], fuser_accel_bins, accel_bins * sizeof(float));
-    pos += accel_bins * sizeof(float);
+    put_u8(fuser_frame_buf, &pos, 2);  // num_sections: mic + accel
+    write_spectrum_section(fuser_frame_buf, &pos, TELEM_CHANNEL_MIC, mic_fs,
+                           mic_fft, fuser_mic_bins, (uint16_t)mic_bins);
+    write_spectrum_section(fuser_frame_buf, &pos, TELEM_CHANNEL_ACCEL, accel_fs,
+                           accel_fft, fuser_accel_bins, (uint16_t)accel_bins);
 
     size_t frame_len = pos;
 

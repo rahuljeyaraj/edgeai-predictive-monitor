@@ -8,10 +8,9 @@ No Mosquitto broker is available in this dev environment, so the two
 concerns are exercised separately rather than over a real socket:
 
 1. normalize_spectrum_message() -- the pure decode+normalize step -- is
-   exercised directly with hand-built binary envelopes ([TYPE: 1B]
-   [spectrum_fused_payload], same struct codec the SPI fuser frame uses --
-   base-station/python/common/wire_protocol.py's encode_spectrum_fused_payload()), same
-   pattern ingestion/spi_reader.py's frame decode uses.
+   exercised directly with hand-built section-list telemetry frames (the exact
+   same payload the SPI fuser frame carries -- common/telemetry_frame.py's
+   encode_spectrum_frame()), the same decoder ingestion/spi_reader.py now uses.
 2. MqttSubscriber's on_message wiring is exercised by constructing a real
    paho.mqtt.client.MQTTMessage and calling its handler directly, rather
    than opening a real broker connection -- paho.Client.connect() is not
@@ -30,7 +29,9 @@ import paho.mqtt.client as mqtt
 
 from sensor_frame import FrameSource
 from mqtt_subscriber import MalformedMessageError, normalize_spectrum_message, MqttSubscriber
-from wire_protocol import ChannelSpectrum, MqttMsgType, encode_mqtt_message, encode_spectrum_fused_payload
+from wire_protocol import ChannelSpectrum
+import telemetry_schema as schema
+from telemetry_frame import encode_frame, encode_scalar_body, encode_section, encode_spectrum_frame
 from registry import Registry, SensorChannel
 from gate import MotorStateGate
 from manager import PipelineManager
@@ -41,10 +42,18 @@ def default_gate_factory() -> MotorStateGate:
 
 TOPIC = "epm/a4cf12/data"
 
+_SAT = schema.SOURCE_ID["satellite"]
+
 
 def spectrum_message(mic=None, accel=None) -> bytes:
-    payload = encode_spectrum_fused_payload(mic=mic, accel=accel)
-    return encode_mqtt_message(MqttMsgType.SPECTRUM, payload)
+    """The raw section-list telemetry frame that is now the MQTT data-topic
+    message body -- one SPECTRUM section per present channel, no envelope."""
+    sections = []
+    if mic is not None:
+        sections.append((schema.CHANNEL_ID_BY_NAME["mic"], mic.fs, mic.fft_size, mic.bins))
+    if accel is not None:
+        sections.append((schema.CHANNEL_ID_BY_NAME["accel"], accel.fs, accel.fft_size, accel.bins))
+    return encode_spectrum_frame(_SAT, sections)
 
 
 def test_valid_spectrum_message_decodes_dense_bins():
@@ -70,28 +79,31 @@ def test_fused_channels_message_reconstructs_both_channels():
     print("fused channels payload decodes both accel and mic bins: PASS")
 
 
-def test_disabled_channel_omitted_from_frame_bins():
+def test_absent_channel_omitted_from_frame_bins():
     accel = ChannelSpectrum(fs=4000.0, fft_size=256, bins=tuple(float(i) for i in range(128)))
     frame = normalize_spectrum_message(TOPIC, spectrum_message(mic=None, accel=accel))
     assert frame is not None
     assert set(frame.bins.keys()) == {"accel"}, frame.bins.keys()
-    print("disabled channel (bin_count=0) omitted from frame.bins: PASS")
+    print("channel with no section is absent from frame.bins: PASS")
 
 
-def test_both_channels_empty_raises():
-    try:
-        normalize_spectrum_message(TOPIC, spectrum_message(mic=None, accel=None))
-        raise AssertionError("expected MalformedMessageError for an all-disabled SPECTRUM payload")
-    except MalformedMessageError:
-        pass
-    print("SPECTRUM payload with both channels disabled raises MalformedMessageError: PASS")
-
-
-def test_non_spectrum_type_is_silently_skipped():
-    message = encode_mqtt_message(0x03, b"")  # arbitrary non-SPECTRUM type byte
-    frame = normalize_spectrum_message(TOPIC, message)
+def test_empty_frame_is_skipped():
+    # A frame with no sections (num_sections=0) -- a heartbeat -- carries no
+    # bins, so it's a normal skip (None), not a malformed drop.
+    frame = normalize_spectrum_message(TOPIC, encode_spectrum_frame(_SAT, []))
     assert frame is None, frame
-    print("non-SPECTRUM message type returns None (normal skip, not malformed): PASS")
+    print("empty (zero-section) heartbeat frame returns None (normal skip): PASS")
+
+
+def test_scalar_only_frame_is_skipped():
+    # A frame carrying only a SCALAR_SET section (e.g. health/perf) has no
+    # spectrum bins to route -- also a normal skip, not malformed.
+    body = encode_scalar_body({schema.SCALAR_ID_BY_NAME["rms"]: 0.5})
+    payload = encode_frame([encode_section(_SAT, schema.PERF_CHANNEL_ID,
+                                           schema.DATA_KIND["SCALAR_SET"], body)])
+    frame = normalize_spectrum_message(TOPIC, payload)
+    assert frame is None, frame
+    print("scalar-only (no spectrum) frame returns None (normal skip): PASS")
 
 
 def test_malformed_messages_raise():
@@ -149,11 +161,11 @@ def test_subscriber_routes_to_pipeline_manager_like_spi():
     subscriber._handle_message(None, None, malformed_msg)
 
     skipped_msg = mqtt.MQTTMessage(mid=0, topic=TOPIC.encode())
-    skipped_msg.payload = encode_mqtt_message(0x03, b"")
+    skipped_msg.payload = encode_spectrum_frame(_SAT, [])  # heartbeat: no sections
     subscriber._handle_message(None, None, skipped_msg)
 
     assert subscriber.dropped_frames == 1, subscriber.dropped_frames
-    print("malformed message counted as dropped, non-SPECTRUM type silently skipped: PASS")
+    print("malformed message counted as dropped, empty heartbeat frame silently skipped: PASS")
 
     pipelines = manager.pipelines()
     assert set(pipelines.keys()) == {"a4cf12"}, pipelines.keys()
@@ -169,9 +181,9 @@ def test_subscriber_routes_to_pipeline_manager_like_spi():
 def main():
     test_valid_spectrum_message_decodes_dense_bins()
     test_fused_channels_message_reconstructs_both_channels()
-    test_disabled_channel_omitted_from_frame_bins()
-    test_both_channels_empty_raises()
-    test_non_spectrum_type_is_silently_skipped()
+    test_absent_channel_omitted_from_frame_bins()
+    test_empty_frame_is_skipped()
+    test_scalar_only_frame_is_skipped()
     test_malformed_messages_raise()
     test_malformed_topic_raises()
     test_subscriber_routes_to_pipeline_manager_like_spi()

@@ -1,10 +1,20 @@
 # Plan — Generic sensor telemetry frame format (MCU/satellite → MPU)
 
-Status: **Design agreed 2026-07-17, not yet implemented.** This doc is the output of a
-design discussion about generalizing the MCU→MPU (and future satellite→MPU) sensor
-data frame so different sensor combinations and bin sizes can be experimented with
-without hand-editing frame-parsing code on both ends every time. No code has changed
-yet — this is what the next session implements.
+Status: **Phase A implemented + verified on hardware 2026-07-17 (T1–T5, T8 sim/ingest).**
+The generic section-list frame is the single payload format on **both** transports now —
+the SPI base-station link and the MQTT satellite link (`satellite_node_sim.py` +
+`mqtt_subscriber.py`) — and both ends of each are generated from / decode against the
+one schema file. Verified live on the UNO Q: firmware reflashed, base station ingesting
+**6.66 fps / 569+ frames, no drops** with correct mic+accel peaks; all three test suites
+(telemetry_frame, features, mqtt_subscriber) pass in the on-device venv. T6 (run the
+experiments) is next; T7 (Phase B collapse) is deferred and per the current call
+**likely never happens** — treat Phase A as the durable format, not a scaffold. Only the
+*real* (non-simulated) satellite firmware remains for T8. See §8 for per-task status.
+
+This doc is the output of a design discussion about generalizing the MCU→MPU (and
+future satellite→MPU) sensor data frame so different sensor combinations and bin sizes
+can be experimented with without hand-editing frame-parsing code on both ends every
+time.
 
 Companion to [PROGRESS.md](PROGRESS.md) / [progress2.md](progress2.md) (documents the
 current fixed frame format this plan replaces) and
@@ -207,41 +217,72 @@ node is fixed for its lifetime.
 
 ## 8. Task checklist / suggested order
 
-- [ ] **T1 — Schema file.** Create the single source-of-truth channel schema (format:
-      YAML or a shared header — pick whichever is less friction to hand-edit
-      repeatedly during experiments). Start with today's actual combination (1 mic +
-      1 combined-accel) as the first entry, to confirm the new format round-trips
-      identically to what's currently working before changing anything.
-- [ ] **T2 — MCU: section-list writer.** In `fuser.cpp`, replace the fixed
-      `fuser_frame_header` + two-block body with the generic
-      `num_sections`/`(source_id, channel_id, data_kind, section_len, body)` writer.
-      Keep `SPI_LINK_MAX_PAYLOAD`/`FUSER_MAX_BINS` sized generously enough for
-      whatever combination is being tried (check against the ~64 ms epoch's SPI wire
-      time budget if payload grows a lot — a triaxial+mic+scalars frame is
-      meaningfully bigger than today's 4112 B).
-- [ ] **T3 — MPU: generic section parser.** In `features.py` (or a new module), write
-      the section-list reader once: iterate sections by `(data_kind, len)`, dispatch to
-      a per-kind decoder, skip unrecognized kinds by length. Build the feature vector
-      by concatenating in a fixed sort order (e.g. by `channel_id`).
-- [ ] **T4 — Zero-fill for structurally-absent channels.** Confirm the MCU sends
-      explicit zero-valued sections (not omitted sections) for any channel a node
-      declares in its schema but doesn't physically have — per §4, omission is not
-      supported in this plan, only presence-with-zero.
-- [ ] **T5 — Retrain harness.** Since every combination change requires a fresh
-      autoencoder, make it cheap to retrain against whatever shape the current schema
-      produces (this likely already mostly exists via
-      [commissioning.py](../base-station/python/pipeline/commissioning.py) — confirm
-      it doesn't hardcode `input_dim`).
+- [x] **T1 — Schema file.** Done. Single source of truth is
+      [telemetry_schema.json](../base-station/telemetry_schema.json); JSON not YAML
+      (the App Lab venv has no PyYAML, and JSON needs no dep to parse on the host).
+      [gen_telemetry_schema.py](../base-station/python/tools/gen_telemetry_schema.py)
+      generates **both** sides from it — the C header
+      [sketch/telemetry_schema.h](../base-station/sketch/telemetry_schema.h) and the
+      Python module
+      [python/common/telemetry_schema.py](../base-station/python/common/telemetry_schema.py)
+      (both checked in, regenerate on edit) — so the two ends can't drift (the "ideal"
+      option in §2, not the hand-copy fallback). First entry is today's combination
+      (1 mic id 0 + 1 combined-accel id 1); `telemetry_frame_test.py`'s round-trip test
+      confirms it decodes identically to the old wire data.
+- [x] **T2 — MCU: section-list writer.** Done in
+      [fuser.cpp](../base-station/sketch/fuser.cpp): `write_spectrum_section()` +
+      `num_sections` writer replaced the fixed header + two blocks.
+      `SPI_LINK_MAX_PAYLOAD` bumped 4112 → 12480 (sized for the worst case: 1 +
+      `FUSER_MAX_SECTIONS`(6) max-bin SPECTRUM sections = 12367 B), and
+      `fuser_frame_buf` is sized identically; the chunked `spi_arm` pull already
+      sub-divides the frame so on-wire transfer size / the epoch budget are unaffected.
+      **Written but not compiled/flashed here** (no MCU toolchain/hardware in this
+      session) — needs a build + on-device `spi_link_test.py` run to confirm.
+- [x] **T3 — MPU: generic section parser.** Done as a new shared module
+      [python/common/telemetry_frame.py](../base-station/python/common/telemetry_frame.py):
+      `decode_frame()` iterates sections by `(data_kind, section_len)`, dispatches per
+      kind, and skips unrecognized kinds/channels by length.
+      [spi_reader.py](../base-station/python/ingestion/spi_reader.py) **and**
+      [mqtt_subscriber.py](../base-station/python/ingestion/mqtt_subscriber.py) now both
+      call it instead of their own hardcoded/fused parse. Feature-vector concatenation
+      order was already fixed and section-order-independent (features.py iterates the
+      `SensorChannel` enum over `SensorFrame.bins`, not wire order), so nothing there
+      needed changing.
+- [x] **T4 — Zero-fill for structurally-absent channels.** Handled + tested. The writer
+      emits a section per declared channel (a structurally-absent one is sent with its
+      real `bin_count` and all-zero values); `decode_frame()` treats a present zero
+      section as real zeros and only `bin_count=0` omits a channel — see
+      `telemetry_frame_test.py::test_zero_fill_present_section_is_real_data`. The
+      current mic+accel combo has no absent channel yet, so this is format-supported and
+      unit-proven rather than exercised on hardware.
+- [x] **T5 — Retrain harness.** Confirmed no hardcoded `input_dim`:
+      [commissioning.py](../base-station/python/pipeline/commissioning.py) calls
+      `build_autoencoder(entry.input_dim)`, `input_dim` comes from `sensor_config` via
+      `registry.input_dim_for()`, and the autoencoder scales its layers off it. A new
+      channel added to the schema still needs a matching `SensorChannel` enum entry +
+      `_DIM_BY_CHANNEL` dim in registry.py (schema evolution, per §5 = new node/retrain).
 - [ ] **T6 — Run the actual bin-size/combination experiments** this was all in service
       of (ties back into
       [EDGE_IMPULSE_FAULT_CLASSIFICATION_PLAN.md](EDGE_IMPULSE_FAULT_CLASSIFICATION_PLAN.md)
       §3.3's next-session item: band-power / dimensionality experiments).
 - [ ] **T7 — Finalize.** Once a combination is chosen, freeze the schema and collapse
       to the flat, rigid Phase B struct (§3) — drop section headers, all fields
-      required, positional layout.
-- [ ] **T8 (later, not blocking) — Satellite MQTT path.** When satellite nodes send
-      real (non-simulated) data, publish the same section-list payload bytes as the
-      MQTT message body per §6, no additional envelope.
+      required, positional layout. **Likely never happens** (call made 2026-07-17): the
+      per-section overhead is negligible next to the bin payload, and keeping the
+      self-describing format permanently avoids ever re-touching both ends again — so
+      Phase A is being treated as the durable format, not a scaffold to remove.
+- [x] **T8 (transport unified; real firmware still later) — Satellite MQTT path.** Done
+      for the codebase side: [mqtt_subscriber.py](../base-station/python/ingestion/mqtt_subscriber.py)
+      and [satellite_node_sim.py](../base-station/python/tools/satellite_node_sim.py) now
+      publish/consume the **same section-list frame** as the SPI path, as the raw MQTT
+      message body with no extra envelope (§6). The old fixed `spectrum_fused_payload`
+      codec was removed from
+      [wire_protocol.py](../base-station/python/common/wire_protocol.py); the `[TYPE]`
+      envelope survives only on the `epm/<id>/cmd` command direction (STATUS_LED), which
+      is a command, not telemetry. A heartbeat is just a zero-section frame (skipped). A
+      node with no spectrum data (health/perf only) rides a `SCALAR_SET` section instead
+      of a separate message type. Still outstanding: **real ESP32 satellite firmware**
+      emitting these bytes — no such node exists yet, so only the sim exercises it.
 
 ---
 

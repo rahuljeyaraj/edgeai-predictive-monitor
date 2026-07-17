@@ -21,9 +21,12 @@ whole-frame CRC32. A CRC failure retries the whole frame a few times, then drops
 it (lossy live view is fine - the next pull gets a fresh one).
 
 SPI frame (LE): [magic u32=0x46555331][seq u16][payload_len u16][payload]
-[crc32 u32 over header+payload]. Payload = fuser frame:
-  header = mic_fs(f32) mic_fft(u16) mic_bins(u16) accel_fs(f32) accel_fft(u16)
-           accel_bins(u16)  (16B), then mic_bins f32, then accel_bins f32.
+[crc32 u32 over header+payload]. The SPI envelope (this file) is unchanged and
+payload-agnostic; the payload is now the generic section-list telemetry frame
+(common/telemetry_frame.py, docs/SENSOR_TELEMETRY_FRAME_PLAN.md S3), decoded
+here via decode_frame() -- so which/how many sensor channels a frame carries no
+longer lives in this file at all (it loops over sections and dispatches on
+data_kind), which was the whole point of the plan.
 """
 import socket
 import struct
@@ -35,15 +38,14 @@ from typing import Callable, Optional
 from arduino.app_utils import Bridge
 
 from sensor_frame import BASE_STATION_NODE_ID, FrameSource, SensorFrame
+from telemetry_frame import MalformedFrameError, decode_frame
 
-# --- Wire format (must match sketch/spi_link.cpp + sketch/fuser.cpp) ---------
+# --- SPI transport envelope (must match sketch/spi_link.cpp) -----------------
 SOCKET_PATH = "/dev/spi-link.sock"
 SPI_MAGIC = 0x46555331
 SPI_HEADER_FMT = "<I H H"
 SPI_HEADER_LEN = struct.calcsize(SPI_HEADER_FMT)   # 8
 SPI_CRC_LEN = 4
-FUSER_HEADER_FMT = "<f H H f H H"
-FUSER_HEADER_LEN = struct.calcsize(FUSER_HEADER_FMT)  # 16
 
 # --- Transport tuning --------------------------------------------------------
 # 512B was the reliable sweet spot in the chunk-size sweep (20/20 CRC-OK, ~8 fps);
@@ -66,9 +68,8 @@ class SpiConsumer:
         self._lock = threading.Lock()
         self._thread = None
         self.last_seq = None
-        self.last_mic = None
-        self.last_accel = None
-        self.last_meta = None          # (mic_fs, mic_fft, accel_fs, accel_fft)
+        self.last_bins = None          # {channel_name: bins} of the last decoded frame
+        self.last_meta = None          # {channel_name: (fs, fft_size)}
         self.frames_ok = 0
         self.frames_dup = 0
         self.frames_dropped = 0        # exhausted retries
@@ -149,13 +150,8 @@ class SpiConsumer:
 
         payload = frame[SPI_HEADER_LEN:body_end]
         try:
-            mic_fs, mic_fft, mic_n, accel_fs, accel_fft, accel_n = struct.unpack_from(
-                FUSER_HEADER_FMT, payload, 0)
-            off = FUSER_HEADER_LEN
-            mic = struct.unpack_from(f"<{mic_n}f", payload, off)
-            off += mic_n * 4
-            accel = struct.unpack_from(f"<{accel_n}f", payload, off)
-        except struct.error:
+            decoded = decode_frame(payload)
+        except (MalformedFrameError, struct.error):
             return False
 
         with self._lock:
@@ -163,16 +159,16 @@ class SpiConsumer:
                 self.frames_dup += 1
                 return True
             self.last_seq = fseq
-            self.last_mic = mic
-            self.last_accel = accel
-            self.last_meta = (mic_fs, mic_fft, accel_fs, accel_fft)
+            self.last_bins = dict(decoded.bins)
+            self.last_meta = {name: (s.fs, s.fft_size)
+                              for name, s in decoded.spectra.items()}
             self.frames_ok += 1
 
         self._on_frame(SensorFrame(
             node_id=BASE_STATION_NODE_ID,
             source=FrameSource.SPI,
             timestamp=time.time(),
-            bins={"mic": mic, "accel": accel},
+            bins=decoded.bins,
         ))
         return True
 
@@ -195,7 +191,7 @@ class SpiConsumer:
 
     def snapshot(self) -> dict:
         with self._lock:
-            return dict(seq=self.last_seq, mic=self.last_mic, accel=self.last_accel,
-                        meta=self.last_meta, frames_ok=self.frames_ok,
-                        frames_dup=self.frames_dup, frames_dropped=self.frames_dropped,
-                        crc_fail=self.crc_fail, arm_gap=self.arm_gap)
+            return dict(seq=self.last_seq, bins=self.last_bins, meta=self.last_meta,
+                        frames_ok=self.frames_ok, frames_dup=self.frames_dup,
+                        frames_dropped=self.frames_dropped, crc_fail=self.crc_fail,
+                        arm_gap=self.arm_gap)

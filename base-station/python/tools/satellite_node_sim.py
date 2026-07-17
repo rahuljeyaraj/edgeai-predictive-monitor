@@ -31,15 +31,14 @@ every numeric value in a file into one 1-D signal, since the exact column
 layout can't be verified without the files in hand. Adjust load_signal() if
 your files need a specific column selected instead.
 
-Wire format: binary, the same spectrum_fused_payload/display_rgb_payload
-struct codec UART uses (mpu/common/wire_protocol.py), wrapped in a lean
-[TYPE: 1B][PAYLOAD] envelope instead of UART's SYNC/LEN/CRC16 frame --
-see mqtt_subscriber.py/mqtt_publisher.py's docstrings. This replaced an
-earlier JSON envelope carrying sparse top-N FFT peaks, which both capped
-the transmitted spectrum (a fixed peak count regardless of how much of
-the spectrum actually mattered) and cost far more bytes per bin than a
-packed float32 array -- there's no dual JSON/binary path here since no
-real satellite-node firmware exists yet to require a transition.
+Wire format (data direction): the generic section-list telemetry frame
+(common/telemetry_frame.py, docs/SENSOR_TELEMETRY_FRAME_PLAN.md S3/S6) -- the
+exact same payload the base station's own SPI fuser emits, published as the raw
+MQTT message body with no extra envelope. One SPECTRUM section per enabled
+channel. The command direction (STATUS_LED, epm/<node_id>/cmd) still uses the
+lean [TYPE: 1B][display_rgb_payload] envelope. This uniformity replaced this
+sim's earlier fixed spectrum_fused_payload codec (and, before that, a JSON
+envelope of sparse top-N FFT peaks).
 
 Not a production ingestion service, same spirit as mpu/tools/
 spectrum_server.py: no auth, no TLS, stdlib http.server rather than the
@@ -73,10 +72,10 @@ from wire_protocol import (  # noqa: E402
     MqttMsgType,
     decode_display_rgb_payload,
     decode_mqtt_message,
-    encode_mqtt_message,
-    encode_spectrum_fused_payload,
     rgb_int_to_hex,
 )
+import telemetry_schema as schema  # noqa: E402
+from telemetry_frame import encode_spectrum_frame  # noqa: E402
 
 DATA_TOPIC_FMT = "epm/{node_id}/data"
 CMD_TOPIC_FMT = "epm/{node_id}/cmd"
@@ -341,10 +340,16 @@ class SatelliteNode:
             if not channels_payload:
                 continue
 
-            payload = encode_spectrum_fused_payload(
-                mic=channels_payload.get("mic"), accel=channels_payload.get("accel"))
-            message = encode_mqtt_message(MqttMsgType.SPECTRUM, payload)
-            self._mqtt.publish(DATA_TOPIC_FMT.format(node_id=self.node_id), message, qos=0)
+            # One SPECTRUM section per enabled channel, in the generic
+            # section-list frame (the exact payload the base station's SPI fuser
+            # emits). Section order is irrelevant -- the decoder keys by
+            # channel_id from the schema.
+            sections = [
+                (schema.CHANNEL_ID_BY_NAME[name], spec.fs, spec.fft_size, spec.bins)
+                for name, spec in channels_payload.items()
+            ]
+            frame = encode_spectrum_frame(schema.SOURCE_ID["satellite"], sections)
+            self._mqtt.publish(DATA_TOPIC_FMT.format(node_id=self.node_id), frame, qos=0)
 
     def state(self) -> dict:
         with self._state_lock:

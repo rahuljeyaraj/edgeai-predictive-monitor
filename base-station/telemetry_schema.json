@@ -1,0 +1,43 @@
+{
+  "__doc__": [
+    "Single source of truth for the generic sensor telemetry frame format",
+    "(docs/SENSOR_TELEMETRY_FRAME_PLAN.md S2). Every channel/scalar/kind a",
+    "deployment uses is declared once here, then BOTH sides are generated from",
+    "it so the MCU writer and the MPU parser can't independently drift the way",
+    "load_signal() did (see EDGE_IMPULSE_FAULT_CLASSIFICATION_PLAN.md S3.3).",
+    "",
+    "Edit this file, then run:  python3 python/tools/gen_telemetry_schema.py",
+    "which regenerates sketch/telemetry_schema.h (MCU build) and",
+    "python/common/telemetry_schema.py (MPU parser). Do not hand-edit either",
+    "generated file.",
+    "",
+    "This is Phase A (experimentation) -- add/remove channels or change bins",
+    "freely; the MPU parser needs zero code changes (it loops over sections and",
+    "dispatches on data_kind). The MCU side becomes a config toggle over which",
+    "section-writer calls run. Both `id` values are opaque numeric identity on",
+    "the wire; the semantic meaning ('mic' vs 'accel') lives ONLY here.",
+    "",
+    "channel `name` MUST equal the SensorChannel enum value in",
+    "python/registry/registry.py for any channel that feeds the model, so a",
+    "decoded section lands in SensorFrame.bins under the key downstream",
+    "(features.py / registry input_dim_for) already expects."
+  ],
+  "sources": {
+    "base_station": 0,
+    "satellite": 1
+  },
+  "data_kinds": {
+    "SPECTRUM": 1,
+    "TIME_SERIES": 2,
+    "SCALAR_SET": 3
+  },
+  "channels": [
+    {"name": "mic",   "id": 0, "kind": "SPECTRUM"},
+    {"name": "accel", "id": 1, "kind": "SPECTRUM"}
+  ],
+  "perf_channel_id": 255,
+  "scalars": {
+    "rms": 1,
+    "kurtosis": 2
+  }
+}

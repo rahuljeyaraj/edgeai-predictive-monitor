@@ -5,27 +5,24 @@ Subscribes to the satellite MQTT topics and normalizes SPECTRUM messages
 into SensorFrame, feeding PipelineManager the same way
 ingestion/spi_reader.py does for this device's own SPI-connected sensors.
 
-The byte-level satellite format isn't tied to this repo's own MCU link
-(that's Bridge RPC + the dedicated SPI link, docs/progress2.md) -- it's a
-separate wire contract for satellite ESP32 nodes:
+Satellite nodes now speak the *same* generic section-list telemetry frame the
+base station's own SPI link does (common/telemetry_frame.py,
+docs/SENSOR_TELEMETRY_FRAME_PLAN.md S6) -- one payload format, one decoder,
+both transports:
 
-- Topic `epm/<node_id>/data` carries SPECTRUM, HEALTH_ALERT and HEARTBEAT
-  messages from a node. Only SPECTRUM becomes a SensorFrame here -- other
-  types are silently skipped.
-- Payload is binary: [TYPE: 1B][PAYLOAD] (common/wire_protocol.py's
-  MQTT envelope), the same spectrum_fused_payload struct format
-  (decode_spectrum_fused_payload()) used by the fuser's own SPI frame.
-- node_id is not a wire field (a real node_id is a MAC-derived string,
-  too big for a 1-byte field) -- it comes from the topic
-  (epm/<node_id>/data), which is the addressing mechanism MQTT already
-  provides.
-- SPECTRUM's fused payload always carries both mic and accel channel
-  headers (fs/fft_size/bin_count each); a disabled channel has
-  bin_count=0 and contributes no bin bytes. This is required, not just
-  convenient: PipelineManager validates every frame carries bins for a
-  node's *entire* committed sensor_config at once (manager.py's
-  `_validate_frame_bins`), so a dual-channel node's mic and accel data
-  can't arrive as two separate single-channel frames.
+- Topic `epm/<node_id>/data` carries the telemetry frame. The MQTT message body
+  IS the section-list frame bytes, decoded here by decode_frame() -- no [TYPE]
+  envelope (MQTT already frames + delivers; a heartbeat is just a frame with no
+  spectrum sections, which becomes a None/skip here). Health/perf, when a node
+  sends it, rides as a SCALAR_SET section in the same frame rather than a
+  separate message type.
+- node_id is not a wire field (a real node_id is a MAC-derived string, too big
+  for a wire field) -- it comes from the topic (epm/<node_id>/data), the
+  addressing mechanism MQTT already provides.
+- A multi-channel node must carry every channel it will ever report in each
+  frame (as SPECTRUM sections): PipelineManager validates every frame carries
+  bins for a node's *entire* committed sensor_config at once (manager.py's
+  `_validate_frame_bins`), so its channels can't arrive as separate frames.
 
 SensorFrame.timestamp is local receipt time.
 
@@ -41,14 +38,13 @@ tools/satellite_node_sim.py, or mosquitto_pub with raw bytes) against a
 running Mosquitto broker; confirm a new pipeline is created and routed
 exactly as SPI frames are.
 """
-import struct
 import time
-from typing import Callable, Dict, Optional, Tuple
+from typing import Callable, Optional
 
 import paho.mqtt.client as mqtt
 
 from sensor_frame import FrameSource, SensorFrame
-from wire_protocol import MqttMsgType, decode_mqtt_message, decode_spectrum_fused_payload
+from telemetry_frame import MalformedFrameError, decode_frame
 
 DATA_TOPIC_FILTER = "epm/+/data"
 
@@ -79,38 +75,28 @@ def normalize_spectrum_message(topic: str, payload: bytes,
                                 timestamp: Optional[float] = None) -> Optional[SensorFrame]:
     """Pure decode+normalize step, split out from MqttSubscriber so it can
     be exercised without a real broker connection (see
-    mpu/tests/mqtt_subscriber_test.py). Returns None for a well-formed
-    non-SPECTRUM message (normal skip); raises MalformedMessageError for
-    anything that can't be parsed (counted as dropped by the caller)."""
+    tests/mqtt_subscriber_test.py). Returns None for a well-formed frame that
+    carries no spectrum bins (a heartbeat / scalar-only frame -- a normal skip);
+    raises MalformedMessageError for anything that can't be parsed (counted as
+    dropped by the caller)."""
     node_id = _node_id_from_topic(topic)
 
     try:
-        msg_type, body = decode_mqtt_message(payload)
-    except ValueError as e:
-        raise MalformedMessageError(f"bad MQTT payload on {topic!r}: {e}") from e
+        decoded = decode_frame(payload)
+    except MalformedFrameError as e:
+        raise MalformedMessageError(f"malformed telemetry frame on {topic!r}: {e}") from e
 
-    if msg_type != MqttMsgType.SPECTRUM:
+    if not decoded.bins:
+        # No spectrum sections with data (heartbeat, scalar-only, or every
+        # channel bin_count=0) -- nothing to route, same normal-skip semantics
+        # a non-SPECTRUM message had before.
         return None
-
-    try:
-        mic, accel = decode_spectrum_fused_payload(body)
-    except struct.error as e:
-        raise MalformedMessageError(f"malformed SPECTRUM payload on {topic!r}: {e}") from e
-
-    bins: Dict[str, Tuple[float, ...]] = {}
-    if mic.bins:
-        bins["mic"] = mic.bins
-    if accel.bins:
-        bins["accel"] = accel.bins
-    if not bins:
-        raise MalformedMessageError(f"SPECTRUM payload on {topic!r} has no channel bins "
-                                     f"(both mic and accel disabled)")
 
     return SensorFrame(
         node_id=node_id,
         source=FrameSource.MQTT,
         timestamp=time.time() if timestamp is None else timestamp,
-        bins=bins,
+        bins=decoded.bins,
     )
 
 

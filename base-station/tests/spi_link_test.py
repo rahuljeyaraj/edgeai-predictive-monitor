@@ -10,8 +10,8 @@ Chunk size is chosen here (MPU side), so this script sweeps a few sizes and
 reports the success rate + throughput of each - use it to pick a reliable size.
 
 SPI frame (little-endian): [magic u32=0x46555331][seq u16][payload_len u16]
-[payload][crc32 u32 over header+payload]. Payload = the fuser frame
-(header + mic f32 + accel f32).
+[payload][crc32 u32 over header+payload]. Payload = the fuser's generic
+section-list telemetry frame (docs/SENSOR_TELEMETRY_FRAME_PLAN.md S3).
 
 Run on the board while the app is running (needs spi-bridge.service):
     adb shell "docker exec edgeai-predictive-monitor-base-station-main-1 python3 /app/tests/spi_link_test.py"
@@ -28,8 +28,16 @@ SPI_MAGIC = 0x46555331
 SPI_HEADER_FMT = "<I H H"
 SPI_HEADER_LEN = struct.calcsize(SPI_HEADER_FMT)   # 8
 SPI_CRC_LEN = 4
-FUSER_HEADER_FMT = "<f H H f H H"
-FUSER_HEADER_LEN = struct.calcsize(FUSER_HEADER_FMT)  # 16
+# Payload is the generic section-list telemetry frame
+# (docs/SENSOR_TELEMETRY_FRAME_PLAN.md S3): [num_sections u8] then per section
+# [source u8][channel u8][kind u8][section_len u16][body]. A SPECTRUM body is
+# [fs f32][fft_size u16][bin_count u16][bins f32...]. Constants mirror
+# sketch/telemetry_schema.h (kept inline so this diagnostic stays self-contained).
+TELEM_KIND_SPECTRUM = 1
+TELEM_CHANNEL_MIC = 0
+TELEM_CHANNEL_ACCEL = 1
+SECTION_HEADER_FMT = "<BBBH"
+SECTION_HEADER_LEN = struct.calcsize(SECTION_HEADER_FMT)  # 5
 
 CHUNK_SIZES = [512, 256, 128, 64]
 FRAMES_PER_SIZE = 20
@@ -99,14 +107,28 @@ def frame_crc_ok(frame):
     return (zlib.crc32(frame[:body_end]) & 0xFFFFFFFF) == crc
 
 
-def decode_peaks(frame):
+def _spectra(frame):
+    """channel_id -> (fs, fft_size, bins) for every SPECTRUM section in the
+    section-list payload."""
     payload = frame[SPI_HEADER_LEN:-SPI_CRC_LEN]
-    mic_fs, mic_fft, mic_n, accel_fs, accel_fft, accel_n = struct.unpack_from(
-        FUSER_HEADER_FMT, payload, 0)
-    off = FUSER_HEADER_LEN
-    mic = struct.unpack_from(f"<{mic_n}f", payload, off)
-    off += mic_n * 4
-    accel = struct.unpack_from(f"<{accel_n}f", payload, off)
+    (num_sections,) = struct.unpack_from("<B", payload, 0)
+    off = 1
+    out = {}
+    for _ in range(num_sections):
+        _source, channel, kind, seclen = struct.unpack_from(SECTION_HEADER_FMT, payload, off)
+        off += SECTION_HEADER_LEN
+        body = payload[off:off + seclen]
+        off += seclen
+        if kind == TELEM_KIND_SPECTRUM:
+            fs, fft, n = struct.unpack_from("<fHH", body, 0)
+            out[channel] = (fs, fft, struct.unpack_from(f"<{n}f", body, 8))
+    return out
+
+
+def decode_peaks(frame):
+    spectra = _spectra(frame)
+    mic_fs, mic_fft, mic = spectra[TELEM_CHANNEL_MIC]
+    accel_fs, accel_fft, accel = spectra[TELEM_CHANNEL_ACCEL]
     mi = max(range(len(mic)), key=lambda k: mic[k])
     ai = max(range(len(accel)), key=lambda k: accel[k])
     return (mi, mic[mi], (mi + 1) * mic_fs / mic_fft,
@@ -136,7 +158,7 @@ def main():
             try:
                 mi, mv, mhz, ai, av, ahz = decode_peaks(last)
                 line += f"  | mic bin {mi}(~{mhz:.0f}Hz) mag={mv:.0f}  accel bin {ai}(~{ahz:.0f}Hz) mag={av:.1f}"
-            except (struct.error, ValueError, IndexError):
+            except (struct.error, ValueError, IndexError, KeyError):
                 line += "  | (payload not fuser data - SELFTEST ramp)"
         print(line)
 
