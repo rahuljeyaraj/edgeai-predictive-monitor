@@ -1,9 +1,9 @@
 # Plan — Dev/perf page
 
-Status: **Redesigned 2026-07-19, implementation not yet built against this
-version.** This doc originally captured a pre-implementation brainstorm (§9
-below, kept for history). That version got built, but two problems surfaced
-once it was actually used:
+Status: **Redesigned and built 2026-07-19, verified end-to-end on real
+hardware (see §8).** This doc originally captured a pre-implementation
+brainstorm (§9 below, kept for history). That version got built, but two
+problems surfaced once it was actually used:
 
 1. It never live-updated in a real browser — only a full page reload showed
    fresh numbers. Root cause: `run_perf_broadcast_loop` in `api/app.py` had no
@@ -65,11 +65,21 @@ name).
 - **GPU %** — `gpu.busy_percent` when `gpu.available`, else the existing "GPU
   bridge not provisioned" empty-state (already implemented, keep as-is — see
   §5 history below for how this data source works).
-- **Temperature, if available** — **not yet confirmed feasible.** Check
-  `psutil.sensors_temperatures()` (or `/sys/class/thermal/*` directly) on the
-  real device before committing to this chart; if no thermal zone is exposed,
-  drop the metric silently (same "don't show a fake reading" principle as GPU
-  unavailable) rather than block the rest of the tier on it.
+- **Temperature** — built. Real thermal zones confirmed on-device:
+  `/sys/class/thermal/thermal_zone*` exposes `cpuss0_thermal`/`cpuss1_thermal`
+  among others (gpu/wlan/mdm/camera/video); averages the two `cpuss` zones.
+  **Do not use `psutil.sensors_temperatures()`** to read them — measured
+  8-10+ *seconds* per call on this board (vs. ~1-2ms reading the same files
+  directly), apparently pathological hwmon-scanning behavior in psutil on
+  this platform, not the sysfs I/O itself. Calling it from the once-a-second
+  broadcast loop stalled the asyncio event loop for 8-10s per tick, breaking
+  live updates for everything (WS pushes, REST) exactly like the historical
+  bug this page already had to fix once (`e4aefce`) — caught via the existing
+  `perf_test.py` WS-ordering test failing consistently on real hardware, not
+  by inspection. `monitoring/perf.py`'s `_read_cpu_temp_celsius()` reads
+  `type`/`temp` under each `thermal_zone*` dir with plain `open()` instead.
+  Drops the metric silently (no chart) if no `cpuss` zone is exposed, same
+  "don't show a fake reading" rule as the GPU empty state.
 
 Nothing else on this tier — no pipeline count here (Tier 2's row count already
 shows it), no ingest/transport counters, no falling-behind flag as a raw
@@ -199,19 +209,48 @@ third time.
 
 ## 8. Next steps
 
-- [ ] Confirm `psutil.sensors_temperatures()` feasibility on real hardware
-      (§2's temperature chart) before building it.
-- [ ] Build: rewrite `frontend/index.html`/`perf.js`/`style.css`'s Performance
+Status: **built and verified end-to-end on real hardware, 2026-07-19.**
+
+- [x] Confirm `psutil.sensors_temperatures()` feasibility on real hardware
+      (§2's temperature chart) before building it — confirmed real thermal
+      zones exist, but psutil itself turned out unusable (8-10s/call); see
+      §2's temperature bullet for the raw-sysfs fix.
+- [x] Build: rewrote `frontend/index.html`/`perf.js`/`style.css`'s Performance
       tab against §2/§3 above (the WS-wiring in `charts.js`/`app.js` — the
       `perfHandler` plumbing routing `"perf_stats"` WS messages into `Perf`
-      — is solid from the first pass and doesn't need to change).
-- [ ] Verify live-update end to end on real hardware: open the dashboard at
-      the device's direct LAN IP (not `adb forward` — flaky under a real
-      browser's concurrent connections), watch Tier 1/2 for 60s+ without
-      reloading, confirm via DevTools' Network → WS → Messages that
-      `perf_stats` frames keep arriving with changing data, and soak for a
-      minute or two (the original bug only showed up after some time running,
-      not immediately after a fresh deploy).
+      — was solid from the first pass and needed no changes). Backend:
+      `monitoring/perf.py`'s `SystemStats` gained `cpu_temp_celsius`
+      (`Optional[float]`, `None` when unavailable); no other backend change
+      needed — Tier 2's `budget_used_%` is computed client-side from fields
+      already broadcast.
+- [x] Verify live-update end to end on real hardware: deployed via
+      `deploy.sh`'s push+start (see gotcha below), backend test suite run
+      on-device (`docker exec ... tests/perf_test.py`, `api_test.py` — both
+      pass), then a headless-Chromium (Playwright) smoke test against the
+      live dashboard over `adb forward tcp:8080` confirmed both tiers render
+      (7 Tier-1 cards incl. temperature, one Tier-2 pipeline row), zero
+      console errors, and `perf_stats` WS frames kept arriving with changing
+      `frame_count`/`cpu_temp_celsius` over a 20s soak with no stall —
+      screenshots matched the intended Task-Manager-style design.
+      `adb forward` (not the device's LAN IP) was used since this dev
+      machine is USB-attached only, no LAN route to the board; fine for a
+      single scripted Playwright session even though §8 originally flagged
+      `adb forward` as flaky for a human's real multi-tab browser use.
+
+**New deploy.sh gotcha found this session:** the documented tar-over-`adb
+shell`-stdin push (`tar -C "$LOCAL_DIR" ... -cf - . | adb shell "tar -C
+'$REMOTE_DIR' -xf -"`) silently truncated mid-stream twice in a row on this
+run — remote ended up with only a handful of top-level entries (`sketch/`,
+`captures/`, a couple scripts), missing `app.yaml`/`python/`/`tests/`/etc.
+entirely, with **no non-zero exit code** to catch it (the pipeline's exit
+status is `adb shell`'s, not `tar`'s, and that returned 0). Symptom:
+`arduino-app-cli app start` then fails with `descriptor app.yaml file
+missing from app`. Fix used: `adb push <local.tar> /tmp/x.tar` (a real adb
+file transfer, not a live shell-stdin pipe) then `adb shell "tar -C
+'$REMOTE_DIR' -xf /tmp/x.tar"` — transferred the full ~5.8MB tar cleanly on
+the first try both times it was used. `deploy.sh` itself hasn't been changed
+to this two-step form yet since this wasn't reproduced enough times to be
+sure it's not a one-off; worth switching if the truncation recurs.
 
 ---
 

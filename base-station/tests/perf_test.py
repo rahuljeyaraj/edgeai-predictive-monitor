@@ -97,6 +97,9 @@ def test_system_stats_sane_under_multiple_pipelines():
     assert snapshot.system.system_memory_total_mb > 0.0, snapshot.system
     assert snapshot.system.system_memory_used_mb > 0.0, snapshot.system
     assert isinstance(snapshot.system.ingest_fps_by_transport, dict), snapshot.system
+    # None (no thermal zone exposed) or a plausible reading -- never a fake
+    # 0.0 -- see monitoring/perf.py's _read_cpu_temp_celsius().
+    assert snapshot.system.cpu_temp_celsius is None or snapshot.system.cpu_temp_celsius > 0, snapshot.system
     print("system-wide stats are sane across multiple concurrent pipelines: PASS")
 
 

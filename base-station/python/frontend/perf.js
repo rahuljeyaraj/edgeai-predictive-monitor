@@ -5,16 +5,25 @@
  * WebSocket and forwards this page's "perf_stats" messages here via
  * Charts.init's second callback (app.js).
  *
- * Demo-facing redesign: this page shows only what someone can understand
- * with a single glance and no explanation, per direct user feedback --
- * live Task-Manager-style area charts for the handful of figures that
- * actually fluctuate (CPU/memory/GPU utilization), a plain count for
- * pipelines (a flat number isn't a trend worth animating), per-core CPU
- * always visible (never behind a second-level "Advanced" disclosure),
- * and static hardware spec cards for facts that never change at runtime
- * (sensor sampling rate). No raw firmware counters, no unexplained
- * register debug -- if a field can't be understood at a glance, it isn't
- * on this page.
+ * Two tiers, both always-visible live time-plots -- no meters, no static
+ * cells/heat-strips, no nested "Advanced" disclosure:
+ *   Tier 1 (QRB2210) -- is our own compute hardware under strain? One live
+ *     chart per CPU core (this pipeline is single-threaded, so an averaged
+ *     "CPU%" could hide one maxed-out core), memory %, GPU % (or an empty
+ *     state when the GPU bridge isn't provisioned), temperature if the
+ *     board exposes a thermal zone (dropped silently otherwise -- never a
+ *     fake reading, same rule as the GPU empty state).
+ *   Tier 2 (Pipelines) -- is each pipeline keeping up, and how much
+ *     headroom is left? One row per live pipeline (payload.pipelines,
+ *     keyed by node_id): frames arrived/sec, and pipeline time-budget
+ *     used % (avg_latency_ms / (1000/frames_per_sec) * 100 -- the honest
+ *     per-node headroom signal; no fabricated "N more satellites" estimate
+ *     on top of it).
+ *
+ * No MCU/fuser tier (removed, not reshaped -- Tier 2 gets pipeline
+ * throughput from Python-side PipelineStats, not MCU Bridge calls) and no
+ * Satellites tier (dropped entirely, not a placeholder -- re-add only once
+ * real satellite firmware exists).
  *
  * Only the tier *bodies* re-render on each message -- the outer <details>
  * tier wrappers in index.html live untouched, so a collapse/expand the
@@ -31,15 +40,24 @@ const Perf = (() => {
   // Fixed hue per utilization chart -- dataviz skill's "trend over time,
   // sequential" form: each card is its own small multiple (never overlaid
   // on a shared axis), so a distinct identity color per card reads fine
-  // without a legend. Reuses this dashboard's existing accent blue for CPU;
-  // violet/orange are the same validated dark-mode categorical set, picked
-  // to stay clear of the status colors (green/amber/red/cyan) used elsewhere.
+  // without a legend. Picked to stay clear of the status colors
+  // (green/amber/red/cyan) used elsewhere on the dashboard.
   const CPU_COLOR = "#3987e5";
   const MEM_COLOR = "#9085e9";
   const GPU_COLOR = "#d95926";
+  const TEMP_COLOR = "#ec4899";
+  const FPS_COLOR = "#14b8a6";
+  const BUDGET_COLOR = "#6366f1";
+
   const GRID_COLOR = "#334155";
 
-  const history = { cpu: [], mem: [], gpu: [] };
+  const history = {
+    cpuCores: [], // array of per-core sample arrays, index = core number
+    mem: [],
+    gpu: [],
+    temp: [],
+    pipelines: {}, // node_id -> { fps: [], budget: [] }
+  };
 
   function pushCapped(arr, value) {
     arr.push(value);
@@ -49,17 +67,35 @@ const Perf = (() => {
   // ---------------------------------------------------------------------
   // Live area chart -- dataviz skill's marks-and-anatomy.md: 2px line,
   // ~10% opacity area fill, hairline recessive gridlines, one hue.
+  //
+  // autoScale=false (default) plots against a fixed 0-100 domain -- right
+  // for percentages (CPU/memory/GPU/budget-used), where the fixed ceiling
+  // itself is meaningful ("climbing toward 100%"). autoScale=true instead
+  // scales to the data's own min/max with a little padding -- right for
+  // absolute-unit metrics (temperature in °C, frames/sec) whose natural
+  // range would otherwise render as a flat line pinned near the bottom of
+  // a 0-100 axis.
   // ---------------------------------------------------------------------
 
-  function areaChartSvg(values, { width = 260, height = 64, color } = {}) {
+  function areaChartSvg(values, { width = 260, height = 64, color, autoScale = false } = {}) {
     if (values.length < 2) {
       return `<svg class="perf-chart__svg" viewBox="0 0 ${width} ${height}"></svg>`;
     }
+    let lo = 0, hi = 100;
+    if (autoScale) {
+      const dataMin = Math.min(...values);
+      const dataMax = Math.max(...values);
+      const pad = (dataMax - dataMin) * 0.1 || Math.max(1, Math.abs(dataMax) * 0.1) || 1;
+      lo = dataMin - pad;
+      hi = dataMax + pad;
+    }
+    const span = hi - lo || 1;
     const stepX = width / (HISTORY_MAX_SAMPLES - 1);
     const startX = width - (values.length - 1) * stepX;
     const points = values.map((v, i) => {
-      const pct = Math.max(0, Math.min(100, v));
-      return [startX + i * stepX, height - (pct / 100) * height];
+      const clamped = Math.max(lo, Math.min(hi, v));
+      const frac = (clamped - lo) / span;
+      return [startX + i * stepX, height - frac * height];
     });
     const linePath = points
       .map(([x, y], i) => `${i === 0 ? "M" : "L"}${x.toFixed(1)},${y.toFixed(1)}`)
@@ -80,13 +116,13 @@ const Perf = (() => {
     </svg>`;
   }
 
-  function chartCard({ label, values, color, valueText, caption = "" }) {
+  function chartCard({ label, values, color, valueText, caption = "", autoScale = false }) {
     return `<div class="perf-card perf-chart">
       <div class="perf-chart__top">
         <span class="perf-chart__label">${label}</span>
         <span class="perf-chart__value">${valueText}</span>
       </div>
-      ${areaChartSvg(values, { color })}
+      ${areaChartSvg(values, { color, autoScale })}
       ${caption ? `<div class="perf-chart__caption">${caption}</div>` : ""}
     </div>`;
   }
@@ -99,96 +135,90 @@ const Perf = (() => {
   }
 
   // ---------------------------------------------------------------------
-  // QRB2210 (MPU) tier -- CPU / memory / GPU utilization, per-core CPU,
-  // pipeline count. Nothing here needs a raw counter explained.
+  // Tier 1 -- QRB2210 (the base station's own compute hardware). Answers
+  // "is our own box under strain." One chart per CPU core, memory %,
+  // GPU % (or its provisioning empty state), temperature if available.
   // ---------------------------------------------------------------------
 
-  function renderMpuTier(payload) {
-    const chartsEl = document.getElementById("perf-mpu-charts");
-    const coresEl = document.getElementById("perf-mpu-cores");
-    const statsEl = document.getElementById("perf-mpu-stats");
-    if (!chartsEl || !coresEl || !statsEl) return;
+  function renderTier1(payload) {
+    const el = document.getElementById("perf-mpu-charts");
+    if (!el) return;
     const system = payload.system;
     const gpu = payload.gpu || { available: false, busy_percent: null };
 
     if (!system) {
-      chartsEl.innerHTML = `<div class="perf-empty">Performance monitoring is disabled (POST /perf/enable to turn it back on).</div>`;
-      coresEl.innerHTML = "";
-      statsEl.innerHTML = "";
+      el.innerHTML = `<div class="perf-empty">Performance monitoring is disabled (POST /perf/enable to turn it back on).</div>`;
       return;
     }
+
+    const cards = (system.cpu_percent_per_core || []).map((pct, i) => chartCard({
+      label: `CPU core ${i}`, values: history.cpuCores[i] || [], color: CPU_COLOR,
+      valueText: `${pct.toFixed(0)}%`,
+    }));
 
     const ramPct = system.system_memory_total_mb > 0
       ? (system.system_memory_used_mb / system.system_memory_total_mb) * 100 : null;
-
-    chartsEl.innerHTML = [
-      chartCard({
-        label: "CPU", values: history.cpu, color: CPU_COLOR,
-        valueText: `${system.system_cpu_percent.toFixed(0)}%`,
-      }),
-      ramPct === null ? "" : chartCard({
+    if (ramPct !== null) {
+      cards.push(chartCard({
         label: "Memory", values: history.mem, color: MEM_COLOR,
         valueText: `${ramPct.toFixed(0)}%`,
         caption: `${system.system_memory_used_mb.toFixed(0)} / ${system.system_memory_total_mb.toFixed(0)} MB`,
-      }),
-      gpu.available
-        ? chartCard({ label: "GPU", values: history.gpu, color: GPU_COLOR, valueText: `${gpu.busy_percent.toFixed(0)}%` })
-        : emptyCard("GPU", "Not provisioned on this board."),
-    ].join("");
+      }));
+    }
 
-    const coreCells = (system.cpu_percent_per_core || []).map((pct, i) => {
-      const clamped = Math.max(0, Math.min(100, pct));
-      return `<div class="heat-cell" title="Core ${i}: ${pct.toFixed(0)}%"
-        style="background:color-mix(in srgb, ${CPU_COLOR} ${clamped.toFixed(0)}%, #1e293b)">${pct.toFixed(0)}</div>`;
-    }).join("");
-    coresEl.innerHTML = `<div class="perf-cores__label">CPU per core</div>
-      <div class="heat-strip">${coreCells || '<span class="perf-empty">no core data</span>'}</div>`;
+    cards.push(gpu.available
+      ? chartCard({ label: "GPU", values: history.gpu, color: GPU_COLOR, valueText: `${gpu.busy_percent.toFixed(0)}%` })
+      : emptyCard("GPU", "Not provisioned on this board."));
 
-    statsEl.innerHTML = `<div class="perf-card perf-stat">
-      <span class="perf-stat__label">Pipelines running</span>
-      <span class="perf-stat__value">${system.pipeline_count}</span>
-    </div>`;
+    if (system.cpu_temp_celsius !== null && system.cpu_temp_celsius !== undefined) {
+      cards.push(chartCard({
+        label: "Temperature", values: history.temp, color: TEMP_COLOR,
+        valueText: `${system.cpu_temp_celsius.toFixed(1)}°C`, autoScale: true,
+      }));
+    }
+
+    el.innerHTML = cards.join("");
   }
 
   // ---------------------------------------------------------------------
-  // STM32U585 (MCU / sensor fusion) tier -- sensor sampling rate is a
-  // fixed hardware fact (not something that changes tick to tick), so it
-  // renders as a static spec card, never a live chart.
+  // Tier 2 -- Pipelines. Answers "is each pipeline keeping up, and how
+  // much headroom is left." One row per live pipeline, keyed by node_id.
   // ---------------------------------------------------------------------
 
-  const SENSOR_LABELS = { mic: "Microphone", accel: "Accelerometer" };
+  function budgetUsedPercent(p) {
+    if (!p.frames_per_sec || p.frames_per_sec <= 0) return 0;
+    const intervalMs = 1000 / p.frames_per_sec;
+    return (p.avg_latency_ms / intervalMs) * 100;
+  }
 
-  function renderMcuTier(payload) {
-    const el = document.getElementById("perf-mcu-sensors");
+  function renderTier2(payload) {
+    const el = document.getElementById("perf-pipelines");
     if (!el) return;
-    const sensors = payload.sensors || {};
-    const names = Object.keys(sensors);
+    const pipelines = payload.pipelines || {};
+    const nodeIds = Object.keys(pipelines);
 
-    if (names.length === 0) {
-      el.innerHTML = `<div class="perf-empty">-- no data yet from the MCU</div>`;
+    if (nodeIds.length === 0) {
+      el.innerHTML = `<div class="perf-empty">No pipelines running yet.</div>`;
       return;
     }
 
-    el.innerHTML = names.map((name) => {
-      const s = sensors[name];
-      const label = SENSOR_LABELS[name] || name;
-      const rate = Math.round(s.fs_hz).toLocaleString();
-      const maxHz = s.max_detected_hz === null ? null : Math.round(s.max_detected_hz).toLocaleString();
-      return `<div class="perf-card">
-        <div class="perf-sensor__name">${label}</div>
-        <div class="perf-sensor__rate">${rate} <span class="perf-sensor__rate-unit">Hz sampling</span></div>
-        ${maxHz === null ? "" : `<div class="perf-sensor__detail">Detects vibration up to ${maxHz} Hz</div>`}
+    el.innerHTML = nodeIds.map((nodeId) => {
+      const p = pipelines[nodeId];
+      const h = history.pipelines[nodeId] || { fps: [], budget: [] };
+      return `<div class="perf-pipeline">
+        <div class="perf-pipeline__title">${nodeId}</div>
+        <div class="perf-charts">
+          ${chartCard({
+            label: "Frames arrived/sec", values: h.fps, color: FPS_COLOR,
+            valueText: `${p.frames_per_sec.toFixed(2)} fps`, autoScale: true,
+          })}
+          ${chartCard({
+            label: "Pipeline time-budget used", values: h.budget, color: BUDGET_COLOR,
+            valueText: `${budgetUsedPercent(p).toFixed(0)}%`,
+          })}
+        </div>
       </div>`;
     }).join("");
-  }
-
-  function renderSatelliteTier() {
-    const el = document.getElementById("perf-satellite-body");
-    if (!el || el.dataset.rendered) return; // static -- never changes until real satellite firmware exists
-    el.dataset.rendered = "1";
-    el.innerHTML = `<div class="perf-empty">No satellites connected yet -- blocked on real satellite firmware
-      (only the dev simulator exists today). Will show signal strength and frame rate per node.
-      See docs/DEV_PERF_PAGE_PLAN.md S6.</div>`;
   }
 
   // ---------------------------------------------------------------------
@@ -199,16 +229,29 @@ const Perf = (() => {
     const system = payload.system;
     const gpu = payload.gpu;
     if (system) {
-      pushCapped(history.cpu, system.system_cpu_percent);
+      (system.cpu_percent_per_core || []).forEach((pct, i) => {
+        if (!history.cpuCores[i]) history.cpuCores[i] = [];
+        pushCapped(history.cpuCores[i], pct);
+      });
       if (system.system_memory_total_mb > 0) {
         pushCapped(history.mem, (system.system_memory_used_mb / system.system_memory_total_mb) * 100);
+      }
+      if (system.cpu_temp_celsius !== null && system.cpu_temp_celsius !== undefined) {
+        pushCapped(history.temp, system.cpu_temp_celsius);
       }
     }
     if (gpu && gpu.available) pushCapped(history.gpu, gpu.busy_percent);
 
-    renderMpuTier(payload);
-    renderMcuTier(payload);
-    renderSatelliteTier();
+    const pipelines = payload.pipelines || {};
+    Object.keys(pipelines).forEach((nodeId) => {
+      const p = pipelines[nodeId];
+      if (!history.pipelines[nodeId]) history.pipelines[nodeId] = { fps: [], budget: [] };
+      pushCapped(history.pipelines[nodeId].fps, p.frames_per_sec);
+      pushCapped(history.pipelines[nodeId].budget, budgetUsedPercent(p));
+    });
+
+    renderTier1(payload);
+    renderTier2(payload);
   }
 
   function handleMessage(msg) {

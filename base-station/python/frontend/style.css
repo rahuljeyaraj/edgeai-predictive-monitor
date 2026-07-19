@@ -433,14 +433,13 @@ body {
 }
 
 /* ---------------------------------------------------------------------
-   Dev/perf page (docs/DEV_PERF_PAGE_PLAN.md) -- demo-facing redesign:
-   collapsible per-chip tiers (QRB2210 / STM32U585 / Satellites), each
-   showing only what a viewer can understand at a glance with no
-   explanation -- live Task-Manager-style area charts for the handful of
-   utilization figures that actually change (CPU/memory/GPU), a plain
-   stat for counts, and static hardware spec cards for facts that never
-   change (per-core CPU, sensor sampling rate). No nested "Advanced"
-   disclosure of unexplainable raw counters -- reuses the same dark
+   Dev/perf page (docs/DEV_PERF_PAGE_PLAN.md) -- two always-visible tiers,
+   each answering one question at a glance: Tier 1 (QRB2210) "is our own
+   compute hardware under strain" -- live Task-Manager-style area charts,
+   one per CPU core plus memory/GPU/temperature; Tier 2 (Pipelines) "is
+   each pipeline keeping up, and is there headroom" -- one row per live
+   pipeline (frames arrived/sec, time-budget used %). No meters, no static
+   heat-strips, no nested "Advanced" disclosure -- reuses the same dark
    panel/border/label conventions as the fleet tiles/rows above.
    --------------------------------------------------------------------- */
 
@@ -488,12 +487,6 @@ body {
   font-weight: 700;
   letter-spacing: 0.02em;
   color: #f1f5f9;
-}
-
-.perf-tier__subtitle {
-  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
-  font-size: 12px;
-  color: #64748b;
 }
 
 .perf-tier__body {
@@ -563,87 +556,35 @@ body {
   color: #64748b;
 }
 
-/* ---- Per-core CPU -- always visible (not tucked in a disclosure): each
-   core gets its own cell, colored by its own load. ---- */
+/* ---- Tier 2 (Pipelines): one row per live pipeline, keyed by node_id --
+   each row is its own bordered group containing the same two-chart grid
+   as Tier 1's .perf-charts. ---- */
 
-.perf-cores__label {
-  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
-  font-size: 12px;
-  color: #94a3b8;
-  margin-bottom: 8px;
+.perf-pipelines {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
 }
 
-.heat-strip {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
+.perf-pipeline {
+  padding: 14px 16px;
+  background-color: #0f172a;
+  border: 1px solid #334155;
+  border-radius: 8px;
 }
 
-.heat-cell {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 32px;
-  height: 32px;
-  border-radius: 6px;
+.perf-pipeline__title {
   font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-  font-size: 10px;
-  color: #0f172a;
-  font-weight: 700;
-}
-
-/* ---- Plain count stat (e.g. pipelines running) -- a number, not a
-   chart: a flat count over time isn't a trend worth animating. ---- */
-
-.perf-stats {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
-  gap: 16px;
-}
-
-.perf-stat__label {
-  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
-  font-size: 12px;
-  color: #94a3b8;
-}
-
-.perf-stat__value {
-  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
-  font-size: 26px;
-  font-weight: 700;
-  color: #e2e8f0;
-}
-
-/* ---- Sensor sampling-rate spec cards (STM32U585 tier): static hardware
-   facts, never animated -- these never change at runtime. ---- */
-
-.perf-sensor-specs {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-  gap: 16px;
-}
-
-.perf-sensor__name {
-  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
-  font-size: 12px;
-  color: #94a3b8;
-}
-
-.perf-sensor__rate {
-  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
-  font-size: 26px;
-  font-weight: 700;
-  color: #e2e8f0;
-}
-
-.perf-sensor__rate-unit {
   font-size: 13px;
-  font-weight: 500;
-  color: #94a3b8;
+  font-weight: 700;
+  color: #cbd5e1;
+  margin-bottom: 12px;
 }
 
-.perf-sensor__detail {
-  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
-  font-size: 12px;
-  color: #64748b;
+.perf-pipeline .perf-charts {
+  gap: 16px;
+}
+
+.perf-pipeline .perf-card {
+  background-color: #1e293b;
 }

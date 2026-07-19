@@ -15,6 +15,7 @@ calls around handle_frame() entirely rather than timing and discarding --
 so the overhead this module exists to *report* isn't itself added back
 by the reporting.
 """
+import glob
 import os
 import time
 from collections import deque
@@ -24,6 +25,45 @@ from typing import Deque, Dict, List, Optional, Tuple
 import psutil
 
 _DEFAULT_WINDOW = 50
+
+_THERMAL_ZONE_GLOB = "/sys/class/thermal/thermal_zone*"
+
+
+def _read_cpu_temp_celsius() -> Optional[float]:
+    """CPU-cluster temperature for Tier 1's temperature chart
+    (docs/DEV_PERF_PAGE_PLAN.md S2) -- confirmed feasible on the real UNO Q
+    this session, but NOT via psutil.sensors_temperatures(): that call
+    measured 8-10+ *seconds* per invocation on this board (vs. ~1-2ms
+    reading the same /sys/class/thermal/thermal_zone*/{type,temp} files
+    directly in plain Python) -- reproduced consistently, apparently
+    something pathological in psutil's own hwmon-scanning path on this
+    platform, not the underlying sysfs I/O. That's fatal if called from
+    the once-a-second broadcast loop (api/app.py's run_perf_broadcast_loop
+    awaits this synchronously) -- it would stall the asyncio event loop,
+    and with it every WS push and REST response, for 8-10s per tick. So
+    this reads the zones directly instead of through psutil, filtering
+    for 'cpuss' zone names (this board's two CPU clusters; other zones --
+    gpu/wlan/mdm/camera/video -- exist but aren't CPU load) and averaging
+    them. Returns None (never a fake reading) if no thermal zone is
+    exposed at all (e.g. non-Linux dev machine) or no cpuss zone is found,
+    matching the GPU tile's "don't show a fake number for no data" rule --
+    the frontend drops the chart silently.
+    """
+    readings = []
+    for zone_dir in glob.glob(_THERMAL_ZONE_GLOB):
+        try:
+            with open(os.path.join(zone_dir, "type")) as f:
+                zone_type = f.read().strip()
+            if "cpuss" not in zone_type.lower():
+                continue
+            with open(os.path.join(zone_dir, "temp")) as f:
+                millidegrees = int(f.read().strip())
+        except (OSError, ValueError):
+            continue
+        readings.append(millidegrees / 1000.0)
+    if not readings:
+        return None
+    return sum(readings) / len(readings)
 
 
 @dataclass
@@ -65,6 +105,9 @@ class SystemStats:
     system_memory_used_mb: float
     system_memory_total_mb: float
     ingest_fps_by_transport: Dict[str, float]
+    # Dev/perf page's Tier 1 temperature chart -- None (not 0.0) when no
+    # cpuss thermal zone is exposed, see _read_cpu_temp_celsius() above.
+    cpu_temp_celsius: Optional[float]
 
     def to_dict(self) -> dict:
         return {
@@ -79,6 +122,7 @@ class SystemStats:
             "system_memory_used_mb": self.system_memory_used_mb,
             "system_memory_total_mb": self.system_memory_total_mb,
             "ingest_fps_by_transport": self.ingest_fps_by_transport,
+            "cpu_temp_celsius": self.cpu_temp_celsius,
         }
 
 
@@ -235,5 +279,6 @@ class PerformanceMonitor:
             system_memory_total_mb=virtual_memory.total / (1024 * 1024),
             ingest_fps_by_transport={transport: window.frames_per_sec()
                                       for transport, window in self._transports.items()},
+            cpu_temp_celsius=_read_cpu_temp_celsius(),
         )
         return PerfSnapshot(enabled=True, system=system, pipelines=pipelines)
