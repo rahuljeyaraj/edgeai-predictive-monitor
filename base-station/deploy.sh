@@ -37,17 +37,18 @@ step "Removing previous copy on device (preserving build/venv cache)"
 adb shell "test -d '${REMOTE_DIR}' && find '${REMOTE_DIR}' -mindepth 1 -maxdepth 1 -not -name '.cache' -exec rm -rf {} + || true"
 
 step "Pushing app to ${REMOTE_DIR}"
-# Push each top-level item individually rather than pushing LOCAL_DIR itself.
-# ${REMOTE_DIR} now persists across deploys (to preserve .cache above), and
-# `adb push` nests the source under an existing destination dir like `cp -r`
-# would — pushing LOCAL_DIR straight to an existing REMOTE_DIR would land
-# everything one level too deep at ${REMOTE_DIR}/$(basename LOCAL_DIR)/...
+# Stream via tar instead of `adb push`ing each top-level entry: a plain push
+# of the "python" dir drags along whatever's sitting in python/.venv (a local
+# dev-only venv, unrelated to the device's own uv-managed venv under
+# ${REMOTE_DIR}/.cache) -- 1GB+ of torch et al, stalling the deploy on a
+# single .so transfer. tar -C into LOCAL_DIR keeps dotfiles (no dotglob
+# needed) and skips .cache to begin with since it isn't under LOCAL_DIR.
 adb shell "mkdir -p '${REMOTE_DIR}'"
-shopt -s dotglob
-for entry in "${LOCAL_DIR}"/*; do
-    adb push "${entry}" "${REMOTE_DIR}"
-done
-shopt -u dotglob
+tar -C "${LOCAL_DIR}" \
+    --exclude='.venv' \
+    --exclude='__pycache__' \
+    --exclude='.pytest_cache' \
+    -cf - . | adb shell "tar -C '${REMOTE_DIR}' -xf -"
 
 step "Starting app"
 adb shell "arduino-app-cli app start ${REMOTE_DIR}"
