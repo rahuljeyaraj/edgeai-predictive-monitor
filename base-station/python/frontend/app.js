@@ -369,6 +369,25 @@ document.getElementById("fleet-list").addEventListener("click", (e) => {
 });
 
 // ---------------------------------------------------------------------
+// Topbar tabs -- Fleet is the only real section so far; Network/
+// Performance/Alerts are placeholders until each is built out
+// (docs/DASHBOARD_NAV_PLAN.md).
+// ---------------------------------------------------------------------
+
+document.querySelector(".topbar__nav").addEventListener("click", (e) => {
+  const link = e.target.closest(".topbar__nav-link");
+  if (!link) return;
+  const tab = link.dataset.tab;
+
+  document.querySelectorAll(".topbar__nav-link").forEach((el) => {
+    el.classList.toggle("is-active", el === link);
+  });
+  document.querySelectorAll(".tab-panel").forEach((panel) => {
+    panel.hidden = panel.dataset.tabPanel !== tab;
+  });
+});
+
+// ---------------------------------------------------------------------
 // Polling
 // ---------------------------------------------------------------------
 

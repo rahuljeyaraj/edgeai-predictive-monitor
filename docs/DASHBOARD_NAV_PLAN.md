@@ -1,6 +1,10 @@
 # Plan — Dashboard navigation (topbar sections)
 
-Status: **Brainstorm/design complete 2026-07-19. Implementation not started.** Not a
+Status: **Implemented 2026-07-19**, same day as the design below — built as a plain
+show/hide tab switcher instead of the anchor-scroll nav §1 originally called for (see
+the note at the end of §1 for why). Topbar now has working Fleet / Network /
+Performance / Alerts tabs; Network, Performance, and Alerts are still empty
+placeholder panels ("Coming soon") — only Fleet has real content so far. Not a
 backlog item of its own — this fell out of a discussion about where the
 Clickable-status-counts, Dev/perf, and WiFi-onboarding items would each live in the
 UI once more than one exists. Captures that discussion so it doesn't need re-deriving
@@ -28,9 +32,25 @@ Sections, as currently scoped:
 
 - **Fleet** — the existing default view (summary tiles + fleet list).
 - **Network** — base station WiFi status/reconfiguration (§2 below).
-- **Dev-Perf** — per [DEV_PERF_PAGE_PLAN.md](DEV_PERF_PAGE_PLAN.md).
+- **Performance** — per [DEV_PERF_PAGE_PLAN.md](DEV_PERF_PAGE_PLAN.md) (called
+  "Dev-Perf" in that plan; the tab label that shipped is "Performance").
 - **Alerts** — Telegram connect/prefs, per the Telegram item in
   [DASHBOARD_IDEAS_BACKLOG.md](DASHBOARD_IDEAS_BACKLOG.md).
+
+**As shipped, this is plain tabs, not anchor-scroll.** When it actually got built
+(same day), none of the three new sections existed as collapsible content yet for
+"scroll to it and expand it" to target, and the ask driving the build was literally
+"tabs to switch between them" — so `index.html` got one `.tab-panel` per section
+(`hidden` attribute) and `app.js` got one delegated click handler on `.topbar__nav`
+that toggles `.is-active` + `hidden`. Simpler fit for now. The anchor-scroll idea
+above is still on the table if these sections grow into one long collapsible page
+later (matching Dev-Perf's own tiers/Chart-clutter's waterfall toggle) — it just
+wasn't the right shape for "four mostly-empty sections," which is what existed at
+build time.
+
+The topbar title was also replaced with a wordmark logo (inline SVG, "Edge" in
+white + "AI" in cyan, "PREDICTIVE MONITOR" subtitle beneath — not part of this
+plan's original scope, added per direct request during implementation).
 
 ## 2. Why the base station's WiFi setup belongs in this nav (and satellites don't)
 
@@ -56,10 +76,15 @@ That page is a different device's UI entirely and has no relationship to this na
 
 ## 3. Next steps
 
-- [ ] Build: topbar anchor-link markup in `index.html` (Fleet / Network / Dev-Perf /
-      Alerts), scroll-to + expand-if-collapsed behavior in `app.js`.
+- [x] Build: topbar tab markup in `index.html` (Fleet / Network / Performance /
+      Alerts) + switch behavior in `app.js` — done 2026-07-19, as plain show/hide
+      tabs rather than the scroll-to + expand-if-collapsed behavior originally
+      planned above (see the note at the end of §1).
 - [ ] Build: Network section itself — base station WiFi status display +
       reconfigure form, per WIFI_ONBOARDING_PLAN.md §1. Not designed in detail yet
-      (form fields, success/failure states) — that's its own follow-up.
-- [ ] Blocked on: Dev-Perf and Alerts sections actually being built before there's a
-      real second/third destination for this nav to jump to.
+      (form fields, success/failure states) — that's its own follow-up. Currently a
+      "Coming soon" placeholder panel.
+- [ ] Build: Performance section content, per DEV_PERF_PAGE_PLAN.md. Currently a
+      "Coming soon" placeholder panel.
+- [ ] Build: Alerts section content (Telegram connect/prefs). Currently a "Coming
+      soon" placeholder panel.

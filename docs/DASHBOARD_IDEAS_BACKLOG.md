@@ -32,6 +32,8 @@ session, one line each. Pick one and go deeper when ready.
       `bot.send_message(chat_id, text)` per subscriber when state transitions,
       debounced against flapping. Not designed further yet.
 - [x] **Dashboard navigation (topbar sections)** — not a brainstormed item of its
-      own, fell out of the status-counts/WiFi/Dev-perf discussions above. Brainstorm/
-      design complete, see [DASHBOARD_NAV_PLAN.md](DASHBOARD_NAV_PLAN.md);
-      implementation not started.
+      own, fell out of the status-counts/WiFi/Dev-perf discussions above. Implemented
+      2026-07-19 as a Fleet/Network/Performance/Alerts tab switcher (plus a wordmark
+      logo replacing the plain topbar title), see
+      [DASHBOARD_NAV_PLAN.md](DASHBOARD_NAV_PLAN.md); Network/Performance/Alerts are
+      still placeholder panels, only Fleet has real content.

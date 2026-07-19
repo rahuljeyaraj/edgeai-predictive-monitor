@@ -15,18 +15,84 @@ body {
 .topbar {
   display: flex;
   align-items: center;
-  height: 56px;
+  gap: 16px;
+  height: 72px;
   padding: 0 24px;
   background-color: #1e293b;
   border-bottom: 1px solid #334155;
 }
 
 .topbar__title {
-  color: #f1f5f9;
+  display: flex;
+  align-items: center;
+}
+
+.topbar__logo {
+  display: block;
+  /* Near the SVG's native 66px height (viewBox "0 0 220 66") -- at this
+     scale "EdgeAI" renders around 27px, well clear of the tab labels
+     below, and the "PREDICTIVE MONITOR" subtitle renders around 10px,
+     matching this app's existing small-label convention (.tile__label
+     etc.) instead of shrinking into illegibility. */
+  height: 60px;
+  width: auto;
+}
+
+.topbar__nav {
+  display: flex;
+  gap: 28px;
+  overflow-x: auto;
+}
+
+.topbar__nav-link {
+  display: flex;
+  align-items: center;
+  font: inherit;
   font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
-  font-size: 18px;
+  font-size: 15px;
   font-weight: 600;
-  letter-spacing: 0.02em;
+  color: #94a3b8;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  padding: 0 2px;
+  height: 70px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.topbar__nav-link:hover {
+  color: #e2e8f0;
+}
+
+.topbar__nav-link.is-active {
+  color: #f1f5f9;
+  border-bottom-color: var(--color-healthy);
+}
+
+.tab-panel[hidden] {
+  display: none;
+}
+
+.placeholder-panel {
+  padding: 48px 24px;
+  text-align: center;
+}
+
+.placeholder-panel__title {
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 14px;
+  font-weight: 700;
+  color: #cbd5e1;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 8px;
+}
+
+.placeholder-panel__text {
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 13px;
+  color: #64748b;
 }
 
 /* ---------------------------------------------------------------------

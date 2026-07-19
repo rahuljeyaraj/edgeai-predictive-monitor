@@ -8,19 +8,55 @@
 </head>
 <body>
   <header class="topbar">
-    <h1 class="topbar__title">EdgeAI Predictive Monitor</h1>
+    <h1 class="topbar__title">
+      <svg class="topbar__logo" viewBox="0 0 220 66" role="img" aria-label="EdgeAI Predictive Monitor logo">
+        <text x="0" y="34" font-family="Arial, sans-serif" font-size="30" font-weight="800" letter-spacing="0.3">
+          <tspan fill="#f8fafc">Edge</tspan><tspan fill="#22d3ee">AI</tspan>
+        </text>
+        <text x="1" y="52" font-family="Arial, sans-serif" font-size="11" font-weight="500" letter-spacing="1.5" fill="#94a3b8">PREDICTIVE MONITOR</text>
+      </svg>
+    </h1>
+    <nav class="topbar__nav" aria-label="Dashboard sections">
+      <button class="topbar__nav-link is-active" data-tab="fleet">Fleet</button>
+      <button class="topbar__nav-link" data-tab="network">Network</button>
+      <button class="topbar__nav-link" data-tab="performance">Performance</button>
+      <button class="topbar__nav-link" data-tab="alerts">Alerts</button>
+    </nav>
   </header>
 
-  <section class="summary" aria-label="Fleet status summary">
-    <div class="summary__row" id="summary-row"></div>
-  </section>
+  <div class="tab-panel" data-tab-panel="fleet">
+    <section class="summary" aria-label="Fleet status summary">
+      <div class="summary__row" id="summary-row"></div>
+    </section>
 
-  <section class="fleet" aria-label="Asset list">
-    <div class="fleet__header">
-      <h2 class="fleet__title">Assets</h2>
-    </div>
-    <div class="fleet__list" id="fleet-list"></div>
-  </section>
+    <section class="fleet" aria-label="Asset list">
+      <div class="fleet__header">
+        <h2 class="fleet__title">Assets</h2>
+      </div>
+      <div class="fleet__list" id="fleet-list"></div>
+    </section>
+  </div>
+
+  <div class="tab-panel" data-tab-panel="network" hidden>
+    <section class="placeholder-panel" aria-label="Network">
+      <h2 class="placeholder-panel__title">Network</h2>
+      <p class="placeholder-panel__text">Coming soon.</p>
+    </section>
+  </div>
+
+  <div class="tab-panel" data-tab-panel="performance" hidden>
+    <section class="placeholder-panel" aria-label="Performance">
+      <h2 class="placeholder-panel__title">Performance</h2>
+      <p class="placeholder-panel__text">Coming soon.</p>
+    </section>
+  </div>
+
+  <div class="tab-panel" data-tab-panel="alerts" hidden>
+    <section class="placeholder-panel" aria-label="Alerts">
+      <h2 class="placeholder-panel__title">Alerts</h2>
+      <p class="placeholder-panel__text">Coming soon.</p>
+    </section>
+  </div>
 
   <script src="vendor/plotly-cartesian.min.js"></script>
   <script src="charts.js"></script>
