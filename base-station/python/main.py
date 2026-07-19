@@ -53,6 +53,7 @@ from gate import MotorStateGate
 from manager import PipelineManager
 from store import HistoryStore
 from perf import PerformanceMonitor
+from gpu_perf import GpuPerfPoller
 from app import create_app, broadcast_threadsafe
 from commissioning_controller import CommissioningController
 
@@ -113,12 +114,15 @@ def wire_local_status_led(registry: Registry) -> None:
     MQTT."""
     from arduino.app_utils import Bridge
 
+    from bridge_lock import BRIDGE_LOCK
+
     def on_status_change(node_id: str, status) -> None:
         if node_id != BASE_STATION_NODE_ID:
             return
         led = color_for(status)
         try:
-            Bridge.call("set_rgb", f"{led.rgb.lstrip('#')},{LED_MODE_TO_INT[led.mode]},{led.period_ms}")
+            with BRIDGE_LOCK:
+                Bridge.call("set_rgb", f"{led.rgb.lstrip('#')},{LED_MODE_TO_INT[led.mode]},{led.period_ms}")
         except Exception:
             logger.exception("failed to push local status LED for %r", node_id)
 
@@ -193,6 +197,7 @@ def main():
         })
 
     spi_consumer = SpiConsumer(on_frame=on_frame)
+    gpu_perf = GpuPerfPoller()
 
     stop_event = threading.Event()
     mqtt_thread = None
@@ -209,10 +214,12 @@ def main():
         # call race app startup and silently no-op (loop is None) for any
         # frame that arrives before uvicorn's ASGI app actually starts.
         spi_consumer.start()
+        gpu_perf.start()
         if mqtt_thread is not None:
             mqtt_thread.start()
 
     app = create_app(registry, history, commissioning, manager=manager, perf_monitor=perf_monitor,
+                      gpu_perf=gpu_perf, spi_consumer=spi_consumer,
                       on_startup=start_ingestion)
 
     # Mounted after every REST/WebSocket route above is registered, so

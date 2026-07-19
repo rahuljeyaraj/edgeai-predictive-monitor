@@ -37,6 +37,7 @@ from typing import Callable, Optional
 
 from arduino.app_utils import Bridge
 
+from bridge_lock import BRIDGE_LOCK
 from sensor_frame import BASE_STATION_NODE_ID, FrameSource, SensorFrame
 from telemetry_frame import DecodedFrame, MalformedFrameError, decode_frame
 
@@ -111,7 +112,8 @@ class SpiConsumer:
             reply = None
             for _ in range(ARM_RETRIES):
                 try:
-                    reply = str(Bridge.call("spi_arm", str(offset), str(CHUNK_SIZE)))
+                    with BRIDGE_LOCK:
+                        reply = str(Bridge.call("spi_arm", str(offset), str(CHUNK_SIZE)))
                 except Exception:
                     return None
                 if reply not in ("busy", "empty", "done"):

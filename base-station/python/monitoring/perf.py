@@ -58,6 +58,10 @@ class SystemStats:
     # available proxy for "inter-core latency" -- no lower-level IPC timer
     # exists in this codebase to measure that directly.
     cpu_percent_per_core: List[float]
+    # Whole-board reading, distinct from process_cpu_percent above -- the
+    # Dev/perf page's CPU meter (docs/DEV_PERF_PAGE_PLAN.md) shows "how much
+    # of the UNO Q's own hardware is in use", not just this one process.
+    system_cpu_percent: float
     system_memory_used_mb: float
     system_memory_total_mb: float
     ingest_fps_by_transport: Dict[str, float]
@@ -71,6 +75,7 @@ class SystemStats:
             "frames_per_sec": self.frames_per_sec,
             "falling_behind_count": self.falling_behind_count,
             "cpu_percent_per_core": self.cpu_percent_per_core,
+            "system_cpu_percent": self.system_cpu_percent,
             "system_memory_used_mb": self.system_memory_used_mb,
             "system_memory_total_mb": self.system_memory_total_mb,
             "ingest_fps_by_transport": self.ingest_fps_by_transport,
@@ -170,6 +175,15 @@ class PerformanceMonitor:
         self._nodes: Dict[str, _NodeWindow] = {}
         self._transports: Dict[str, _TransportWindow] = {}
         self._process = psutil.Process(os.getpid())
+        # psutil's documented cold-start gotcha: the first-ever call to
+        # cpu_percent(interval=None) (process or module-level) returns a
+        # meaningless 0.0 for every value, since there's no prior sample to
+        # diff against. Prime all three here and discard the result so the
+        # first real snapshot() already reflects a true delta instead of a
+        # dashboard-visible all-zero tick.
+        self._process.cpu_percent(interval=None)
+        psutil.cpu_percent(interval=None)
+        psutil.cpu_percent(interval=None, percpu=True)
 
     def enable(self) -> None:
         self.enabled = True
@@ -216,6 +230,7 @@ class PerformanceMonitor:
             frames_per_sec=sum(p.frames_per_sec for p in pipelines.values()),
             falling_behind_count=sum(1 for p in pipelines.values() if p.falling_behind),
             cpu_percent_per_core=psutil.cpu_percent(percpu=True),
+            system_cpu_percent=psutil.cpu_percent(percpu=False),
             system_memory_used_mb=virtual_memory.used / (1024 * 1024),
             system_memory_total_mb=virtual_memory.total / (1024 * 1024),
             ingest_fps_by_transport={transport: window.frames_per_sec()

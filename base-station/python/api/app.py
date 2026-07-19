@@ -48,10 +48,23 @@ from registry import InvalidTransitionError, NodeNotFoundError, Registry
 from store import HistoryStore
 from retention import DEFAULT_RETENTION_SECONDS, run_retention_loop
 from perf import PerformanceMonitor
+from gpu_perf import GpuPerfPoller
+from spi_reader import SpiConsumer
 from connection_manager import ConnectionManager
 from manager import PipelineManager
 
 logger = logging.getLogger(__name__)
+
+# Dev/perf page (docs/DEV_PERF_PAGE_PLAN.md) -- shapes returned by GET /perf
+# and the "perf_stats" WS broadcast for the "ingest" tier, when the
+# corresponding consumer wasn't wired in (e.g. tests constructing routes
+# standalone). Kept the same shape as the populated case so the frontend
+# never has to special-case a missing key.
+_EMPTY_INGEST = {"seq": None, "frames_ok": 0, "frames_dup": 0, "frames_dropped": 0,
+                  "crc_fail": 0, "arm_gap": 0}
+_EMPTY_GPU_PERF = {"available": False, "busy_percent": None}
+
+_PERF_BROADCAST_INTERVAL_S = 1.0
 
 
 class RenameBody(BaseModel):
@@ -78,7 +91,41 @@ def create_app(registry: Registry, history_store: HistoryStore,
                 commissioning,
                 manager: PipelineManager,
                 perf_monitor: Optional[PerformanceMonitor] = None,
+                gpu_perf: Optional[GpuPerfPoller] = None,
+                spi_consumer: Optional[SpiConsumer] = None,
                 on_startup: Optional[callable] = None) -> FastAPI:
+    def _perf_payload() -> dict:
+        data = app.state.perf_monitor.snapshot().to_dict()
+        data["gpu"] = (app.state.gpu_perf.snapshot()
+                        if app.state.gpu_perf is not None else _EMPTY_GPU_PERF)
+        if app.state.spi_consumer is not None:
+            ingest = app.state.spi_consumer.snapshot()
+            data["ingest"] = {k: ingest[k] for k in _EMPTY_INGEST}
+        else:
+            data["ingest"] = _EMPTY_INGEST
+        return data
+
+    async def run_perf_broadcast_loop(interval_seconds: float = _PERF_BROADCAST_INTERVAL_S) -> None:
+        # Dev/perf page's frontend tiers stay live-updating with no polling
+        # of their own (docs/DEV_PERF_PAGE_PLAN.md S4's UX rule) -- same
+        # "cache, then push on a timer" shape as run_retention_loop below,
+        # just broadcasting over /ws instead of pruning a table.
+        #
+        # Unlike run_retention_loop, this body is guarded per-tick: any
+        # exception here (e.g. a transient psutil/Bridge hiccup) would
+        # otherwise kill this asyncio.Task permanently -- the loop never
+        # gets a second chance the way a thread's while-loop does, so one
+        # bad tick would silently end live perf updates for the rest of
+        # the process's life while GET /perf kept working fine, which is
+        # exactly the "reload fixes it, nothing else does" bug this
+        # logging-and-continuing guard exists to prevent.
+        while True:
+            await asyncio.sleep(interval_seconds)
+            try:
+                await app.state.connection_manager.broadcast({"type": "perf_stats", **_perf_payload()})
+            except Exception:
+                logger.exception("perf broadcast tick failed")
+
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         app.state.loop = asyncio.get_running_loop()
@@ -86,10 +133,12 @@ def create_app(registry: Registry, history_store: HistoryStore,
             on_startup()
         retention_task = asyncio.create_task(
             run_retention_loop(history_store, DEFAULT_RETENTION_SECONDS))
+        perf_broadcast_task = asyncio.create_task(run_perf_broadcast_loop())
         try:
             yield
         finally:
             retention_task.cancel()
+            perf_broadcast_task.cancel()
 
     app = FastAPI(lifespan=lifespan)
     app.state.registry = registry
@@ -97,6 +146,8 @@ def create_app(registry: Registry, history_store: HistoryStore,
     app.state.commissioning = commissioning
     app.state.manager = manager
     app.state.perf_monitor = perf_monitor if perf_monitor is not None else PerformanceMonitor()
+    app.state.gpu_perf = gpu_perf
+    app.state.spi_consumer = spi_consumer
     app.state.connection_manager = ConnectionManager()
     app.state.loop = None
 
@@ -134,7 +185,7 @@ def create_app(registry: Registry, history_store: HistoryStore,
 
     @app.get("/perf")
     def get_perf():
-        return app.state.perf_monitor.snapshot().to_dict()
+        return _perf_payload()
 
     def _node_dict(node_id: str, entry) -> dict:
         d = entry.to_dict()
