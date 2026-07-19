@@ -1,150 +1,241 @@
 # Plan — Dev/perf page
 
-Status: **Brainstorm/design complete 2026-07-19. Implementation not started.**
-This doc captures the outcome of a design discussion for the "Dev/perf page" item in
-[DASHBOARD_IDEAS_BACKLOG.md](DASHBOARD_IDEAS_BACKLOG.md) — CPU/RAM/GPU, live sampling
-rate, dropped-frame count, a judge-facing "no data lost" highlight. Nothing here has
-been built yet; this is the design to build against next.
+Status: **Redesigned 2026-07-19, implementation not yet built against this
+version.** This doc originally captured a pre-implementation brainstorm (§9
+below, kept for history). That version got built, but two problems surfaced
+once it was actually used:
+
+1. It never live-updated in a real browser — only a full page reload showed
+   fresh numbers. Root cause: `run_perf_broadcast_loop` in `api/app.py` had no
+   exception guard, so a single transient failure permanently killed the WS
+   push task for the rest of the process's life (`GET /perf` kept working,
+   since that's a separate code path — only the live push died). **Fixed**,
+   committed `e4aefce`.
+2. The content itself didn't serve a demo — raw firmware counters and register
+   debug behind a nested "Advanced" disclosure aren't explainable to someone
+   watching live. Feedback session produced the redesign below. The old
+   meters/fps-tiles/Satellites-tier version is committed as `dd25281`,
+   explicitly marked in its own commit message as a superseded draft.
+
+**This section (through §8) is the current design to build against.** §9 is
+the original brainstorm, kept only as historical record — don't build from it.
 
 ---
 
 ## 0. Why this exists
 
-The dashboard has no visibility into its own health/performance today. Judges see
-sensor data and fault status, but nothing about whether the pipeline itself is keeping
-up — sampling rate, dropped frames, resource headroom. This page is meant to both be a
-real dev diagnostic and a judge-facing "no data lost" showcase of the UNO Q's
-capability (MPU tier is shown first, deliberately, for this reason).
+Same as originally: the dashboard has no visibility into its own health, and
+judges/operators see sensor data and fault status but nothing about whether
+the pipeline is keeping up. Reframed after the redesign discussion into two
+sharper questions any viewer should be able to answer in one glance:
+
+- **Is our own compute hardware under strain?**
+- **Is each pipeline keeping up, and is there headroom for more (satellite)
+  nodes?**
+
+Anything that doesn't directly answer one of those two questions is out.
 
 ## 1. Layout
 
-Single scrolling page (matches the existing no-router vanilla-JS frontend —
-`base-station/python/frontend/`, no SPA framework). Top to bottom:
+Two tiers, both always-visible live time-plots — no meters, no static
+cells/heat-strips, no nested "Advanced" disclosure anywhere. **No Satellites
+tier** (dropped entirely, not just hidden/placeholder — re-add only on a new,
+explicit ask once real satellite firmware exists).
 
-1. **Hero band** — judge-facing, shown first regardless of tier order below it.
-2. **MPU tier** — first tier, showcases the UNO Q's own capability.
-3. **MCU/fuser tier**
-4. **Satellite tier**
+## 2. Tier 1 — QRB2210 (the base station's own compute hardware)
 
-Each tier below the hero band is a collapsible section (no real tab/router support in
-this frontend, so collapse/expand is the right primitive, not a route).
+Answers "is our own box under strain." Every metric is a live area/line chart
+(Task-Manager-style: big current value + small filled trend, ~60s rolling
+window — `perf_stats` already broadcasts once/second per
+`_PERF_BROADCAST_INTERVAL_S`, so 60 client-side samples = 60s). No subtitle
+text under the tier header (explicitly disliked in feedback — just the chip
+name).
 
-## 2. Hero band
+- **One live chart per CPU core** — `system.cpu_percent_per_core` (a list,
+  one entry per core; this board reports 4). Not a single aggregate "CPU %"
+  chart, and not a heat-strip of static cells — both dropped in favor of one
+  time-plot per core. Rationale: this pipeline is single-threaded Python (no
+  multiprocessing in `pipeline/manager.py`), so under the GIL, load likely
+  pins to one core while the rest idle — an aggregate average could read as a
+  comfortable number while one core is actually maxed out. A viewer can still
+  read overall load by scanning across the per-core charts, so a separate
+  aggregate chart is redundant.
+- **Memory %** — derived from `system_memory_used_mb` / `system_memory_total_mb`
+  (already in `/perf`'s payload); keep the used/total MB as a small caption.
+- **GPU %** — `gpu.busy_percent` when `gpu.available`, else the existing "GPU
+  bridge not provisioned" empty-state (already implemented, keep as-is — see
+  §5 history below for how this data source works).
+- **Temperature, if available** — **not yet confirmed feasible.** Check
+  `psutil.sensors_temperatures()` (or `/sys/class/thermal/*` directly) on the
+  real device before committing to this chart; if no thermal zone is exposed,
+  drop the metric silently (same "don't show a fake reading" principle as GPU
+  unavailable) rather than block the rest of the tier on it.
 
-- **"No data lost" %**: `(frames_sent - overrun - dropped) / frames_expected`, one big
-  live number/gauge. This is the single judge-facing headline metric.
-- Fleet-wide traffic-light strip: MPU / MCU / each satellite, one glance, green/amber/
-  red.
+Nothing else on this tier — no pipeline count here (Tier 2's row count already
+shows it), no ingest/transport counters, no falling-behind flag as a raw
+number.
 
-## 3. MPU tier (shown first)
+## 3. Tier 2 — Pipelines (replaces the old "MCU/fuser tier" — no longer about
+the MCU chip's own compute at all)
 
-Data already flows — this tier is a frontend-only build, no new backend work for
-CPU/RAM.
+Answers "is each pipeline keeping up, and how much headroom is left" — which
+is what actually answers "room for more satellites," not the sensor node's own
+CPU (explicit user feedback: "we don't care [about node CPU] as long as we're
+getting data at the required frame rate").
 
-- **CPU / RAM**: already computed by `base-station/python/monitoring/perf.py`
-  (`PerformanceMonitor`: process CPU%, per-core CPU%, process RSS, system memory,
-  per-pipeline latency/fps/"falling behind", `ingest_fps_by_transport`), already
-  exposed at `GET /perf`. Render as small trend sparklines, not gauges — these are
-  time-series, not point-in-time values. Per-core as a small heat strip.
-- **fps-by-transport**: small multiples, one sparkline per transport.
-- **GPU**: showcase real Adreno GPU usage (decided 2026-07-19 — GPU must be used, not
-  skipped). Two independent tracks feed this tile; see §5.
+**One row/card per live pipeline**, keyed by `node_id` — iterate
+`payload.pipelines` (already a dict `{node_id: {frame_count, avg_latency_ms,
+frames_per_sec, falling_behind}}`, see `monitoring/perf.py`'s
+`PipelineStats.to_dict()` — already broadcast today, no backend change needed
+for this tier). Today that's exactly one row (`base_station`); build it as N
+rows from the start so it extends automatically once satellite pipelines
+exist.
 
-## 4. MCU/fuser tier
+Each row is two live charts:
 
-New plumbing required. **MCU pushes, MPU does not poll** — decided explicitly to avoid
-adding a polling loop where a push already has a proven pattern in this codebase:
-`Bridge.notify(event, payload)` on the MCU side already lands as a
-`Bridge.provide(event, handler)` callback on the Python side (this is exactly how
-full-spectrum data was pushed pre-SPI-migration, see `docs/PROGRESS.md:436`). For
-perf scalars at ~1 Hz this is a clean fit — far lower volume than the spectrum data
-that outgrew it originally.
+- **Frames arrived/sec** — `frames_per_sec` from that pipeline's own stats.
+  (`route()` calls `handle_frame()` synchronously in the same thread that
+  pulls frames off SPI, so "arrived" and "processed" are the same event — a
+  second "processed/sec" line was discussed and dropped as redundant; this
+  one line already answers "are we getting the frame rate we need.")
+- **Pipeline time-budget used, %** — derived, no new backend field:
+  ```
+  budget_used_% = (avg_latency_ms / (1000 / frames_per_sec)) × 100
+  ```
+  numerator = average time `handle_frame()` takes per frame (`avg_latency_ms`,
+  already computed); denominator = average time between frames arriving for
+  that pipeline (`1000 / frames_per_sec`, already computed). Both inputs
+  already exist per-pipeline in the broadcast payload. This is the metric that
+  actually reads as "working well" (low %) vs. "struggling" (climbing toward
+  100%), and `100% − this` is the honest per-node headroom signal — **do not
+  compute or display a fabricated "N more satellites" estimate** on top of it;
+  let the viewer read the raw percentage.
 
-- MCU periodically calls `Bridge.notify("perf_stats", {...})` with:
-  - `bench.cpp`'s existing `get_bench_stats` fields: `mic_fps`, `mic_win`, `mic_to`,
-    `acc_fps`, `acc_win`, `acc_isr`, `acc_ff`, `acc_to`, `fus_fps`, `fus_frm`,
-    `fus_ovr`, `fus_avg`/`fus_max`.
-  - `spi_link.cpp`'s existing `get_spi_link_stats` fields: staged/armed/completed/
-    timeout/error counts.
-- Python side: register the matching `Bridge.provide("perf_stats", handler)`, cache
-  `{values, received_at}`.
-- **Frontend UX rule** (applies to this tier and the satellite tier below): show `--`
-  until the first message ever arrives, then hold and live-update the last received
-  value. No polling, no "waiting" spinner — either it has never arrived (`--`) or it
-  has and is live.
+**Explicitly not built now**: a third "frames processed by classification
+model/sec" line. Confirmed via code search this session that no classification
+model is wired into the live pipeline at all — `pipeline/manager.py`'s
+`handle_frame()` runs exactly one model stage (the autoencoder's
+`reconstruction_error()`, `pipeline/autoencoder.py`), timed as one
+undifferentiated lump alongside gate-check and feature extraction. The Edge
+Impulse fault classifier (`docs/EDGE_IMPULSE_FAULT_CLASSIFICATION_PLAN.md`)
+exists only as an offline experiment under `tools/` — no `pipeline/
+classifier.py`, no per-node "classifier enabled" flag, nothing to hook into.
+Don't stub or fake this row; it simply doesn't exist until a real classifier +
+per-node flag are built (a separate, larger project).
 
-## 5. GPU — two separate tracks, do not conflate
+## 4. Sensor sampling-rate / Nyquist showcase — explored, explicitly dropped
 
-Raised and resolved during brainstorm: chart-rendering GPU use and on-device inference
-GPU use are unrelated and answer different needs. Both are wanted; neither blocks the
-other.
+Investigated this session as a candidate metric (mic 96,000 Hz sampling / ~24,000
+Hz effective usable bandwidth since firmware only sends 512 of 1024 bins;
+accel 1,600 Hz ODR / clean 800 Hz Nyquist, both fixed compile-time constants —
+see `sketch/mic_sampler.cpp:139`, `sketch/app_config.h:38`). Real, correct
+data, and it's already decoded per-frame into `SpiConsumer.last_meta` — but the
+user decided it belongs on the Fleet tab if anywhere, not Performance. **Out of
+scope for this page.**
 
-### 5a. Chart rendering (fixes the separate "Chart clutter" backlog item)
+## 5. GPU — two separate tracks, do not conflate (unchanged from original brainstorm)
 
-- Swap `type: "scatter"` → `"scattergl"` and `type: "heatmap"` → `"heatmapgl"` in
-  `base-station/python/frontend/charts.js` (`buildSpectrumFigure` /
-  `buildTimelineFigure`). Moves per-redraw repaint cost off the browser's main JS
-  thread onto the GPU, so more channels/nodes can stay expanded at once without
-  jank — the actual mechanism behind "Chart clutter."
-- **Prerequisite**: the vendored bundle (`plotly-cartesian.min.js`) is SVG-only; needs
-  swapping for a bundle that includes gl2d trace support.
-- **Robustness note**: this GPU is the *viewer's* device, not the UNO Q's — WebGL
-  falls back to a software rasterizer on most browsers (so it still renders, just
-  without the benefit) but can fail outright in locked-down/headless environments.
-  Since this renders in front of judges on unknown hardware, feature-detect WebGL
-  context creation and fall back to plain `scatter`/`heatmap` traces rather than
-  assuming success.
-- This work does **not** produce any MPU-side GPU metric — it's client-side and
-  belongs to the Chart-clutter backlog item, not this page's GPU tile.
+Still accurate, carried forward as-is:
 
-### 5b. On-device GPU inference (feeds the MPU tier's GPU metric, §3)
+### 5a. Chart rendering (separate backlog item, not this page)
 
-- Decided 2026-07-19: pursue this so the MPU tier's GPU number is real, not an idle
-  placeholder — also chosen for the portability story (train once, deploy anywhere).
-- Plan: export the live PyTorch autoencoder (`base-station/python/pipeline/
-  autoencoder.py`) to **ONNX** (`torch.onnx.export`), then run it via **ONNX
-  Runtime's QNN Execution Provider** targeting the QRB2210's Adreno GPU backend.
-- **Unverified — separate research track, tracked outside this doc**: whether the
-  QRB2210's specific Adreno GPU version is actually supported by QNN's GPU backend.
-  Neither the current PyTorch autoencoder pipeline nor the (still unbuilt) EI TFLite
-  classifier plan (`docs/EDGE_IMPULSE_FAULT_CLASSIFICATION_PLAN.md`, locked to
-  CPU-only TFLite) currently touch the GPU at all — this would be new capability, not
-  a redirect of existing work.
-- Until this lands, the MPU tier's GPU tile reads idle/near-zero honestly rather than
-  faking a number.
+Swap `type: "scatter"`/`"heatmap"` → `"scattergl"`/`"heatmapgl"` in
+`frontend/charts.js` to move redraw cost onto the *viewer's* GPU. Needs a
+gl2d-capable Plotly bundle (current vendored one is SVG-only). Feature-detect
+WebGL and fall back to plain traces — this renders in front of judges on
+unknown hardware. Unrelated to this page's GPU tile.
 
-## 6. Satellite tier
+### 5b. Real GPU busy% for Tier 1's GPU chart — built and working
 
-Same push-based philosophy as §4 (MQTT publish, not polled), and the same `--`-until-
-first-arrival UX rule. **Blocked on real satellite firmware existing at all** — only
-`base-station/python/tools/satellite_node_sim.py` exists today, with no health fields.
+`host/gpu_bridge.py` (root daemon) reads `/sys/kernel/debug/dri/<N>/perf`
+continuously (this board's `msm`/Adreno driver combines DPU+GPU into one DRM
+device — no separate KGSL; don't use the `/sys/class/drm/renderD<N>/device`
+symlink, it resolves to the *display* device, not the GPU — scan
+`/sys/kernel/debug/dri/*/` for a dir with both a `gpu` and `perf` file) and
+serves the latest busy% over `/dev/gpu-perf.sock`. `monitoring/gpu_perf.py`
+polls it ~1Hz, tri-state (`available: False` when the bridge isn't
+provisioned/reachable vs. `available: True, busy_percent: 0.0` when genuinely
+idle — never show a fake number for "no data"). `provision-gpu.sh` is a
+one-time host step, **not** applied by `deploy.sh`, wiped by an OS reflash.
+This reports whatever's actually driving the GPU (currently ~nothing, hence
+~0%) — it doesn't make anything use the GPU; on-device ONNX/QNN inference
+(unverified Adreno-version feasibility, separate research track) is the thing
+that would eventually make this read non-zero.
 
-- Signal strength (RSSI) per node.
-- Connectivity timeline: green/red stripe per satellite over the last N minutes,
-  driven by MQTT LWT (fires on ungraceful disconnect) + heartbeat age — not polling.
-- Last-seen freshness badge.
-- Its own fps/dropped-frame stats, mirroring the MCU's `bench.cpp` pattern, once real
-  firmware can report them.
+## 6. MCU stats — removed, not just reshaped
+
+The original brainstorm (§9) and the first implementation both had a MCU/fuser
+tier polling `bench.cpp`'s `get_bench_stats`/`spi_link.cpp`'s
+`get_spi_link_stats` (`monitoring/mcu_perf.py`'s `McuPerfPoller`, `Bridge.call`
+on a 1s Python timer). **That module is deleted** (`e4aefce`) — Tier 2 above
+gets pipeline throughput from Python-side `PipelineStats`, not MCU Bridge
+calls, and nothing in the new design needs mic/accel/fuser fps or SPI-link
+register debug. Don't recreate it.
+
+Still-good background if MCU-side stats ever come back: this codebase's
+Bridge UART is documented (`docs/PROGRESS.md`) to wedge under concurrent
+access from multiple threads — it's happened twice now (an original
+continuous-`Bridge.notify` incident, and `mcu_perf.py`'s poller thread this
+session, which ran concurrently with `spi_reader.py`'s own `spi_arm` loop with
+no synchronization). `common/bridge_lock.py` (a shared `threading.Lock()`) now
+serializes every remaining `Bridge.call()` site (`spi_reader.py`'s `spi_arm`,
+`main.py`'s `set_rgb`) and is kept as standing protection even though today's
+two call sites happen to run on one thread — so the next poller that gets
+added inherits the protection instead of silently reintroducing this bug a
+third time.
 
 ## 7. Explicitly out of scope / accepted as-is
 
-- **Waterfall/spectrum history storage**: raw spectrum bins pass through MPU RAM only
-  transiently (`base-station/python/main.py`'s `on_frame` broadcasts straight to the
-  WebSocket, no ring buffer, no persistence) and are buffered only client-side
-  (`charts.js`'s `node.waterfall[channel]`, capped at `WATERFALL_MAX_COLS`). This
-  resets on page refresh. Discussed and explicitly accepted as-is — no storage change
-  planned. (Contrast with anomaly score, which *is* durably stored in
-  `mpu/history/store.py` and reseeded via `GET /nodes/{id}/history` — that asymmetry
-  is intentional per the existing dashboard redesign spec, S5.2.)
+- **Waterfall/spectrum history storage** — unchanged from original brainstorm:
+  raw spectrum bins pass through MPU RAM only transiently, buffered only
+  client-side (`charts.js`'s `node.waterfall[channel]`), resets on page
+  refresh. No storage change planned.
+- **STM32U585 real CPU%/RAM usage** — investigated this session, confirmed
+  infeasible without real firmware R&D: no Zephyr runtime-stats hook anywhere
+  in `sketch/*`, no `prj.conf`/Kconfig mechanism in this Arduino-sketch-based
+  build at all, and this board has a well-documented history of
+  thread-priority disasters from much smaller changes. Not part of this plan;
+  a separate firmware project if ever wanted.
 
 ## 8. Next steps
 
-- [ ] Research: QNN Execution Provider GPU-backend support for QRB2210's Adreno GPU
-      (§5b) — separate task, not blocking the rest of this plan.
-- [ ] Build: MCU firmware — wire `get_bench_stats`/`get_spi_link_stats` into a
-      periodic `Bridge.notify("perf_stats", ...)` push.
-- [ ] Build: Python side — `Bridge.provide("perf_stats", ...)` handler + cache +
-      REST/WS exposure to the frontend.
-- [ ] Build: frontend Dev/perf page — hero band, MPU tier (CPU/RAM/GPU), MCU tier.
-- [ ] Blocked: satellite tier — needs real (non-simulated) satellite firmware first.
-- [ ] Separate backlog item, not this one: Chart-clutter GPU rendering swap (§5a).
+- [ ] Confirm `psutil.sensors_temperatures()` feasibility on real hardware
+      (§2's temperature chart) before building it.
+- [ ] Build: rewrite `frontend/index.html`/`perf.js`/`style.css`'s Performance
+      tab against §2/§3 above (the WS-wiring in `charts.js`/`app.js` — the
+      `perfHandler` plumbing routing `"perf_stats"` WS messages into `Perf`
+      — is solid from the first pass and doesn't need to change).
+- [ ] Verify live-update end to end on real hardware: open the dashboard at
+      the device's direct LAN IP (not `adb forward` — flaky under a real
+      browser's concurrent connections), watch Tier 1/2 for 60s+ without
+      reloading, confirm via DevTools' Network → WS → Messages that
+      `perf_stats` frames keep arriving with changing data, and soak for a
+      minute or two (the original bug only showed up after some time running,
+      not immediately after a fresh deploy).
+
+---
+
+## 9. Original brainstorm (2026-07-19, pre-implementation) — historical record only, do not build from this
+
+Kept for context on how the page's scope evolved; every section above
+supersedes the corresponding idea here.
+
+Original framing: CPU/RAM/GPU, live sampling rate, dropped-frame count, a
+judge-facing "no data lost" highlight, for the "Dev/perf page" item in
+[DASHBOARD_IDEAS_BACKLOG.md](DASHBOARD_IDEAS_BACKLOG.md).
+
+- **Hero band** (judge-facing "No data lost %" + fleet-wide traffic-light
+  strip) — **dropped**: read as confusing/unexplained once built, and
+  fault-detection reliability isn't this page's job (that's the Fleet tab's).
+- **MPU tier as Meters** (CPU/RAM/GPU as filled-track gauges, per-core as a
+  static heat-strip) — **dropped**: redesigned as live time-plots, see §2.
+- **MCU/fuser tier via `Bridge.notify` push** — the brainstorm's original
+  instinct was MCU-push over `Bridge.notify`; the first implementation
+  reversed this to `Bridge.call` polling instead (continuous `Bridge.notify`
+  streams have a documented history of wedging this board's UART permanently,
+  `docs/PROGRESS.md`'s fuser-notify entries) — and this redesign removes the
+  MCU stats tier entirely, see §6.
+- **Satellite tier** (signal strength, connectivity timeline, freshness
+  badge) — **dropped entirely** this session (not kept as a placeholder).
+  Blocked on real satellite firmware regardless (only
+  `tools/satellite_node_sim.py` exists).
