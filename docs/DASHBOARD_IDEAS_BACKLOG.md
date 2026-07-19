@@ -14,8 +14,9 @@ session, one line each. Pick one and go deeper when ready.
 - [ ] **Per-node EI data collection UI** — collect + label data per node from the
       dashboard, push to (possibly per-node) Edge Impulse projects, then download and
       load the trained model back into the pipeline.
-- [ ] **Clickable status counts** — the status tally at the top of the dashboard
-      should filter the fleet list when clicked.
+- [x] **Clickable status counts** — the status tally at the top of the dashboard
+      should filter the fleet list when clicked. Brainstorm/design complete, see
+      [STATUS_FILTER_PLAN.md](STATUS_FILTER_PLAN.md); implementation not started.
 - [ ] **LED matrix status message** — short rolling message ("Fault: Motor A ·
       Warning: Motor B", else "All good") pushed to the base station's LED matrix.
 - [X] **Telegram alerts** (lowest priority of the bunch) — App Lab's `TelegramBot`
@@ -28,3 +29,7 @@ session, one line each. Pick one and go deeper when ready.
       fault-only vs fault+warning). Fault/warning pipeline then calls
       `bot.send_message(chat_id, text)` per subscriber when state transitions,
       debounced against flapping. Not designed further yet.
+- [x] **Dashboard navigation (topbar sections)** — not a brainstormed item of its
+      own, fell out of the status-counts/WiFi/Dev-perf discussions above. Brainstorm/
+      design complete, see [DASHBOARD_NAV_PLAN.md](DASHBOARD_NAV_PLAN.md);
+      implementation not started.
