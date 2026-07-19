@@ -17,8 +17,10 @@ session, one line each. Pick one and go deeper when ready.
 - [x] **Clickable status counts** — the status tally at the top of the dashboard
       should filter the fleet list when clicked. Brainstorm/design complete, see
       [STATUS_FILTER_PLAN.md](STATUS_FILTER_PLAN.md); implementation not started.
-- [ ] **LED matrix status message** — short rolling message ("Fault: Motor A ·
-      Warning: Motor B", else "All good") pushed to the base station's LED matrix.
+- [x] **LED matrix status message** — short rolling message summarizing fleet
+      health, pushed to the base station's LED matrix. Brainstorm/design complete,
+      see [LED_MATRIX_STATUS_PLAN.md](LED_MATRIX_STATUS_PLAN.md); implementation not
+      started.
 - [X] **Telegram alerts** (lowest priority of the bunch) — App Lab's `TelegramBot`
       brick can't push to a bare `@username` (Telegram platform restriction: bots
       need a numeric `chat_id`, only obtainable after the user messages the bot
