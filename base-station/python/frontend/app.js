@@ -16,7 +16,7 @@ const OFFLINE_AFTER_S = 30;
 
 // "all" isn't a bucketFor() outcome -- it's the unfiltered total, shown
 // as its own tile so a click can reset whatever per-status filter is
-// applied to the (future) fleet listing.
+// applied to the fleet listing.
 const SUMMARY_TILES = [
   { bucket: "all", label: "Assets" },
   { bucket: "fault", label: "Faulty" },
@@ -26,6 +26,13 @@ const SUMMARY_TILES = [
   { bucket: "paused", label: "Paused" },
   { bucket: "offline", label: "Offline" },
 ];
+
+const REAL_BUCKETS = SUMMARY_TILES.filter((t) => t.bucket !== "all").map((t) => t.bucket);
+
+// Fleet filter state -- multi-select toggle, default every status selected
+// (matches today's no-filter behavior with zero clicks). Not persisted
+// across refresh, matching Dev/perf's precedent (docs/STATUS_FILTER_PLAN.md).
+const selectedBuckets = new Set(REAL_BUCKETS);
 
 function bucketFor(entry) {
   // Paused is an intentional, operator-initiated state -- staleness
@@ -53,14 +60,54 @@ function renderSummary(nodes) {
     counts[bucketFor(entry)] += 1;
   }
 
+  // "All" has no selection state of its own -- it's derived: filled in
+  // only when every individual status tile is currently selected
+  // (docs/STATUS_FILTER_PLAN.md S3).
+  const allSelected = REAL_BUCKETS.every((b) => selectedBuckets.has(b));
+  // With 0 or 1 non-empty status bucket, "All" would just duplicate that
+  // bucket's own count and toggle button -- only earns its keep as a bulk
+  // control once there are 2+ buckets to select across.
+  const visibleBucketCount = REAL_BUCKETS.filter((b) => counts[b] > 0).length;
+
   const row = document.getElementById("summary-row");
-  row.innerHTML = SUMMARY_TILES.map(
-    (t) => `<div class="tile tile--${t.bucket}" data-bucket="${t.bucket}">
+  // Zero-count tiles are hidden rather than shown as empty -- filtering
+  // SUMMARY_TILES (instead of reordering it) means a tile that later goes
+  // from 0 back to >0 reappears at its original fixed position, not
+  // appended wherever it last changed.
+  row.innerHTML = SUMMARY_TILES.filter((t) => {
+    if (t.bucket === "all") return visibleBucketCount > 1;
+    return counts[t.bucket] > 0;
+  }).map((t) => {
+    const isSelected = t.bucket === "all" ? allSelected : selectedBuckets.has(t.bucket);
+    return `<div class="tile tile--${t.bucket}${isSelected ? " is-selected" : ""}" data-bucket="${t.bucket}">
       <div class="tile__count">${counts[t.bucket]}</div>
       <div class="tile__label">${t.label}</div>
-    </div>`
-  ).join("");
+    </div>`;
+  }).join("");
 }
+
+// Clicking "all" flips the derived all-selected boolean as a single unit
+// (deselect everything, or reselect everything); clicking any other tile
+// toggles just that status. Either way, both the tiles' underlines and
+// the fleet list below need to reflect the new selection.
+document.getElementById("summary-row").addEventListener("click", (e) => {
+  const tile = e.target.closest(".tile");
+  if (!tile) return;
+  const bucket = tile.dataset.bucket;
+
+  if (bucket === "all") {
+    const allSelected = REAL_BUCKETS.every((b) => selectedBuckets.has(b));
+    selectedBuckets.clear();
+    if (!allSelected) REAL_BUCKETS.forEach((b) => selectedBuckets.add(b));
+  } else if (selectedBuckets.has(bucket)) {
+    selectedBuckets.delete(bucket);
+  } else {
+    selectedBuckets.add(bucket);
+  }
+
+  renderSummary(state.lastNodes);
+  if (editingNodeId === null) renderFleetList(state.lastNodes);
+});
 
 // ---------------------------------------------------------------------
 // Asset list
@@ -262,8 +309,12 @@ function motorRowHtml(entry) {
 function renderFleetList(nodes) {
   const list = document.getElementById("fleet-list");
   const entries = Object.values(nodes);
+  // Filtered-to-zero is left blank, no "no results" message of its own
+  // (docs/STATUS_FILTER_PLAN.md S4) -- the placeholder below is only for
+  // the genuinely-empty fleet (no assets registered at all).
+  const visible = entries.filter((entry) => selectedBuckets.has(bucketFor(entry)));
   list.innerHTML = entries.length
-    ? entries.map(motorRowHtml).join("")
+    ? visible.map(motorRowHtml).join("")
     : `<div class="fleet__empty">No assets yet -- they appear automatically as soon as they start streaming data.</div>`;
   // innerHTML above just destroyed and recreated every DOM node in the
   // list, including any chart-slot placeholders -- reparent each expanded

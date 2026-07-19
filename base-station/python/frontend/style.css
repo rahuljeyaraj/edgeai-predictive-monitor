@@ -111,7 +111,7 @@ body {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(100px, 140px));
   gap: 14px;
-  justify-content: center;
+  justify-content: start;
 }
 
 .tile {
@@ -122,6 +122,21 @@ body {
   background-color: #1e293b;
   border: 3px solid var(--accent);
   border-radius: 10px;
+  cursor: pointer;
+  transition: background-color 0.15s ease;
+}
+
+.tile:hover {
+  filter: brightness(1.15);
+}
+
+/* Selection indicator is a tinted background fill -- border/count/label
+   stay at full --accent color in both states (never dims), since these
+   tiles double as an always-on ISA-101 alarm readout
+   (docs/STATUS_FILTER_PLAN.md S2). Only the fill (a channel the alarm
+   reading never used) carries the selected/deselected difference. */
+.tile.is-selected {
+  background-color: color-mix(in srgb, var(--accent) 18%, #1e293b);
 }
 
 .tile__count {
