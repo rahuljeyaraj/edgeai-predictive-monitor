@@ -490,7 +490,8 @@ Charts.init((msg) => {
   }
   renderSummary(state.lastNodes);
   if (editingNodeId === null) renderFleetList(state.lastNodes);
-});
+}, (msg) => Perf.handleMessage(msg));
 
+Perf.init();
 pollNodes();
 setInterval(pollNodes, NODES_POLL_MS);

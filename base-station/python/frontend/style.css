@@ -431,3 +431,219 @@ body {
     flex-wrap: wrap;
   }
 }
+
+/* ---------------------------------------------------------------------
+   Dev/perf page (docs/DEV_PERF_PAGE_PLAN.md) -- demo-facing redesign:
+   collapsible per-chip tiers (QRB2210 / STM32U585 / Satellites), each
+   showing only what a viewer can understand at a glance with no
+   explanation -- live Task-Manager-style area charts for the handful of
+   utilization figures that actually change (CPU/memory/GPU), a plain
+   stat for counts, and static hardware spec cards for facts that never
+   change (per-core CPU, sensor sampling rate). No nested "Advanced"
+   disclosure of unexplainable raw counters -- reuses the same dark
+   panel/border/label conventions as the fleet tiles/rows above.
+   --------------------------------------------------------------------- */
+
+.perf-page {
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.perf-tier {
+  background-color: #1e293b;
+  border: 1px solid #334155;
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.perf-tier__header {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 14px 20px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.perf-tier__header::-webkit-details-marker {
+  display: none;
+}
+
+.perf-tier__header::before {
+  content: "▸";
+  display: inline-block;
+  width: 1em;
+  color: #64748b;
+}
+
+.perf-tier[open] > .perf-tier__header::before {
+  content: "▾";
+}
+
+.perf-tier__chip {
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: #f1f5f9;
+}
+
+.perf-tier__subtitle {
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 12px;
+  color: #64748b;
+}
+
+.perf-tier__body {
+  padding: 4px 20px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.perf-empty {
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 13px;
+  color: #64748b;
+}
+
+/* ---- Shared card box -- every tile on this page (chart, stat, sensor
+   spec) is this same panel, just with different contents. ---- */
+
+.perf-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px 16px;
+  background-color: #0f172a;
+  border: 1px solid #334155;
+  border-radius: 8px;
+}
+
+/* ---- Live utilization charts (CPU/memory/GPU): dataviz skill's "trend
+   over time -> line/area, sequential" form. One hue per card since each
+   is its own small multiple, never overlaid on a shared axis. ---- */
+
+.perf-charts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 16px;
+}
+
+.perf-chart__top {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+}
+
+.perf-chart__label {
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 12px;
+  color: #94a3b8;
+}
+
+.perf-chart__value {
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 26px;
+  font-weight: 700;
+  color: #e2e8f0;
+}
+
+.perf-chart__svg {
+  display: block;
+  width: 100%;
+  height: 64px;
+}
+
+.perf-chart__caption {
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 11px;
+  color: #64748b;
+}
+
+/* ---- Per-core CPU -- always visible (not tucked in a disclosure): each
+   core gets its own cell, colored by its own load. ---- */
+
+.perf-cores__label {
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 12px;
+  color: #94a3b8;
+  margin-bottom: 8px;
+}
+
+.heat-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.heat-cell {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 6px;
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 10px;
+  color: #0f172a;
+  font-weight: 700;
+}
+
+/* ---- Plain count stat (e.g. pipelines running) -- a number, not a
+   chart: a flat count over time isn't a trend worth animating. ---- */
+
+.perf-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 16px;
+}
+
+.perf-stat__label {
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 12px;
+  color: #94a3b8;
+}
+
+.perf-stat__value {
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 26px;
+  font-weight: 700;
+  color: #e2e8f0;
+}
+
+/* ---- Sensor sampling-rate spec cards (STM32U585 tier): static hardware
+   facts, never animated -- these never change at runtime. ---- */
+
+.perf-sensor-specs {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 16px;
+}
+
+.perf-sensor__name {
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 12px;
+  color: #94a3b8;
+}
+
+.perf-sensor__rate {
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 26px;
+  font-weight: 700;
+  color: #e2e8f0;
+}
+
+.perf-sensor__rate-unit {
+  font-size: 13px;
+  font-weight: 500;
+  color: #94a3b8;
+}
+
+.perf-sensor__detail {
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 12px;
+  color: #64748b;
+}

@@ -100,6 +100,7 @@ const Charts = (() => {
   let ws = null;
   let expandedIds = new Set();
   let registryHandler = null;
+  let perfHandler = null;
   const dirty = new Set();
 
   function escapeAttr(str) {
@@ -176,6 +177,8 @@ const Charts = (() => {
         if (registryHandler) registryHandler(msg);
       } else if (msg.type === "removed" && registryHandler) {
         registryHandler(msg);
+      } else if (msg.type === "perf_stats") {
+        if (perfHandler) perfHandler(msg);
       }
     };
     ws.onclose = () => setTimeout(connectWs, WS_RECONNECT_MS);
@@ -515,8 +518,9 @@ const Charts = (() => {
   // Startup
   // ---------------------------------------------------------------------
 
-  async function init(onRegistryPush) {
+  async function init(onRegistryPush, onPerfStats) {
     registryHandler = onRegistryPush || null;
+    perfHandler = onPerfStats || null;
     connectWs();
     setInterval(flush, RENDER_THROTTLE_MS);
   }
