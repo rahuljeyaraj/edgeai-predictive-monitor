@@ -237,12 +237,6 @@ function escapeHtml(str) {
     .replace(/'/g, "&#39;");
 }
 
-function formatScore(entry) {
-  return typeof entry.last_anomaly_score === "number"
-    ? entry.last_anomaly_score.toFixed(3)
-    : "—";
-}
-
 // Inline SVGs rather than an emoji/icon-font dependency -- consistent
 // rendering across platforms with no extra asset or build step.
 const ICON_RECORD = '<svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><circle cx="12" cy="12" r="7"/></svg>';
@@ -265,6 +259,17 @@ let editingNodeId = null;
 // fresh from scratch on every render rather than stored per-DOM-node, so
 // it survives the innerHTML replace each poll does.
 const expandedNodeIds = new Set();
+
+// Which nodes have their "Scalar values" / "Raw signals" / "Waterfall"
+// <details> open -- parallel to expandedNodeIds, driving the `open`
+// attribute Charts.detailBodyHtml() renders (never left as native
+// uncontrolled state, since renderFleetList()'s innerHTML rebuild would
+// silently reset it every 5s poll otherwise). Scalars' content isn't
+// gated on this (cheap plain HTML, always kept current -- see charts.js),
+// this Set only exists to keep the panel's open/closed state sticky.
+const openRawIds = new Set();
+const openWaterfallIds = new Set();
+const openScalarsIds = new Set();
 
 function motorRowHtml(entry) {
   const bucket = bucketFor(entry);
@@ -296,11 +301,11 @@ function motorRowHtml(entry) {
       <span class="motor-row__detail-label">Node ID</span>
       <span class="motor-row__detail-value">${escapeHtml(entry.node_id)}</span>
     </div>
-    <div class="motor-row__detail-item">
-      <span class="motor-row__detail-label">Anomaly score</span>
-      <span class="motor-row__detail-value">${formatScore(entry)}</span>
-    </div>
-    ${Charts.chartSlotsHtml(entry.node_id)}
+    ${Charts.detailBodyHtml(entry, {
+      rawOpen: openRawIds.has(entry.node_id),
+      waterfallOpen: openWaterfallIds.has(entry.node_id),
+      scalarsOpen: openScalarsIds.has(entry.node_id),
+    })}
   </div>` : "";
 
   return `<div class="motor-row-group motor-row-group--${bucket}" data-node-id="${escapeHtml(entry.node_id)}">${rowHtml}${detailHtml}</div>`;
@@ -320,7 +325,7 @@ function renderFleetList(nodes) {
   // list, including any chart-slot placeholders -- reparent each expanded
   // node's persistent Plotly <div>s (which survived, since they're held by
   // charts.js, not by this markup) back into the fresh slots.
-  Charts.attachExpanded(expandedNodeIds);
+  Charts.attachExpanded(expandedNodeIds, openRawIds, openWaterfallIds);
 }
 
 function toggleExpand(nodeId) {
@@ -408,21 +413,42 @@ document.getElementById("fleet-list").addEventListener("click", (e) => {
     return;
   }
   if (e.target.closest('[data-role="name"]')) return;
-  // Plotly's modebar (zoom/pan/autoscale/...) and the plots themselves
-  // live inside .motor-row__charts, still part of this same
-  // .motor-row-group -- without this guard, every modebar click (and
-  // the synthetic click Plotly fires after a drag-zoom/pan) bubbles up
-  // and gets treated as "click anywhere else to toggle expand", collapsing
-  // the row out from under the chart the operator was just interacting with.
-  if (e.target.closest(".motor-row__charts")) return;
+  // Plotly's modebar (zoom/pan/autoscale/...), the plots themselves, the
+  // waterfall 2D/3D toggle pills, and the three <details> collapsibles all
+  // live inside .motor-row__body, still part of this same
+  // .motor-row-group -- without this guard, every modebar click (and the
+  // synthetic click Plotly fires after a drag-zoom/pan), every toggle-pill
+  // click, and every <summary> click (click bubbles normally, unlike the
+  // <details> "toggle" event below) would get treated as "click anywhere
+  // else to toggle expand", collapsing the row out from under whatever the
+  // operator was just interacting with.
+  if (e.target.closest(".motor-row__body")) return;
   const group = e.target.closest(".motor-row-group");
   if (group) toggleExpand(group.dataset.nodeId);
 });
 
+// The native `toggle` event on <details> does NOT bubble -- but
+// capture-phase dispatch still traverses ancestors on the way down
+// regardless of the bubbles flag, so {capture: true} on this stable
+// container is what makes delegation work here. Mounts the corresponding
+// collapsible's charts lazily (Charts.attachExpanded, no HTML rebuild) the
+// moment it's actually opened, per docs/CHART_CLUTTER_PLAN.md §1.5's "not
+// rendered/computed until expanded."
+document.getElementById("fleet-list").addEventListener("toggle", (e) => {
+  if (!(e.target instanceof HTMLDetailsElement)) return;
+  const role = e.target.dataset.role; // "scalars-details" | "raw-signals-details" | "waterfall-details"
+  const nodeId = e.target.closest(".motor-row-group")?.dataset.nodeId;
+  if (!nodeId || !role) return;
+  const set = role === "raw-signals-details" ? openRawIds
+    : role === "waterfall-details" ? openWaterfallIds
+    : openScalarsIds;
+  if (e.target.open) set.add(nodeId); else set.delete(nodeId);
+  Charts.attachExpanded(expandedNodeIds, openRawIds, openWaterfallIds);
+}, true);
+
 // ---------------------------------------------------------------------
-// Topbar tabs -- Fleet is the only real section so far; Network/
-// Performance/Alerts are placeholders until each is built out
-// (docs/DASHBOARD_NAV_PLAN.md).
+// Topbar tabs -- Fleet, Performance (perf.js), and Alerts (alerts.js) are
+// real sections; Network is still a placeholder (docs/DASHBOARD_NAV_PLAN.md).
 // ---------------------------------------------------------------------
 
 document.querySelector(".topbar__nav").addEventListener("click", (e) => {
@@ -456,6 +482,15 @@ async function pollNodes() {
     for (const nodeId of expandedNodeIds) {
       if (!(nodeId in nodes)) expandedNodeIds.delete(nodeId);
     }
+    for (const nodeId of openRawIds) {
+      if (!(nodeId in nodes)) openRawIds.delete(nodeId);
+    }
+    for (const nodeId of openWaterfallIds) {
+      if (!(nodeId in nodes)) openWaterfallIds.delete(nodeId);
+    }
+    for (const nodeId of openScalarsIds) {
+      if (!(nodeId in nodes)) openScalarsIds.delete(nodeId);
+    }
     renderSummary(nodes);
     // Skip the list re-render while a rename is open -- startRename()/
     // Escape re-render explicitly on their own, this only guards the
@@ -474,6 +509,9 @@ Charts.init((msg) => {
   if (msg.type === "removed") {
     delete state.lastNodes[msg.node_id];
     expandedNodeIds.delete(msg.node_id);
+    openRawIds.delete(msg.node_id);
+    openWaterfallIds.delete(msg.node_id);
+    openScalarsIds.delete(msg.node_id);
   } else if (msg.type === "registry") {
     // The WS broadcast's entry is registry.py's plain to_dict() -- unlike
     // GET /nodes, it has no commissioning_progress (that's REST-only, added
@@ -490,8 +528,9 @@ Charts.init((msg) => {
   }
   renderSummary(state.lastNodes);
   if (editingNodeId === null) renderFleetList(state.lastNodes);
-}, (msg) => Perf.handleMessage(msg));
+}, (msg) => Perf.handleMessage(msg), (msg) => Alerts.handleMessage(msg));
 
 Perf.init();
+Alerts.init();
 pollNodes();
 setInterval(pollNodes, NODES_POLL_MS);

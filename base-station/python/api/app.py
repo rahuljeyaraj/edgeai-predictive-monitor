@@ -34,9 +34,10 @@ these paths.
 """
 import asyncio
 import logging
+import os
 import threading
 from contextlib import asynccontextmanager
-from typing import Optional
+from typing import List, Optional
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -52,6 +53,7 @@ from gpu_perf import GpuPerfPoller
 from spi_reader import SpiConsumer
 from connection_manager import ConnectionManager
 from manager import PipelineManager
+from alert_store import AlertStore, SubscriberNotFoundError
 
 logger = logging.getLogger(__name__)
 
@@ -75,6 +77,17 @@ class RenameBody(BaseModel):
     display_name: Optional[str] = None
 
 
+class TelegramPrefsBody(BaseModel):
+    # Whole-object PUT, not a partial PATCH: the frontend always has the
+    # subscriber's current prefs from GET /alerts/telegram/subscribers
+    # already, so both fields are sent on every update -- this sidesteps
+    # needing to distinguish "field omitted" from "field explicitly null"
+    # (node_ids=null is a real value, meaning "every node") the way a
+    # partial-update contract would.
+    fault_only: bool
+    node_ids: Optional[List[str]] = None
+
+
 def broadcast_threadsafe(app: FastAPI, message: dict) -> None:
     """The sync->async bridge: callable from any thread (a REST handler's
     worker thread, or an ingestion thread calling main.py's on_frame in
@@ -93,6 +106,8 @@ def create_app(registry: Registry, history_store: HistoryStore,
                 perf_monitor: Optional[PerformanceMonitor] = None,
                 gpu_perf: Optional[GpuPerfPoller] = None,
                 spi_consumer: Optional[SpiConsumer] = None,
+                alert_store: Optional[AlertStore] = None,
+                telegram_bot=None,
                 on_startup: Optional[callable] = None) -> FastAPI:
     def _perf_payload() -> dict:
         data = app.state.perf_monitor.snapshot().to_dict()
@@ -148,6 +163,8 @@ def create_app(registry: Registry, history_store: HistoryStore,
     app.state.perf_monitor = perf_monitor if perf_monitor is not None else PerformanceMonitor()
     app.state.gpu_perf = gpu_perf
     app.state.spi_consumer = spi_consumer
+    app.state.alert_store = alert_store
+    app.state.telegram_bot = telegram_bot
     app.state.connection_manager = ConnectionManager()
     app.state.loop = None
 
@@ -227,6 +244,59 @@ def create_app(registry: Registry, history_store: HistoryStore,
         app.state.perf_monitor.disable()
         broadcast_threadsafe(app, {"type": "perf", "enabled": False})
         return {"enabled": False}
+
+    def _telegram_subscribers_dict() -> dict:
+        if app.state.alert_store is None:
+            return {}
+        return {chat_id: sub.to_dict()
+                for chat_id, sub in app.state.alert_store.list_subscribers().items()}
+
+    @app.get("/alerts/telegram/status")
+    def telegram_status():
+        # bot_username is this app's own env var (not brick-managed, see
+        # app.yaml's comment) -- surfaced here so the frontend can build a
+        # helpful "not configured yet" message rather than just hiding the
+        # connect button with no explanation.
+        return {
+            "configured": app.state.telegram_bot is not None,
+            "bot_username": os.getenv("TELEGRAM_BOT_USERNAME"),
+        }
+
+    @app.post("/alerts/telegram/connect")
+    def telegram_connect():
+        if app.state.telegram_bot is None or app.state.alert_store is None:
+            raise HTTPException(status_code=503,
+                                 detail="Telegram alerts not configured (TELEGRAM_BOT_TOKEN unset)")
+        bot_username = os.getenv("TELEGRAM_BOT_USERNAME")
+        if not bot_username:
+            raise HTTPException(status_code=503, detail="TELEGRAM_BOT_USERNAME not set")
+        token = app.state.alert_store.create_connect_token()
+        return {"token": token, "deep_link": f"https://t.me/{bot_username}?start={token}"}
+
+    @app.get("/alerts/telegram/subscribers")
+    def list_telegram_subscribers():
+        return _telegram_subscribers_dict()
+
+    @app.post("/alerts/telegram/subscribers/{chat_id}/prefs")
+    def update_telegram_subscriber_prefs(chat_id: int, body: TelegramPrefsBody):
+        if app.state.alert_store is None:
+            raise HTTPException(status_code=503, detail="Telegram alerts not configured")
+        try:
+            app.state.alert_store.update_prefs(chat_id, fault_only=body.fault_only, node_ids=body.node_ids)
+        except SubscriberNotFoundError:
+            raise HTTPException(status_code=404, detail=f"unknown chat_id {chat_id!r}")
+        subscribers = _telegram_subscribers_dict()
+        broadcast_threadsafe(app, {"type": "telegram_subscribers", "subscribers": subscribers})
+        return subscribers[str(chat_id)]
+
+    @app.post("/alerts/telegram/subscribers/{chat_id}/disconnect")
+    def disconnect_telegram_subscriber(chat_id: int):
+        if app.state.alert_store is None:
+            raise HTTPException(status_code=503, detail="Telegram alerts not configured")
+        if not app.state.alert_store.remove_subscriber(chat_id):
+            raise HTTPException(status_code=404, detail=f"unknown chat_id {chat_id!r}")
+        broadcast_threadsafe(app, {"type": "telegram_subscribers", "subscribers": _telegram_subscribers_dict()})
+        return {"chat_id": chat_id, "disconnected": True}
 
     @app.post("/nodes/{node_id}/rename")
     def rename_node(node_id: str, body: RenameBody = RenameBody()):

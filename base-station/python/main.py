@@ -38,7 +38,7 @@ import threading
 
 _PYTHON_DIR = os.path.dirname(os.path.abspath(__file__))
 for _subpackage in ("common", "registry", "pipeline", "history", "monitoring",
-                     "ingestion", "api"):
+                     "ingestion", "api", "alerts"):
     sys.path.insert(0, os.path.join(_PYTHON_DIR, _subpackage))
 
 import uvicorn
@@ -56,6 +56,7 @@ from perf import PerformanceMonitor
 from gpu_perf import GpuPerfPoller
 from app import create_app, broadcast_threadsafe
 from commissioning_controller import CommissioningController
+from alert_store import AlertStore
 
 logger = logging.getLogger("main")
 
@@ -129,6 +130,22 @@ def wire_local_status_led(registry: Registry) -> None:
     registry.on_status_change(on_status_change)
 
 
+def build_telegram_alerts(registry: Registry, alert_store: AlertStore, on_subscriber_change):
+    """Constructs the arduino:telegram_bot brick and wires it to `registry`
+    + `alert_store` (docs/DASHBOARD_IDEAS_BACKLOG.md's Telegram alerts).
+    Only called when TELEGRAM_BOT_TOKEN is set (main() below) -- Telegram
+    alerts are opt-in, same as --mqtt-host satellite ingestion. Returns the
+    bot; caller is responsible for .start()/.stop() (deferred to
+    start_ingestion() below, same reason spi_consumer/gpu_perf are: this
+    needs app.state.loop set before any inbound Telegram message could
+    trigger a broadcast_threadsafe call)."""
+    from telegram_alerts import build_telegram_bot, wire_telegram_alerts
+
+    bot = build_telegram_bot()
+    wire_telegram_alerts(registry, bot, alert_store, on_subscriber_change=on_subscriber_change)
+    return bot
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__,
                                       formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -160,6 +177,7 @@ def main():
     registry = Registry(os.path.join(args.data_dir, "registry.json"))
     history = HistoryStore(os.path.join(args.data_dir, "history.db"))
     perf_monitor = PerformanceMonitor()
+    alert_store = AlertStore(os.path.join(args.data_dir, "alerts.json"))
 
     # Always on, unlike wire_status_led_publishing below (which needs
     # --mqtt-host) -- the local ring is reachable over Bridge regardless of
@@ -193,11 +211,53 @@ def main():
             "type": "spectrum",
             "node_id": frame.node_id,
             "timestamp": frame.timestamp,
+            # "channels" stays exactly frame.bins (mic/accel only) -- the
+            # CURRENT frontend (charts.js's handleSpectrum) fans out one
+            # waterfall row + one spectrum trace per key in "channels" with
+            # no filtering at all, so merging frame.display_bins in here
+            # would multiply the on-screen chart count the moment this
+            # broadcasts (exactly the clutter CHART_CLUTTER_PLAN.md exists to
+            # cut, and the opposite of its own point). The per-axis
+            # accel_x/y/z overlay is real data, just not under a key today's
+            # frontend reads yet -- it rides under "axis_channels" below,
+            # inert until the new multi-axis-in-one-chart UI (plan S1)
+            # is built to consume it deliberately instead of by accident.
             "channels": {channel: list(bins) for channel, bins in frame.bins.items()},
+            "axis_channels": {channel: list(bins) for channel, bins in
+                              frame.display_bins.items()},
+            # (fs, fft_size) per spectrum channel -- charts.js turns a bin
+            # index into an actual frequency (k * fs / fft_size) with this
+            # instead of plotting a raw, sample-rate-independent bin number.
+            "spectrum_meta": {channel: {"fs": fs, "fft_size": fft_size}
+                              for channel, (fs, fft_size) in frame.spectrum_meta.items()},
+            # docs/CHART_CLUTTER_PLAN.md S1: scalar tiles + the collapsible
+            # "Raw signals" panel. scalars is usually present every frame;
+            # time_series is usually empty (only populated on the frames that
+            # piggyback it -- see fuser.cpp's FUSER_TIME_SERIES_EVERY_N).
+            "scalars": frame.scalars,
+            "time_series": {name: {"fs": fs, "samples": list(samples)}
+                            for name, (fs, samples) in frame.time_series.items()},
         })
 
     spi_consumer = SpiConsumer(on_frame=on_frame)
     gpu_perf = GpuPerfPoller()
+
+    def on_subscriber_change() -> None:
+        broadcast_threadsafe(app, {
+            "type": "telegram_subscribers",
+            "subscribers": {chat_id: sub.to_dict()
+                             for chat_id, sub in alert_store.list_subscribers().items()},
+        })
+
+    # Opt-in, same as --mqtt-host: only wired when the arduino:telegram_bot
+    # brick's secret is actually set (App Lab's UI, once the brick is
+    # declared in app.yaml). Unset is the expected case for anyone who
+    # hasn't configured a bot yet -- GET /alerts/telegram/status reports
+    # `configured: false` and the dashboard's Alerts tab hides the connect
+    # flow rather than erroring.
+    telegram_bot = None
+    if os.getenv("TELEGRAM_BOT_TOKEN"):
+        telegram_bot = build_telegram_alerts(registry, alert_store, on_subscriber_change)
 
     stop_event = threading.Event()
     mqtt_thread = None
@@ -213,13 +273,19 @@ def main():
         # starting these any earlier lets on_frame's broadcast_threadsafe
         # call race app startup and silently no-op (loop is None) for any
         # frame that arrives before uvicorn's ASGI app actually starts.
+        # telegram_bot.start() belongs here for the same reason: a message
+        # (e.g. /start) could arrive and trigger on_subscriber_change's
+        # broadcast_threadsafe before the loop is ready otherwise.
         spi_consumer.start()
         gpu_perf.start()
         if mqtt_thread is not None:
             mqtt_thread.start()
+        if telegram_bot is not None:
+            telegram_bot.start()
 
     app = create_app(registry, history, commissioning, manager=manager, perf_monitor=perf_monitor,
                       gpu_perf=gpu_perf, spi_consumer=spi_consumer,
+                      alert_store=alert_store, telegram_bot=telegram_bot,
                       on_startup=start_ingestion)
 
     # Mounted after every REST/WebSocket route above is registered, so
@@ -236,6 +302,8 @@ def main():
         stop_event.set()
         if status_led_publisher is not None:
             status_led_publisher.stop()
+        if telegram_bot is not None:
+            telegram_bot.stop()
 
 
 if __name__ == "__main__":

@@ -345,13 +345,15 @@ body {
 }
 
 /* ---------------------------------------------------------------------
-   Per-asset live charts (charts.js) -- anomaly timeline + waterfall(s)
-   share a zoomable time axis; the live-spectrum group below has zoom
-   disabled. flex-basis 100% forces this block onto its own line below
-   the two text detail-items above, regardless of available row width.
+   Per-asset live charts (charts.js), docs/CHART_CLUTTER_PLAN.md §1: hero
+   anomaly score, scalar tiles, accel/mic spectrum charts, and two
+   collapsible panels (raw signals, waterfall -- reuse the Dev/perf page's
+   .perf-tier collapsible below rather than inventing new collapsible CSS).
+   flex-basis 100% forces this block onto its own line below the "Node ID"
+   detail-item above, regardless of available row width.
    --------------------------------------------------------------------- */
 
-.motor-row__charts {
+.motor-row__body {
   flex: 1 1 100%;
   display: flex;
   flex-direction: column;
@@ -363,8 +365,112 @@ body {
   min-height: 160px;
 }
 
+/* Tiles are hand-rolled HTML sized to their own content, not a Plotly
+   chart -- the 160px floor above is sized for chart area and left a large
+   dead gap above/below when applied here too. */
+.chart-slot[data-role="chart-slot-tiles"] {
+  min-height: 0;
+}
+
 .chart-plotly {
   width: 100%;
+}
+
+.chart-host {
+  width: 100%;
+}
+
+.chart-placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 160px;
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 13px;
+  color: #64748b;
+}
+
+.chart-section {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.chart-section__title {
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 11px;
+  font-weight: 600;
+  color: #94a3b8;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+/* ---- Scalar tiles: stat tiles, not charts (doc §1.2) -- same dark-card
+   idiom as .tile/.perf-card, neutral accent since these are raw physical
+   stats, not health-status buckets. ---- */
+
+.scalar-tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(90px, 1fr));
+  gap: 10px;
+}
+
+.scalar-tile {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px 12px;
+  background-color: #1e293b;
+  border: 1px solid #334155;
+  border-radius: 8px;
+}
+
+.scalar-tile__value {
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-variant-numeric: tabular-nums;
+  font-size: 18px;
+  font-weight: 700;
+  color: #e2e8f0;
+}
+
+.scalar-tile__label {
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 11px;
+  color: #94a3b8;
+}
+
+/* ---- Waterfall 2D/3D toggle pills (doc §4) -- deliberately placed in
+   .perf-tier__body, never <summary>, so a pill click never also toggles
+   the collapsible open/closed (a native <summary> click does that as a
+   browser default action, independent of JS event handling). Visual
+   language borrowed from .tile.is-selected's color-mix fill. ---- */
+
+.waterfall-toggle {
+  display: flex;
+  gap: 6px;
+}
+
+.waterfall-toggle__btn {
+  font: inherit;
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 12px;
+  font-weight: 600;
+  color: #94a3b8;
+  background-color: #1e293b;
+  border: 1px solid #334155;
+  border-radius: 999px;
+  padding: 4px 14px;
+  cursor: pointer;
+}
+
+.waterfall-toggle__btn:hover {
+  color: #e2e8f0;
+}
+
+.waterfall-toggle__btn.is-active {
+  color: #e2e8f0;
+  background-color: color-mix(in srgb, #3987e5 22%, #1e293b);
+  border-color: #3987e5;
 }
 
 .btn-icon {
@@ -429,6 +535,11 @@ body {
     flex-basis: 100%;
     justify-content: flex-end;
     flex-wrap: wrap;
+  }
+
+  .scalar-tiles {
+    grid-template-columns: repeat(auto-fit, minmax(80px, 1fr));
+    gap: 8px;
   }
 }
 
@@ -587,4 +698,132 @@ body {
 
 .perf-pipeline .perf-card {
   background-color: #1e293b;
+}
+
+/* ---------------------------------------------------------------------
+   Alerts page (docs/DASHBOARD_IDEAS_BACKLOG.md's Telegram alerts) -- a
+   connect card ("Connect Telegram" deep link / configuring / waiting
+   states) plus one card per connected subscriber (alert-level + node-scope
+   prefs, disconnect). Reuses perf-page's .perf-card panel and the
+   waterfall toggle's pill-button look for the two-state prefs rather than
+   inventing new chrome.
+   --------------------------------------------------------------------- */
+
+.alerts-page {
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.alerts-connect__card {
+  gap: 10px;
+  align-items: flex-start;
+  max-width: 480px;
+}
+
+.alerts-connect__title {
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 14px;
+  font-weight: 700;
+  color: #f1f5f9;
+}
+
+.btn-primary {
+  font: inherit;
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 13px;
+  font-weight: 600;
+  color: #0f172a;
+  background-color: var(--color-healthy);
+  border: none;
+  border-radius: 8px;
+  padding: 9px 16px;
+  cursor: pointer;
+}
+
+.btn-primary:hover {
+  filter: brightness(1.08);
+}
+
+.btn-text {
+  font: inherit;
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 13px;
+  color: #94a3b8;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+.btn-text:hover {
+  color: #e2e8f0;
+}
+
+.alerts-subscribers {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.alert-sub {
+  padding: 14px 16px;
+  background-color: #1e293b;
+  border: 1px solid #334155;
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.alert-sub__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.alert-sub__name {
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 14px;
+  font-weight: 700;
+  color: #f1f5f9;
+}
+
+.alert-sub__username {
+  font-weight: 400;
+  color: #64748b;
+}
+
+.alert-sub__prefs {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.alert-sub__row {
+  display: flex;
+  gap: 8px;
+}
+
+.alert-sub__nodes {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 6px 12px;
+  padding: 10px 12px;
+  background-color: #0f172a;
+  border: 1px solid #334155;
+  border-radius: 6px;
+}
+
+.alert-sub__node {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 12px;
+  color: #cbd5e1;
+  cursor: pointer;
 }

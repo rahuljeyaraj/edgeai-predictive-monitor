@@ -13,8 +13,8 @@ socket -- same coverage, no more hand-rolled protocol code in the test
 itself.
 
 Run with PYTHONPATH covering base-station/python/ingestion, base-station/python/registry, base-station/python/pipeline,
-base-station/python/history, base-station/python/api, base-station/python/monitoring:
-    PYTHONPATH=base-station/python/ingestion:base-station/python/registry:base-station/python/pipeline:base-station/python/history:base-station/python/api:base-station/python/monitoring \\
+base-station/python/history, base-station/python/api, base-station/python/monitoring, base-station/python/alerts:
+    PYTHONPATH=base-station/python/ingestion:base-station/python/registry:base-station/python/pipeline:base-station/python/history:base-station/python/api:base-station/python/monitoring:base-station/python/alerts \\
         python3 base-station/tests/api_test.py
 """
 import os
@@ -30,6 +30,7 @@ from app import create_app
 from commissioning_controller import CommissioningController
 from gate import MotorStateGate
 from manager import PipelineManager
+from alert_store import AlertStore
 
 NODE_ID = "node-1"
 DIM = 512
@@ -45,6 +46,21 @@ def frame(node_id, timestamp=0.0) -> SensorFrame:
                         bins={"accel": HEALTHY_BINS})
 
 
+class FakeTelegramBot:
+    """Duck-types just enough of the real arduino:telegram_bot brick
+    (add_command/send_message) for api/app.py's routes to treat Telegram
+    alerts as "configured" -- the routes only ever check `telegram_bot is
+    not None` and never call these, since the actual /start-token-redeem
+    and status-change wiring is alerts/telegram_alerts.py's own concern
+    (see tests/telegram_alerts_test.py), not api/app.py's REST layer."""
+
+    def add_command(self, command, callback, description=""):
+        pass
+
+    def send_message(self, chat_id, text):
+        return True
+
+
 class ApiUnderTest:
     """One FastAPI app (REST + WebSocket, api/app.py) driven in-process
     via TestClient, matching how main.py wires api/app.py in production
@@ -52,17 +68,19 @@ class ApiUnderTest:
     registry/history state never leaks between tests."""
 
     def __init__(self, tmp_dir: str, node_id=NODE_ID, sensor_config=frozenset({SensorChannel.ACCEL}),
-                 min_frames=5, epochs=300):
+                 min_frames=5, epochs=300, telegram_bot=None):
         registry_path = os.path.join(tmp_dir, "registry.json")
         self.registry = Registry(registry_path)
         self.registry.add(node_id, sensor_config=sensor_config)
         self.history = HistoryStore(os.path.join(tmp_dir, "history.db"))
         self.models_dir = os.path.join(tmp_dir, "models")
+        self.alert_store = AlertStore(os.path.join(tmp_dir, "alerts.json"))
 
         self.commissioning = CommissioningController(
             self.registry, self.models_dir, gate_factory, min_frames=min_frames, epochs=epochs)
         self.manager = PipelineManager(self.registry, gate_factory, history_store=self.history)
-        self.app = create_app(self.registry, self.history, self.commissioning, manager=self.manager)
+        self.app = create_app(self.registry, self.history, self.commissioning, manager=self.manager,
+                               alert_store=self.alert_store, telegram_bot=telegram_bot)
         self._client_cm = TestClient(self.app)
         self.client = self._client_cm.__enter__()  # runs lifespan, so broadcast_threadsafe works
 
@@ -303,6 +321,86 @@ def test_websocket_broadcast_reaches_connected_client(tmp_dir):
         api.stop()
 
 
+def test_telegram_status_reports_not_configured_by_default(tmp_dir):
+    api = ApiUnderTest(tmp_dir)
+    try:
+        status, body = api.request("GET", "/alerts/telegram/status")
+        assert status == 200, (status, body)
+        assert body["configured"] is False, body
+        print("GET /alerts/telegram/status reports not configured with no bot wired: PASS")
+    finally:
+        api.stop()
+
+
+def test_telegram_connect_requires_configured_bot(tmp_dir):
+    api = ApiUnderTest(tmp_dir)
+    try:
+        status, body = api.request("POST", "/alerts/telegram/connect")
+        assert status == 503, (status, body)
+        print("POST /alerts/telegram/connect 503s when Telegram isn't configured: PASS")
+    finally:
+        api.stop()
+
+
+def test_telegram_connect_returns_token_and_deep_link(tmp_dir):
+    api = ApiUnderTest(tmp_dir, telegram_bot=FakeTelegramBot())
+    old_username = os.environ.get("TELEGRAM_BOT_USERNAME")
+    os.environ["TELEGRAM_BOT_USERNAME"] = "test_epm_bot"
+    try:
+        status, body = api.request("GET", "/alerts/telegram/status")
+        assert status == 200 and body["configured"] is True, (status, body)
+
+        status, body = api.request("POST", "/alerts/telegram/connect")
+        assert status == 200, (status, body)
+        assert body["deep_link"] == f"https://t.me/test_epm_bot?start={body['token']}", body
+        # A token is one-shot (alert_store_test.py covers consume_token's own
+        # semantics in depth) -- just confirm this endpoint actually mints a
+        # real, consumable one rather than a placeholder string.
+        assert api.alert_store.consume_token(body["token"]) is True
+        print("POST /alerts/telegram/connect returns a real token + deep link: PASS")
+    finally:
+        if old_username is None:
+            os.environ.pop("TELEGRAM_BOT_USERNAME", None)
+        else:
+            os.environ["TELEGRAM_BOT_USERNAME"] = old_username
+        api.stop()
+
+
+def test_telegram_subscriber_prefs_update_broadcasts_and_disconnect_removes(tmp_dir):
+    api = ApiUnderTest(tmp_dir, telegram_bot=FakeTelegramBot())
+    try:
+        api.alert_store.add_subscriber(chat_id=111, user_id=222, first_name="Alice")
+
+        status, body = api.request("GET", "/alerts/telegram/subscribers")
+        assert status == 200 and body["111"]["first_name"] == "Alice", (status, body)
+
+        with api.client.websocket_connect("/ws") as ws:
+            status, body = api.request(
+                "POST", "/alerts/telegram/subscribers/111/prefs",
+                body={"fault_only": True, "node_ids": ["node-1"]})
+            assert status == 200, (status, body)
+            assert body["fault_only"] is True and body["node_ids"] == ["node-1"], body
+
+            msg = ws.receive_json()
+            assert msg["type"] == "telegram_subscribers", msg
+            assert msg["subscribers"]["111"]["fault_only"] is True, msg
+
+        status, body = api.request("POST", "/alerts/telegram/subscribers/999/prefs",
+                                    body={"fault_only": True})
+        assert status == 404, (status, body)
+
+        status, body = api.request("POST", "/alerts/telegram/subscribers/111/disconnect")
+        assert status == 200, (status, body)
+        status, body = api.request("GET", "/alerts/telegram/subscribers")
+        assert "111" not in body, body
+
+        status, body = api.request("POST", "/alerts/telegram/subscribers/111/disconnect")
+        assert status == 404, (status, body)
+        print("Telegram subscriber prefs update (+WS broadcast) and disconnect: PASS")
+    finally:
+        api.stop()
+
+
 def main():
     tmp_dir = tempfile.mkdtemp(prefix="api_test_")
 
@@ -319,6 +417,10 @@ def main():
     test_commissioning_double_start_is_409(tempfile.mkdtemp(dir=tmp_dir))
     test_history_endpoint_returns_recorded_scores(tempfile.mkdtemp(dir=tmp_dir))
     test_websocket_broadcast_reaches_connected_client(tempfile.mkdtemp(dir=tmp_dir))
+    test_telegram_status_reports_not_configured_by_default(tempfile.mkdtemp(dir=tmp_dir))
+    test_telegram_connect_requires_configured_bot(tempfile.mkdtemp(dir=tmp_dir))
+    test_telegram_connect_returns_token_and_deep_link(tempfile.mkdtemp(dir=tmp_dir))
+    test_telegram_subscriber_prefs_update_broadcasts_and_disconnect_removes(tempfile.mkdtemp(dir=tmp_dir))
 
     print("RESULT: PASS - REST endpoints reflect registry/commissioning changes, and "
           "live updates push to connected WebSocket clients")
