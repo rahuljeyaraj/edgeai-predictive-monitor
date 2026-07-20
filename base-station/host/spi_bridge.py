@@ -48,7 +48,48 @@ import spidev
 SOCKET_PATH = "/dev/spi-link.sock"
 SPI_BUS = 0
 SPI_DEVICE = 0
-SPI_MAX_HZ = 1_000_000
+# Root-caused and raised to 100_000_000 on 2026-07-20 (was 1_000_000), the
+# same session BRIDGE_BAUD went to 500000 (app_config.h) - now that the bulk
+# stream lives on this link, push it as fast as the hardware genuinely goes.
+#
+# Unlike BRIDGE_BAUD there's no MCU-side divisor math to root-cause here:
+# this MPU is the SPI *master* (GENI QUP, spidev0.0) and the MCU's SPI3 is a
+# hardware-NSS *slave* with no baud-rate register of its own - it just clocks
+# whatever SCK the master drives. So "maximum" is entirely a master-side
+# question, answered empirically:
+#   - Requested speed vs REAL achieved bus clock (measured directly - time a
+#     raw 65536B spi-link.sock transfer, back out Hz from elapsed time,
+#     bypassing spi_arm so it's pure ioctl/hardware timing, no RPC overhead):
+#     requested 1-48 MHz scaled ~linearly with real achieved (e.g. 48M ->
+#     ~36M real); from ~64-80M requested onward, real achieved FLATLINES at
+#     ~37-41 MHz no matter how high you ask (tried up to 256M requested,
+#     same plateau) - a hard driver/clock-plan ceiling on this GENI SE
+#     instance, not a cable/slave limit. 100_000_000 sits deep in that
+#     plateau (not right at its edge) so small driver/kernel variance can't
+#     walk it back below the real ceiling.
+#   - Correctness at that real ~40 MHz clock, chunked pull (CHUNK_SIZE=512,
+#     ingestion/spi_reader.py) unchanged: 300/300 whole-frame CRC-OK across
+#     two independent soak runs (150 frames each), zero MCU-side timeouts/
+#     errors in get_spi_link_stats throughout. Matches the BRIDGE_BAUD
+#     lesson that a single ad-hoc call is not a valid stability check - these
+#     were sustained runs, not one-off probes.
+#   - IMPORTANT caveat found in the same session: frames have grown to
+#     ~10.3-14.5 KB (was ~4.1 KB when CHUNK_SIZE=512 was originally tuned,
+#     docs/progress2.md 5.8) from the accel/mic time-series piggyback
+#     channels (commit a7f62bb). At the OLD 1 MHz speed this larger frame
+#     size alone already dropped clean-window reliability to ~80% (24/30) -
+#     well below the historical "512B = 20/20" baseline - purely from more
+#     chunks per frame compounding the per-chunk failure rate, before any
+#     speed change. The speed raise here fixes that (300/300 at ~40 MHz).
+#   - Bigger chunks were tried too (would cut RPC round-trips - each spi_arm
+#     is a UART call and is now the real fps bottleneck, not SPI clock time:
+#     512B chunks and 100_000_000 still give ~2 fps because a 14.5KB frame
+#     needs 29 arm round-trips). CHUNK_SIZE=2048 worked (95/100 soak) but not
+#     perfectly clean, and >=4096 hard-hangs (spi_arm times out completely,
+#     unrelated to SPI clock - a separate bug, not investigated further this
+#     session). Left CHUNK_SIZE at the proven-clean 512 for now; revisit as
+#     its own investigation if more fps is needed.
+SPI_MAX_HZ = 100_000_000
 SPI_MODE = 0
 SPI_BITS_PER_WORD = 8
 MAX_TRANSFER_LEN = 1 << 20  # sanity cap, well above the ~4.1 KB fuser frame
