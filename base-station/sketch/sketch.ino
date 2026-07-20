@@ -40,22 +40,27 @@ void setup() {
    * removes both failure modes that forced it off: the msgpack framer desync
    * that wedged the UART (section 2), and the priority-6 busy-spin inside
    * Bridge.notify at 115200 baud that starved mic/spi_link/loop() (4.8). Staging
-   * is a sub-1ms non-blocking memcpy+CRC, so nothing here floods anything. */
+   * was a sub-1ms non-blocking memcpy+CRC when that was written; no longer true
+   * (see FUSER_THREAD_PRIORITY, app_config.h, 2026-07-20) - the per-epoch work
+   * grew into a multi-ms non-yielding stretch as the frame grew, which is why
+   * fuser now runs one band below spi_link instead of sharing its priority. */
   fuser_start();
 
   /* mic_sampler_start() MUST be LAST. Its capture thread busy-polls the GPDMA
    * channel (k_busy_wait) for the ~21ms each block takes to fill - a WFI idle
    * between polls OVR-latches the SAI RX FIFO and stalls the DMA dead mid-block
-   * (docs/progress2.md 6.3/6.4, the bug #2 fix). At priority 7 that spin is
-   * above this main/setup thread (CONFIG_MAIN_THREAD_PRIORITY=14), so once the
-   * mic thread is created it starves setup() out of running anything after it -
-   * exactly the constraint the original DR busy-poll had, which the interim
+   * (docs/progress2.md 6.3/6.4, the bug #2 fix). At priority 8 (was 7, moved
+   * 2026-07-20 to make room for fuser above it - see app_config.h) that spin is
+   * still above this main/setup thread (CONFIG_MAIN_THREAD_PRIORITY=14), so once
+   * the mic thread is created it starves setup() out of running anything after
+   * it - exactly the constraint the original DR busy-poll had, which the interim
    * k_msleep()-DMA version had lifted. So every other provider (incl.
    * spi_link/fuser above) must register before this call. Its own
    * Bridge.provide()s run before the thread is created, so they still land.
    * Consequence: the loop() heartbeat LED (priority 14) stops blinking while the
-   * mic streams - accepted (see MIC_SAMPLER_THREAD_PRIORITY). Bridge(5), fuser/
-   * spi_link(6), accel/displays(3) all still preempt the spin and stay live. */
+   * mic streams - accepted (see MIC_SAMPLER_THREAD_PRIORITY). Bridge(5),
+   * spi_link(6), fuser(7), accel/displays(3) all still preempt the spin and
+   * stay live. */
   mic_sampler_start();
 }
 

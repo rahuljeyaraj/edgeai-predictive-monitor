@@ -75,6 +75,7 @@
 #include <stm32u5xx_ll_gpio.h>
 #include <stm32u5xx_ll_spi.h>
 #include <zephyr/kernel.h>
+#include <zephyr/irq.h>
 #include <cstring>
 
 #define SPI_LINK_DMA_CHANNEL LL_DMA_CHANNEL_3 /* mic_sampler.cpp owns channel 2 */
@@ -117,13 +118,38 @@ struct __attribute__((packed)) spi_link_frame_header {
   uint16_t payload_len;
 };
 
-/* Bounded like mic_sampler.cpp's MIC_DMA_WAIT_TICKS: k_msleep-polled, not a
- * blocking/forever wait. A ~4.1 KB frame at the daemon's 1 MHz SPI clock is
- * ~33 ms on the wire, so the ~1 s ceiling (200 * 5 ms) is generous; an MPU that
- * arms but never reads (or a lost read) just times out and the next arm re-uses
- * a fresh frame. */
-#define SPI_LINK_DMA_WAIT_TICK_MS 5
-#define SPI_LINK_DMA_WAIT_TICKS 200
+/* Bounded like mic_sampler.cpp's MIC_DMA_WAIT_TICKS: a wait loop, not a
+ * blocking/forever wait. The ~1 s ceiling (1000 * 1 ms) is generous for a
+ * single chunk at the daemon's real ~40 MHz SPI clock (host/spi_bridge.py) -
+ * an MPU that arms but never reads (or a lost read) just times out and the
+ * next arm re-uses a fresh frame.
+ *
+ * 2026-07-20, alongside spi_arm_stream's auto-advance (below): this loop's
+ * per-iteration wait is now interrupt-driven (spi_link_dma_isr gives
+ * spi_link_tc_sem the instant GPDMA1 channel 3 signals TC), not a plain
+ * k_msleep poll - SPI_LINK_DMA_WAIT_TICK_MS is now just the PER-ITERATION
+ * k_sem_take timeout, a safety net in case a completion is ever missed
+ * (spurious/lost interrupt), not the thing determining how fast a real
+ * completion is noticed.
+ *
+ * This mattered because a plain poll wasn't fast enough for spi_arm_stream:
+ * first attempt was tightening SPI_LINK_DMA_WAIT_TICK_MS 5ms->1ms, assuming
+ * the poll tick itself was the bottleneck - measured NO improvement (still
+ * needed ~10-20ms of pacing on the MPU side, ingestion/spi_reader.py's
+ * STREAM_PACING_S, to pull a frame reliably - no better than the plain
+ * per-chunk-RPC protocol it was meant to replace). Root cause wasn't the
+ * poll granularity at all (CONFIG_SYS_CLOCK_TICKS_PER_SEC=10000, tickless
+ * kernel - a 1ms k_msleep really is ~1ms here): it's that spi_link_thread
+ * (priority 6) can be preempted for a few ms at a time by fuser (same
+ * priority 6, real per-epoch compute) or by scheduling jitter generally,
+ * and no amount of shortening a THREAD-LEVEL poll interval helps if the
+ * thread just doesn't get scheduled promptly. An NVIC interrupt preempts
+ * all of that regardless of Zephyr thread priority, which a poll
+ * fundamentally cannot. Not yet re-validated with real pacing numbers this
+ * unlocks - see spi_link_dma_isr's comment for the interrupt setup and
+ * ingestion/spi_reader.py's STREAM_PACING_S for the current tuned value. */
+#define SPI_LINK_DMA_WAIT_TICK_MS 1
+#define SPI_LINK_DMA_WAIT_TICKS 1000
 #define SPI_LINK_THREAD_STACK_SIZE 2048
 
 /* Back-off after a transfer that ended in a DMA error flag (not a timeout - the
@@ -143,6 +169,38 @@ enum spi_link_xfer_result {
   SPI_LINK_XFER_TIMEOUT,
   SPI_LINK_XFER_ERROR,
 };
+
+/* Given to by spi_link_dma_isr the instant GPDMA1 channel 3 signals transfer-
+ * complete, taken (with a bounded per-iteration timeout, not forever) by
+ * spi_link_wait_transfer - see that function's SPI_LINK_DMA_WAIT_TICK_MS
+ * comment for why this exists (interrupt-driven completion, added 2026-07-20
+ * for spi_arm_stream). Binary (max count 1): an extra/stale give before
+ * anyone's waiting just leaves it signaled, which spi_link_configure_dma's
+ * k_sem_reset (below) clears before every arm so a stale signal from transfer
+ * N can't be mistaken for transfer N+1's completion. */
+static struct k_sem spi_link_tc_sem;
+
+/* DIAG (temporary): incremented by spi_link_dma_isr on every real TC
+ * interrupt, to directly verify the ISR is firing (vs. wait_transfer's
+ * k_sem_take always just timing out) - added 2026-07-20 debugging
+ * spi_arm_stream's pacing requirement. */
+static volatile uint32_t spi_link_isr_count = 0;
+
+/* Deliberately minimal (RTOS best practice for ISRs, doubly so here - it can
+ * preempt ANY thread including Bridge's): clear the flag that woke us
+ * (mandatory - otherwise the interrupt refires the instant we return) and
+ * give the semaphore. No SPI_LINK_CP - that macro's counter increment isn't
+ * atomic and spi_link_thread can be mid-read of it at the exact moment this
+ * interrupt lands. spi_link_wait_transfer still re-checks the real DMA flags
+ * as the source of truth after waking (not just "the semaphore was given"),
+ * so a spurious/stale wake here costs one extra fast loop iteration, never a
+ * false completion. */
+static void spi_link_dma_isr(const void *arg) {
+  ARG_UNUSED(arg);
+  LL_DMA_ClearFlag_TC(GPDMA1, SPI_LINK_DMA_CHANNEL);
+  spi_link_isr_count++;
+  k_sem_give(&spi_link_tc_sem);
+}
 
 /* Two frame buffers: spi_link_pending_buf is written by the fuser thread (under
  * spi_link_pending_lock) and holds the latest complete SPI frame ready to send;
@@ -344,6 +402,10 @@ static void spi_link_configure_dma(uint16_t offset, uint16_t len) {
                          (uint32_t)(uintptr_t)&SPI3->TXDR);
   LL_DMA_SetLinkStepMode(GPDMA1, SPI_LINK_DMA_CHANNEL, LL_DMA_LSM_1LINK_EXECUTION);
   LL_DMA_SetLinkedListAddrOffset(GPDMA1, SPI_LINK_DMA_CHANNEL, 0);
+  /* TCIE: ResetChannel above clears CCR (incl. any previously-set TCIE), so
+   * this needs re-arming every time, not just once at init - see
+   * spi_link_dma_isr's comment for why this exists. */
+  LL_DMA_EnableIT_TC(GPDMA1, SPI_LINK_DMA_CHANNEL);
 
   /* Clear every channel status flag before arming. A flag latched from a
    * previous iteration (TC or an error) would make the wait loop below break out
@@ -355,6 +417,9 @@ static void spi_link_configure_dma(uint16_t offset, uint16_t len) {
   LL_DMA_ClearFlag_USE(GPDMA1, SPI_LINK_DMA_CHANNEL);
   LL_DMA_ClearFlag_TO(GPDMA1, SPI_LINK_DMA_CHANNEL);
   LL_DMA_ClearFlag_SUSP(GPDMA1, SPI_LINK_DMA_CHANNEL);
+  /* Clear any stale/spurious give left over from the previous transfer -
+   * see spi_link_tc_sem's comment. */
+  k_sem_reset(&spi_link_tc_sem);
 }
 
 /* Reads all four GPDMA error flags into the bitmask documented at
@@ -402,7 +467,12 @@ static enum spi_link_xfer_result spi_link_wait_transfer(void) {
       result = SPI_LINK_XFER_ERROR;
       break;
     }
-    k_msleep(SPI_LINK_DMA_WAIT_TICK_MS);
+    /* Interrupt-driven, not a plain sleep: spi_link_dma_isr gives this the
+     * instant TC fires, so this usually returns almost immediately rather
+     * than waiting out the full tick - see SPI_LINK_DMA_WAIT_TICK_MS's
+     * comment for why a plain k_msleep poll wasn't fast enough. The timeout
+     * bounds it the same way k_msleep did if a completion is ever missed. */
+    k_sem_take(&spi_link_tc_sem, K_MSEC(SPI_LINK_DMA_WAIT_TICK_MS));
   }
   SPI_LINK_CP(206);
 
@@ -445,26 +515,77 @@ static enum spi_link_xfer_result spi_link_wait_transfer(void) {
 static struct k_sem spi_link_armed_sem;
 static volatile bool spi_link_busy = false;
 
+/* Latched-frame state, recorded once per frame (spi_arm's offset==0 call, or
+ * spi_arm_stream's single call). */
+static uint16_t spi_link_cur_total = 0;
+static uint16_t spi_link_cur_seq = 0;
+
+/* Auto-advance state for the streamed multi-chunk pull (spi_arm_stream,
+ * below) - only touched by spi_arm_stream (Bridge's thread, before the
+ * sem-give) and spi_link_thread_entry (after take/mid-loop); spi_link_busy
+ * already serializes the two so there's never concurrent access, same as
+ * the plain spi_arm() path. */
+static volatile bool spi_link_stream_mode = false;
+static uint16_t spi_link_stream_chunk_size = 0;
+static uint16_t spi_link_stream_offset = 0;   /* offset of the chunk currently armed */
+static uint16_t spi_link_stream_cur_len = 0;  /* length of the chunk currently armed */
+
+/* Owns the bounded completion wait for whatever's currently armed (by either
+ * spi_arm or spi_arm_stream) + disarm + stats. In stream mode, a completed
+ * chunk immediately re-arms the next one and loops straight back into
+ * wait_transfer() - no RPC round trip, no re-taking the semaphore (spi_arm_
+ * stream only gives it once, at the start of the frame). spi_link_busy stays
+ * true for the WHOLE stream, not per-chunk, so a concurrent arm call
+ * anywhere in the frame gets a clean "busy" (matches the pre-stream
+ * contract: an arm while a wait is in flight never touches the DMA channel
+ * concurrently). */
 static void spi_link_thread_entry(void *, void *, void *) {
   SPI_LINK_CP(100);
   while (true) {
     k_sem_take(&spi_link_armed_sem, K_FOREVER);
     SPI_LINK_CP(101);
-    switch (spi_link_wait_transfer()) {
-      case SPI_LINK_XFER_OK:
-        spi_link_completed_count++;
-        break;
-      case SPI_LINK_XFER_TIMEOUT:
-        /* Already slept through the whole bounded wait loop. */
-        spi_link_timeout_count++;
-        break;
-      case SPI_LINK_XFER_ERROR:
-        /* Error flags latch fast - back off so a persistent error can't become a
-         * tight give/take cycle if the MPU re-arms aggressively. */
-        spi_link_error_count++;
-        k_msleep(SPI_LINK_ERROR_BACKOFF_MS);
-        break;
-    }
+    /* Inner loop re-enters wait_transfer() directly for each auto-advanced
+     * chunk - it must NOT go back through k_sem_take above: the semaphore is
+     * only ever given once per frame (by spi_arm/spi_arm_stream), so doing
+     * that would block forever on the second chunk of every stream. */
+    bool advance;
+    do {
+      advance = false;
+      switch (spi_link_wait_transfer()) {
+        case SPI_LINK_XFER_OK:
+          spi_link_completed_count++;
+          if (spi_link_stream_mode) {
+            spi_link_stream_offset += spi_link_stream_cur_len;
+            if (spi_link_stream_offset < spi_link_cur_total) {
+              uint32_t next_len = spi_link_cur_total - spi_link_stream_offset;
+              if (next_len > spi_link_stream_chunk_size) next_len = spi_link_stream_chunk_size;
+              spi_link_stream_cur_len = (uint16_t)next_len;
+              spi_link_armed_count++;
+              SPI_LINK_CP(211);
+              spi_link_arm_frame(spi_link_stream_offset, spi_link_stream_cur_len);
+              advance = true;
+            } else {
+              spi_link_stream_mode = false; /* whole frame streamed */
+            }
+          }
+          break;
+        case SPI_LINK_XFER_TIMEOUT:
+          /* Already slept through the whole bounded wait loop. */
+          spi_link_timeout_count++;
+          spi_link_stream_mode = false;
+          break;
+        case SPI_LINK_XFER_ERROR:
+          /* Error flags latch fast - back off so a persistent error can't become a
+           * tight give/take cycle if the MPU re-arms aggressively. */
+          spi_link_error_count++;
+          spi_link_stream_mode = false;
+          k_msleep(SPI_LINK_ERROR_BACKOFF_MS);
+          break;
+      }
+      if (advance) {
+        SPI_LINK_CP(210);
+      }
+    } while (advance);
     spi_link_busy = false;
     SPI_LINK_CP(209);
   }
@@ -482,12 +603,9 @@ static String spi_link_get_stats() {
          String((unsigned long)spi_link_last_error_flags) +
          ",sr=0x" + String((unsigned long)spi_link_dbg_sr, HEX) +
          ",cr1=0x" + String((unsigned long)spi_link_dbg_cr1, HEX) +
-         ",rem=" + String((unsigned long)spi_link_dbg_dma_rem);
+         ",rem=" + String((unsigned long)spi_link_dbg_dma_rem) +
+         ",isr=" + String((unsigned long)spi_link_isr_count);
 }
-
-/* Latched-frame state for a chunked pull (recorded on the offset==0 call). */
-static uint16_t spi_link_cur_total = 0;
-static uint16_t spi_link_cur_seq = 0;
 
 /* The MPU's side of the handshake, now CHUNKED (docs/progress2.md 5.7): a single
  * ~4KB slave-TX transfer underruns, but small byte-DMA sub-transfers are rock
@@ -540,6 +658,66 @@ static String spi_link_arm(String offset_s, String len_s) {
   return String(spi_link_cur_seq) + "," + String(spi_link_cur_total) + "," + String(chunk);
 }
 
+/* Streaming variant, added 2026-07-20 (docs/progress2.md 5.8 had flagged this
+ * as a follow-up: "one arm that auto-advances chunks"). One RPC call arms the
+ * WHOLE latched frame, chunk_size at a time; spi_link_thread_entry (above)
+ * auto-advances to each next chunk itself the instant the previous one
+ * completes - no further round trip until the whole frame is done. spi_arm()
+ * above is untouched and stays available (tests/spi_link_test.py and ad-hoc
+ * diagnostics still use the one-chunk-at-a-time form) - this is purely
+ * additive.
+ *
+ * Why this is safe without a hardware ready line (PG13 "SPI RDY" isn't wired
+ * to the MPU - docs/progress2.md 4.1 - so there's no way for the MCU to tell
+ * the MPU "chunk N+1 is armed, go"): the MPU just reads chunk_size bytes
+ * back-to-back off spidev, paced by STREAM_PACING_S (ingestion/
+ * spi_reader.py), tuned to comfortably clear the MCU's worst-case re-arm
+ * latency (bounded by SPI_LINK_DMA_WAIT_TICK_MS, tightened 5->1ms alongside
+ * this same change). A read that still races ahead of the re-arm just clocks
+ * whatever SPI3 happens to be holding for that one chunk - the existing
+ * whole-frame CRC check on the MPU side catches it and retries the whole
+ * frame, same safety net the chunked path already relies on. Worst case is a
+ * wasted frame, never corruption or a hang.
+ *
+ * Replies "<seq>,<total>,<first_chunk_len>" - same shape as spi_arm - so the
+ * MPU can size its first read. Every following chunk's length is
+ * min(chunk_size, total-offset), identical arithmetic on both ends, so no
+ * further reply is needed to size the rest. */
+static String spi_link_arm_stream(String chunk_size_s) {
+  if (spi_link_busy) {
+    return String("busy");
+  }
+  uint32_t chunk_size = (uint32_t)chunk_size_s.toInt();
+  if (chunk_size == 0) {
+    return String("empty");
+  }
+
+  k_mutex_lock(&spi_link_pending_lock, K_FOREVER);
+  if (spi_link_pending_len == 0) {
+    k_mutex_unlock(&spi_link_pending_lock);
+    return String("empty");
+  }
+  spi_link_cur_total = spi_link_pending_len;
+  spi_link_cur_seq = spi_link_pending_seq;
+  memcpy(spi_link_frame_buf, spi_link_pending_buf, spi_link_cur_total);
+  k_mutex_unlock(&spi_link_pending_lock);
+
+  uint32_t first_len = spi_link_cur_total;
+  if (first_len > chunk_size) first_len = chunk_size;
+
+  spi_link_stream_mode = true;
+  spi_link_stream_chunk_size = (uint16_t)chunk_size;
+  spi_link_stream_offset = 0;
+  spi_link_stream_cur_len = (uint16_t)first_len;
+
+  spi_link_busy = true;
+  spi_link_armed_count++;
+  SPI_LINK_CP(220);
+  spi_link_arm_frame(0, (uint16_t)first_len);
+  k_sem_give(&spi_link_armed_sem);
+  return String(spi_link_cur_seq) + "," + String(spi_link_cur_total) + "," + String(first_len);
+}
+
 void spi_link_start(void) {
   SPI_LINK_CP(3);
   Bridge.begin(BRIDGE_BAUD); /* idempotent - matrix/rgb/accel/mic also call this */
@@ -547,8 +725,10 @@ void spi_link_start(void) {
   spi_link_crc_init();
   k_mutex_init(&spi_link_pending_lock);
   k_sem_init(&spi_link_armed_sem, 0, 1);
+  k_sem_init(&spi_link_tc_sem, 0, 1);
   Bridge.provide("get_spi_link_stats", spi_link_get_stats);
   Bridge.provide("spi_arm", spi_link_arm);
+  Bridge.provide("spi_arm_stream", spi_link_arm_stream);
   SPI_LINK_CP(1);
   /* Give Bridge's own thread a scheduling slice to actually flush this
    * registration over the UART before risking a fault in the register-level work
@@ -558,6 +738,17 @@ void spi_link_start(void) {
   SPI_LINK_CP(2);
 
   spi_link_init_hw();
+
+  /* Dynamic IRQ (CONFIG_DYNAMIC_INTERRUPTS=y on this core, confirmed via the
+   * board's own .config - a build-time IRQ_CONNECT() isn't an option for an
+   * llext) for GPDMA1 channel 3's transfer-complete line - see
+   * spi_link_dma_isr's comment. Priority 5: prompt (this is what
+   * spi_arm_stream's whole benefit rides on) but not maximal - nothing else
+   * in this sketch registers a custom IRQ to contend with, so there's no
+   * specific value it needs to beat, just "faster than ordinary thread
+   * scheduling," which any enabled NVIC interrupt already is. */
+  irq_connect_dynamic(GPDMA1_Channel3_IRQn, 5, spi_link_dma_isr, NULL, 0);
+  irq_enable(GPDMA1_Channel3_IRQn);
 
   SPI_LINK_CP(50);
   k_thread_create(&spi_link_thread_data, spi_link_thread_stack,

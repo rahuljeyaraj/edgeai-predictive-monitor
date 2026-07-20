@@ -15,19 +15,29 @@
  * Model: the fuser thread produces a frame every epoch and hands the raw
  * payload to spi_link_stage_frame(), which wraps it in a minimal SPI framing
  * header (magic | seq | payload_len) + CRC32 trailer and keeps it as the latest
- * "pending" frame. The MPU pulls on its own schedule: it calls the "spi_arm"
- * Bridge provider (RPC-triggered handshake - PG13/RDY isn't wired to the MPU,
- * docs/progress2.md 4.1), which stages the latest pending frame into the DMA TX
- * buffer and replies "<seq>,<total_len>"; the MPU then clocks total_len bytes
- * out over /dev/spidev0.0 (via the host spi-bridge daemon) and verifies the CRC.
+ * "pending" frame. The MPU pulls on its own schedule, chunked (a single
+ * multi-KB slave-TX transfer underruns - docs/progress2.md 5.7), via one of
+ * two Bridge providers:
+ * - "spi_arm(offset, len)": one RPC round trip per chunk, replies
+ *   "<seq>,<total_len>,<chunk_len>". Simple, used by tests/spi_link_test.py
+ *   and ad-hoc diagnostics.
+ * - "spi_arm_stream(chunk_size)": one RPC round trip for the WHOLE frame -
+ *   the MCU auto-advances chunk-by-chunk on its own thread as each one
+ *   completes, no further RPC needed. This is what ingestion/spi_reader.py
+ *   uses in production (added 2026-07-20 - RPC round-trip overhead, not SPI
+ *   clock time, was the fps bottleneck once frames grew past a handful of
+ *   chunks). See spi_link.cpp's spi_link_arm_stream() comment for the full
+ *   design, including why it's safe without PG13/RDY (not wired to the MPU,
+ *   docs/progress2.md 4.1).
  * Missed/duplicated frames are fine (lossy live view) - the MPU dedups by seq.
  */
 
 /* Bring up SPI3 as a register-level slave (LL_SPI_* + GPDMA1 TX) and start the
- * transport thread that owns the bounded per-arm completion wait. Also registers
- * the "spi_arm" and "get_spi_link_stats" Bridge providers. Call once from
- * setup(), before fuser_start() (so the provider is registered before the fuser
- * begins staging frames). */
+ * transport thread that owns the bounded per-chunk completion wait (auto-
+ * advancing through a whole frame in stream mode - see above). Also registers
+ * the "spi_arm", "spi_arm_stream", and "get_spi_link_stats" Bridge providers.
+ * Call once from setup(), before fuser_start() (so the provider is registered
+ * before the fuser begins staging frames). */
 void spi_link_start(void);
 
 /* Publish one frame for the MPU to pull. Copies payload[0..payload_len) into the

@@ -10,15 +10,24 @@ SensorFrame and handing it to an on_frame callback -- the same push-model
 shape ingestion/mqtt_subscriber.py uses for satellite nodes, so main.py wires
 both identically into PipelineManager.route.
 
-Data path: the fuser (MCU) stages each ~4.1KB frame via spi_link_stage_frame()
-(framing header + CRC32). A single 4KB SPI3 slave-TX transfer underruns, so the
-MPU pulls each frame in CHUNK_SIZE-byte sub-transfers: spi_arm(offset, len) arms
-frame_buf[offset..offset+chunk] on the MCU and replies "<seq>,<total>,<chunk>";
-we clock <chunk> bytes off /dev/spi-link.sock (the root host daemon
+Data path: the fuser (MCU) stages each frame via spi_link_stage_frame() (framing
+header + CRC32). A single multi-KB SPI3 slave-TX transfer underruns, so the
+frame is pulled in CHUNK_SIZE-byte sub-transfers, auto-advancing (2026-07-20):
+one spi_arm_stream(chunk_size) RPC call arms the MCU for the WHOLE frame, and
+sketch/spi_link.cpp's transport thread re-arms each next chunk itself the
+instant the previous one completes - no RPC round trip between chunks. We just
+read CHUNK_SIZE bytes off /dev/spi-link.sock (the root host daemon
 base-station/host/spi_bridge.py, since the app container can't open spidev0.0
-directly - docs/progress2.md 4.2), reassemble all chunks, and verify the
-whole-frame CRC32. A CRC failure retries the whole frame a few times, then drops
-it (lossy live view is fine - the next pull gets a fresh one).
+directly - docs/progress2.md 4.2) back-to-back, paced by STREAM_PACING_S so the
+MCU has time to re-arm between reads (see that constant's comment - there's no
+hardware ready line, docs/progress2.md 4.1, so this pacing is what keeps a
+too-early read rare rather than impossible), reassemble all chunks, and verify
+the whole-frame CRC32. A CRC failure retries the whole frame a few times, then
+drops it (lossy live view is fine - the next pull gets a fresh one). This
+replaced a plain per-chunk spi_arm(offset, len) RPC call (one round trip per
+chunk) once frames grew past a handful of chunks and RPC round-trip cost, not
+SPI clock time, became the fps bottleneck - sketch/spi_link.cpp's spi_arm()
+still exists unchanged for tests/spi_link_test.py and ad-hoc diagnostics.
 
 SPI frame (LE): [magic u32=0x46555331][seq u16][payload_len u16][payload]
 [crc32 u32 over header+payload]. The SPI envelope (this file) is unchanged and
@@ -53,8 +62,21 @@ SPI_CRC_LEN = 4
 # --- Transport tuning --------------------------------------------------------
 # 512B was the reliable sweet spot in the chunk-size sweep (20/20 CRC-OK, ~8 fps);
 # larger chunks are faster but the slave-TX underrun risk rises and gets flaky
-# (docs/progress2.md 5.7). CRC-retry absorbs the occasional bad frame.
+# (docs/progress2.md 5.7) - CHUNK_SIZE>=4096 hard-hangs the arm itself
+# (2026-07-20 spike, unrelated to SPI clock speed, not root-caused - a future
+# TODO if more fps is needed beyond what streaming below already buys). CRC-
+# retry absorbs the occasional bad frame either way.
 CHUNK_SIZE = 512
+# Gap between successive chunk reads in the auto-advancing stream pull
+# (spi_arm_stream, sketch/spi_link.cpp, added 2026-07-20). There's no hardware
+# ready line telling the MPU when the MCU has re-armed the next chunk (PG13/RDY
+# isn't wired to it - docs/progress2.md 4.1), so this is what keeps a read from
+# racing ahead of the MCU's re-arm and clocking garbage for that one chunk (the
+# whole-frame CRC below still catches it either way - a too-early read is a
+# wasted frame, never corruption or a hang - this constant just trades a little
+# speed to make that rare instead of routine). Tuned empirically alongside the
+# MCU's own re-arm-detection poll (SPI_LINK_DMA_WAIT_TICK_MS, spi_link.cpp).
+STREAM_PACING_S = 0.015
 FRAME_RETRIES = 3
 ARM_RETRIES = 30
 PULL_INTERVAL_S = 0.02
@@ -104,36 +126,36 @@ class SpiConsumer:
             s.close()
 
     def _pull_frame(self):
-        """Pull one whole frame in <=CHUNK_SIZE sub-transfers. Returns
-        (seq, frame_bytes) or None. Does not verify CRC (caller does)."""
+        """Pull one whole frame via the auto-advancing stream handshake
+        (spi_arm_stream): a single RPC call arms the MCU for the whole frame,
+        then this reads CHUNK_SIZE-byte pieces back-to-back off spidev, paced
+        by STREAM_PACING_S so the MCU's auto-advance (sketch/spi_link.cpp) has
+        time to re-arm between reads. Returns (seq, frame_bytes) or None. Does
+        not verify CRC (caller does) - a chunk read that raced ahead of the
+        MCU's re-arm just produces garbage for that one chunk, caught by the
+        whole-frame CRC same as always."""
+        reply = None
+        for _ in range(ARM_RETRIES):
+            try:
+                with BRIDGE_LOCK:
+                    reply = str(Bridge.call("spi_arm_stream", str(CHUNK_SIZE)))
+            except Exception:
+                return None
+            if reply not in ("busy", "empty"):
+                break
+            time.sleep(0.005)
+        if reply in ("busy", "empty", None):
+            with self._lock:
+                self.arm_gap += 1
+            return None
+        parts = reply.split(",")
+        if len(parts) != 3:
+            return None
+        seq, total, clen = int(parts[0]), int(parts[1]), int(parts[2])
+
         frame = b""
         offset = 0
-        total = None
-        seq = None
-        while total is None or offset < total:
-            reply = None
-            for _ in range(ARM_RETRIES):
-                try:
-                    with BRIDGE_LOCK:
-                        reply = str(Bridge.call("spi_arm", str(offset), str(CHUNK_SIZE)))
-                except Exception:
-                    return None
-                if reply not in ("busy", "empty", "done"):
-                    break
-                time.sleep(0.005)
-            if reply in ("busy", "empty", "done", None):
-                with self._lock:
-                    self.arm_gap += 1
-                return None
-            parts = reply.split(",")
-            if len(parts) != 3:
-                return None
-            s_, t_, clen = int(parts[0]), int(parts[1]), int(parts[2])
-            if seq is None:
-                seq = s_
-            elif s_ != seq:
-                return None            # frame changed mid-pull (latched - shouldn't)
-            total = t_
+        while True:
             try:
                 data = self._read_socket(clen)
             except OSError:
@@ -142,6 +164,10 @@ class SpiConsumer:
                 return None
             frame += data
             offset += clen
+            if offset >= total:
+                break
+            clen = min(CHUNK_SIZE, total - offset)
+            time.sleep(STREAM_PACING_S)
         return seq, frame
 
     # -- decode -------------------------------------------------------------

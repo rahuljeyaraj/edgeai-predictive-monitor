@@ -52,24 +52,9 @@
  * thread so on-screen timing doesn't inherit its scheduling jitter.
  * accel (3): matches matrix/rgb - accel_read_block() blocks on a semaphore
  * every call, yielding the CPU each time, same as their k_msleep() tick.
- * mic (7): BELOW Bridge, not above. Historical/no-longer-load-bearing: back
- * when mic capture was a never-yielding busy-poll, priority 3 (or anything
- * >= Bridge's 5) hung the whole Bridge link outright (see docs/PROGRESS.md's
- * mic_sampler_thread entry). Capture moved to GPDMA1 + k_msleep() between
- * blocks since then, so mic now yields regularly like accel/matrix/rgb and
- * priority 3 would very likely be safe - left at 7 pending the hardware
- * verification called out in that same doc entry, not because it's still
- * required.
- * fuser (6): one band below Bridge, NOT equal to it (5) - back on the old UART
- * transport, at equal priority the continuous ~15.8fps notify stream starved
- * Bridge's own update thread badly enough that every Bridge.provide() provider
- * went "method not available" for as long as the fuser streamed (2026-07-14,
- * see docs/PROGRESS.md). One band below keeps Bridge able to preempt it. Since
- * 2026-07-15 the fuser no longer streams over Bridge at all - it stages frames
- * for the SPI transport (fuser.cpp) - so the flood is gone, but 6 (below Bridge,
- * above mic) is still the right slot for a steady per-epoch producer.
- * spi_link (6): BELOW Bridge (5), ABOVE mic (7). Two constraints, both learned
- * the hard way on hardware (docs/progress2.md 4.8):
+ * spi_link (6): BELOW Bridge (5), ABOVE fuser (7) AND mic (8). Constraints,
+ * all learned the hard way on hardware (docs/progress2.md 4.8, and the
+ * fuser split below on 2026-07-20):
  * - Must be below Bridge: it ran at 3 (the matrix/rgb/accel tier) through both
  *   failed SPI3-slave bring-up attempts, where any non-yielding path through its
  *   loop starved Bridge (5) and main/setup() (14) forever - total silent Bridge
@@ -77,19 +62,50 @@
  *   docs/progress2.md 4.3/4.7. Nothing about the slave path needs to preempt
  *   Bridge (GPDMA feeds the SPI FIFO regardless of the scheduler), and staying
  *   below it keeps get_spi_link_stats readable through any spi_link misbehaviour.
- * - Must be above mic: at 8 (below mic's 7) it was starved outright - mic
- *   remains the heaviest continuous compute in the system and anything below it
- *   inherits whatever CPU mic leaves over.
- * fuser and spi_link share priority 6 and coexist fine: both are cooperative
- * (each k_msleep()s regularly and yields), fuser only stages (sub-1ms) while
- * spi_link only waits on DMA, and the one lock they share (the pending-frame
- * mutex) is priority-inheriting so Bridge's spi_arm can never be blocked on it
- * for long. */
+ * - Must be above mic: at 8 (below mic's old slot of 7) it was starved outright -
+ *   mic remains the heaviest continuous compute in the system and anything below
+ *   it inherits whatever CPU mic leaves over. (Now literally 2 bands above mic's
+ *   new slot of 8 - see below - same relative relationship, just shifted.)
+ * - Must be uniquely ABOVE fuser, not sharing 6 with it (2026-07-20, see
+ *   fuser's entry) - this is what moved fuser to 7 and mic to 8 to make room,
+ *   rather than picking a new number for spi_link alone: Zephyr priorities
+ *   are integers, and there's no value between Bridge's 5 and spi_link's 6 to
+ *   slot a demoted fuser into, so mic had to shift too to keep fuser above it.
+ * fuser (7): moved from 6 on 2026-07-20 - was one band below Bridge, sharing
+ * priority 6 with spi_link on the theory both were "cooperative, yield
+ * regularly, coexist fine." That assumption broke once the fuser's frame grew
+ * past its own "sub-1ms staging" comment (accel/mic time-series piggyback
+ * channels, chart-clutter scalars: five 512-bin spectrum copies, six
+ * statistical scalars over 1024 samples, a CRC32 over a now ~10-14.5KB frame,
+ * all in one non-yielding stretch per epoch - see fuser_thread_entry's main
+ * loop). At EQUAL priority, Zephyr's scheduler won't preempt a running thread
+ * for a same-priority one that just became ready - it waits for the running
+ * thread to yield or for CONFIG_TIMESLICE_SIZE (20ms on this board) to expire
+ * - so spi_link_thread could sit ready for up to that long waiting out
+ * whichever part of fuser's epoch happened to be running, starving
+ * spi_arm_stream's auto-advance (spi_link.cpp) of the fast re-arm it needs.
+ * One band below spi_link fixes that: different priorities preempt
+ * immediately regardless of what either thread is doing, no waiting for a
+ * timeslice or a voluntary yield. Still one band below Bridge (NOT equal to
+ * it, 7 != 5) - the original hazard this constraint guards against (the old
+ * UART-transport notify-stream starving every Bridge.provide() provider,
+ * 2026-07-14, docs/PROGRESS.md) is about fuser vs Bridge, unrelated to and
+ * unaffected by this move.
+ * mic (8): BELOW Bridge, not above; moved from 7 to 8 on 2026-07-20 purely to
+ * make room for fuser at 7 above it (see fuser's entry) - mic's own position
+ * relative to Bridge and to fuser/spi_link above it is otherwise unchanged.
+ * Historical/no-longer-load-bearing: back when mic capture was a
+ * never-yielding busy-poll, priority 3 (or anything >= Bridge's 5) hung the
+ * whole Bridge link outright (see docs/PROGRESS.md's mic_sampler_thread
+ * entry). Capture moved to GPDMA1 + k_msleep() between blocks since then, so
+ * mic now yields regularly like accel/matrix/rgb and priority 3 would very
+ * likely be safe - left low pending the hardware verification called out in
+ * that same doc entry, not because it's still required. */
 #define MATRIX_DISPLAY_THREAD_PRIORITY 3
 #define RGB_DISPLAY_THREAD_PRIORITY 3
 #define ACCEL_SAMPLER_THREAD_PRIORITY 3
-#define MIC_SAMPLER_THREAD_PRIORITY 7
-#define FUSER_THREAD_PRIORITY 6
+#define MIC_SAMPLER_THREAD_PRIORITY 8
+#define FUSER_THREAD_PRIORITY 7
 #define SPI_LINK_THREAD_PRIORITY 6
 
 /* --- Tick / epoch periods ------------------------------------------------ */
