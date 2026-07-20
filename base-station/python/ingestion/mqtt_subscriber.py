@@ -43,6 +43,8 @@ from typing import Callable, Optional
 
 import paho.mqtt.client as mqtt
 
+import telemetry_schema as schema
+from registry import SensorChannel
 from sensor_frame import FrameSource, SensorFrame
 from telemetry_frame import MalformedFrameError, decode_frame
 
@@ -92,11 +94,46 @@ def normalize_spectrum_message(topic: str, payload: bytes,
         # a non-SPECTRUM message had before.
         return None
 
+    # decoded.bins is schema-driven (every SPECTRUM channel the schema knows
+    # about, model-facing or not) -- split off channels that aren't a
+    # SensorChannel (e.g. a future satellite sending the per-axis accel
+    # overlay, docs/CHART_CLUTTER_PLAN.md S1) into display_bins, mirroring
+    # ingestion/spi_reader.py, so gate/manager/features keep seeing only the
+    # model-relevant set in .bins.
+    model_bins, display_bins = {}, {}
+    for name, bins in decoded.bins.items():
+        try:
+            SensorChannel(name)
+        except ValueError:
+            display_bins[name] = bins
+        else:
+            model_bins[name] = bins
+
+    # Resolve scalars/time_series to the same friendly names decoded.bins
+    # already uses, mirroring ingestion/spi_reader.py's SensorFrame
+    # construction (docs/CHART_CLUTTER_PLAN.md S1). No satellite firmware
+    # emits these yet, so this is normally empty for MQTT frames today.
+    scalars = {schema.SCALAR_NAME_BY_ID[sid]: value
+               for sid, value in decoded.scalars.items()
+               if sid in schema.SCALAR_NAME_BY_ID}
+    ts = {schema.CHANNEL_NAME_BY_ID[cid]: (series.fs, series.samples)
+          for cid, series in decoded.time_series.items()
+          if cid in schema.CHANNEL_NAME_BY_ID}
+    # (fs, fft_size) per channel actually present in decoded.bins, mirroring
+    # ingestion/spi_reader.py -- lets the dashboard convert a bin index into
+    # an actual frequency regardless of ingestion path.
+    spectrum_meta = {name: (s.fs, s.fft_size) for name, s in decoded.spectra.items()
+                      if name in decoded.bins}
+
     return SensorFrame(
         node_id=node_id,
         source=FrameSource.MQTT,
         timestamp=time.time() if timestamp is None else timestamp,
-        bins=decoded.bins,
+        bins=model_bins,
+        display_bins=display_bins,
+        scalars=scalars,
+        time_series=ts,
+        spectrum_meta=spectrum_meta,
     )
 
 

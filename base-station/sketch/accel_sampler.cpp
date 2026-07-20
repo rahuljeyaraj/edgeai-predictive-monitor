@@ -300,17 +300,26 @@ static float accel_spectrum_latest[ACCEL_SPECTRUM_BINS];
  * Guarded by the same accel_spectrum_mtx. */
 static float accel_full_latest[ACCEL_FFT_BIN_COUNT];
 
-#if FUSER_RAW_CAPTURE_MODE
-/* Raw, un-FFT'd per-axis windows for offline experimentation (see
- * app_config.h's FUSER_RAW_CAPTURE_MODE). Published from the same point the
- * thread loop below hands accel_window_{x,y,z} to accel_fft_magnitude() -
- * the last moment before frames_accumulated resets and starts overwriting
- * them for the next window. Guarded by accel_spectrum_mtx, same as
- * accel_full_latest - one lock for everything this thread publishes. */
+/* Per-axis (not summed) counterpart to accel_full_latest, published
+ * alongside it for the per-axis SPECTRUM sections normal mode now sends
+ * (docs/CHART_CLUTTER_PLAN.md S1's multi-axis overlay chart). Same
+ * accel_spectrum_mtx guard. */
+static float accel_axis_x_latest[ACCEL_FFT_BIN_COUNT];
+static float accel_axis_y_latest[ACCEL_FFT_BIN_COUNT];
+static float accel_axis_z_latest[ACCEL_FFT_BIN_COUNT];
+
+/* Raw, un-FFT'd per-axis windows. Originally only published in
+ * FUSER_RAW_CAPTURE_MODE (offline experimentation); normal mode now also
+ * needs these unconditionally to compute the accel-derived scalar tiles and
+ * decimated time-domain sections (docs/CHART_CLUTTER_PLAN.md S1), so this is
+ * no longer gated. Published from the same point the thread loop below
+ * hands accel_window_{x,y,z} to accel_fft_magnitude() - the last moment
+ * before frames_accumulated resets and starts overwriting them for the next
+ * window. Guarded by accel_spectrum_mtx, same as accel_full_latest - one
+ * lock for everything this thread publishes. */
 static float accel_raw_latest_x[ACCEL_FFT_LEN];
 static float accel_raw_latest_y[ACCEL_FFT_LEN];
 static float accel_raw_latest_z[ACCEL_FFT_LEN];
-#endif
 
 static void accel_fft_init_twiddles() {
   for (int k = 0; k < ACCEL_FFT_LEN / 2; k++) {
@@ -485,13 +494,11 @@ static void accel_sampler_thread_entry(void *p1, void *p2, void *p3) {
       continue;
     }
 
-#if FUSER_RAW_CAPTURE_MODE
     k_mutex_lock(&accel_spectrum_mtx, K_FOREVER);
     memcpy(accel_raw_latest_x, accel_window_x, sizeof(accel_raw_latest_x));
     memcpy(accel_raw_latest_y, accel_window_y, sizeof(accel_raw_latest_y));
     memcpy(accel_raw_latest_z, accel_window_z, sizeof(accel_raw_latest_z));
     k_mutex_unlock(&accel_spectrum_mtx);
-#endif
 
     accel_fft_magnitude(accel_window_x, accel_mag_x);
     accel_fft_magnitude(accel_window_y, accel_mag_y);
@@ -508,6 +515,10 @@ static void accel_sampler_thread_entry(void *p1, void *p2, void *p3) {
     /* accel_mag_combined holds exactly ACCEL_FFT_LEN/2 == ACCEL_FFT_BIN_COUNT
      * bins - the full unique-bin set - published as-is for the fuser. */
     memcpy(accel_full_latest, accel_mag_combined, sizeof(accel_full_latest));
+    /* Per-axis (not summed) latest, same bin count - see accel_copy_axis_spectra(). */
+    memcpy(accel_axis_x_latest, accel_mag_x, sizeof(accel_axis_x_latest));
+    memcpy(accel_axis_y_latest, accel_mag_y, sizeof(accel_axis_y_latest));
+    memcpy(accel_axis_z_latest, accel_mag_z, sizeof(accel_axis_z_latest));
     k_mutex_unlock(&accel_spectrum_mtx);
 
 #if BENCHMARK_STATS_ENABLED
@@ -536,10 +547,17 @@ void accel_copy_full_spectrum(float *out) {
   k_mutex_unlock(&accel_spectrum_mtx);
 }
 
-#if FUSER_RAW_CAPTURE_MODE
-/* Raw per-axis window access for the fuser's raw-capture mode - the window
- * length is accel_fft_size() (ACCEL_FFT_LEN), the same accessor the normal
- * spectrum path already uses; no separate raw sample-count accessor needed. */
+void accel_copy_axis_spectra(float *out_x, float *out_y, float *out_z) {
+  k_mutex_lock(&accel_spectrum_mtx, K_FOREVER);
+  memcpy(out_x, accel_axis_x_latest, sizeof(accel_axis_x_latest));
+  memcpy(out_y, accel_axis_y_latest, sizeof(accel_axis_y_latest));
+  memcpy(out_z, accel_axis_z_latest, sizeof(accel_axis_z_latest));
+  k_mutex_unlock(&accel_spectrum_mtx);
+}
+
+/* Raw per-axis window access - the window length is accel_fft_size()
+ * (ACCEL_FFT_LEN), the same accessor the normal spectrum path already uses;
+ * no separate raw sample-count accessor needed. */
 void accel_copy_raw_window(float *out_x, float *out_y, float *out_z) {
   k_mutex_lock(&accel_spectrum_mtx, K_FOREVER);
   memcpy(out_x, accel_raw_latest_x, sizeof(accel_raw_latest_x));
@@ -547,7 +565,6 @@ void accel_copy_raw_window(float *out_x, float *out_y, float *out_z) {
   memcpy(out_z, accel_raw_latest_z, sizeof(accel_raw_latest_z));
   k_mutex_unlock(&accel_spectrum_mtx);
 }
-#endif
 
 #if BENCHMARK_STATS_ENABLED
 void accel_sampler_get_stats(struct accel_bench_stats *out) {

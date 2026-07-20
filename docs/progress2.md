@@ -28,10 +28,20 @@ the full per-interface rationale):
 
 **Bridge / RPC link mechanics** (the important, non-obvious bits):
 - MCU↔MPU control link = **UART**: STM32 `lpuart1` ↔ Linux `/dev/ttyHS1`, owned by the
-  `arduino-router` systemd service. Baud is the library default **115200** (reverted
-  2026-07-14, see 4.7 - `provision-baud.sh`'s 1000000 override is no longer applied
-  on-device; baud was never the fix for the wedge, see section 2). MCU side is
-  `Bridge.begin(BRIDGE_BAUD)`, `app_config.h`. Both ends must match.
+  `arduino-router` systemd service. Baud raised to **500000** on 2026-07-20 (was
+  115200 since 2026-07-14, see 4.7 - that revert was about a msgpack framing wedge
+  unrelated to baud, see section 2). Root cause of *this* round's ceiling: `ttyHS1`'s
+  Linux driver derives baud from a 32 MHz reference with 16x oversampling
+  (`/sys/class/tty/ttyHS1/uartclk`), so its divisor is `2e6 / baud` rounded to an
+  integer - that collapses to unusable/marginal values at 1M/2M/4M (divisors 2/1/0.5)
+  but lands clean at divisor 4 (500000). A second, not-fully-characterized factor
+  (baud-scaling failure likelihood even at clean divisors, likely physical
+  signal-integrity margin - see the loose-connector precedent in section 6) means
+  divisor 3 (666667) is provably unreliable under extended soak testing even though
+  its divisor math is clean. Full blow-by-blow in `app_config.h`'s `BRIDGE_BAUD`
+  comment and the `uart-baud-raise-attempt-2026-07-20` session notes. MCU side is
+  `Bridge.begin(BRIDGE_BAUD)`, `app_config.h`. Both ends must match -
+  `provision-baud.sh` sets the router side.
 - **RPClite 256-byte message ceiling** → the fuser frame (4112 B) is split into 200-B
   chunks, each sent fire-and-forget as `Bridge.notify("spec_chunk", <msgpack bin>)`.
 - Config/tunables consolidated in **`app_config.h`** (bin counts, thread priorities,

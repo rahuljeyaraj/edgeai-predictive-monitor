@@ -52,10 +52,22 @@ def _infer_sensor_config(frame: SensorFrame) -> FrozenSet[SensorChannel]:
     payload, Appendix B S3) -- sensor_config is committed once here and
     every later frame is validated against it in full (_validate_frame_bins
     below), so a node can't grow a second channel mid-stream.
+
+    Display-only spectrum channels (e.g. the per-axis accel_x/y/z overlay,
+    docs/CHART_CLUTTER_PLAN.md S1) are kept out of frame.bins entirely
+    (SensorFrame.display_bins instead, split out by the ingestion layer) so
+    this should never actually see a non-SensorChannel key -- the try/except
+    below is defensive depth against schema/ingestion drift (a new channel
+    added to telemetry_schema.json without updating the ingestion split),
+    not a routine path, mirroring this file's existing defensive-depth
+    comment on the NodeNotFoundError branch in route() below.
     """
     channels = set()
     for key in frame.bins:
-        channels.add(SensorChannel(key))
+        try:
+            channels.add(SensorChannel(key))
+        except ValueError:
+            continue
     return frozenset(channels)
 
 

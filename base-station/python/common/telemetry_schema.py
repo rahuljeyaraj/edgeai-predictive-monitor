@@ -25,7 +25,10 @@ CHANNEL_ID_BY_NAME = {
     "accel_x_raw": 2,
     "accel_y_raw": 3,
     "accel_z_raw": 4,
-    "mic_raw": 5
+    "mic_raw": 5,
+    "accel_x": 6,
+    "accel_y": 7,
+    "accel_z": 8
 }
 
 CHANNEL_NAME_BY_ID = {
@@ -34,7 +37,10 @@ CHANNEL_NAME_BY_ID = {
     "2": "accel_x_raw",
     "3": "accel_y_raw",
     "4": "accel_z_raw",
-    "5": "mic_raw"
+    "5": "mic_raw",
+    "6": "accel_x",
+    "7": "accel_y",
+    "8": "accel_z"
 }
 # JSON object keys are strings; re-key to int for wire (u8) lookups.
 CHANNEL_NAME_BY_ID = {int(k): v for k, v in CHANNEL_NAME_BY_ID.items()}
@@ -45,7 +51,10 @@ CHANNEL_KIND_BY_ID = {
     "2": "TIME_SERIES",
     "3": "TIME_SERIES",
     "4": "TIME_SERIES",
-    "5": "TIME_SERIES"
+    "5": "TIME_SERIES",
+    "6": "SPECTRUM",
+    "7": "SPECTRUM",
+    "8": "SPECTRUM"
 }
 CHANNEL_KIND_BY_ID = {int(k): v for k, v in CHANNEL_KIND_BY_ID.items()}
 
@@ -53,6 +62,10 @@ PERF_CHANNEL_ID = 255
 
 SCALAR_ID_BY_NAME = {
     "rms": 1,
-    "kurtosis": 2
+    "kurtosis": 2,
+    "crest_factor": 3,
+    "peak": 4,
+    "std": 5,
+    "skewness": 6
 }
 SCALAR_NAME_BY_ID = {v: k for k, v in SCALAR_ID_BY_NAME.items()}

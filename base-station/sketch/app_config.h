@@ -126,28 +126,103 @@
  * fuser.cpp) far under the SPI link's budget; no reason to rush capture. */
 #define FUSER_RAW_EPOCH_MS 1000
 
+/* Normal-mode (FUSER_RAW_CAPTURE_MODE=0) time-domain piggyback: sending the
+ * accel x/y/z + mic decimated time-series sections on every fused frame
+ * would drag the whole frame's SPI pull time down with them (RPC-round-trip-
+ * per-chunk dominated, not raw bit rate - see spi_reader.py's own reasoning),
+ * which would also slow the anomaly score and spectrum charts riding the
+ * same frame. Instead they ride only every Nth frame
+ * (docs/CHART_CLUTTER_PLAN.md S1's collapsed "Raw signals" panel doesn't
+ * need every-frame freshness); the fast path (spectra + scalar tiles) stays
+ * on every frame. See fuser.cpp's fuser_epoch_count gating. */
+#define FUSER_TIME_SERIES_EVERY_N 4
+
+/* Time-domain sections are decimated (simple stride) to this many samples
+ * before transmission - a chart line doesn't need the full FFT window
+ * length (1024 accel / 2048 mic) to read as smooth, and this keeps the
+ * piggybacked frame's size (and therefore its SPI pull time) bounded
+ * regardless of which sensor's native window is longer. */
+#define FUSER_TS_DECIMATED_SAMPLES 256
+
 /* --- Bridge link ----------------------------------------------------------
  * MCU<->MPU serial baud (Serial1 <-> /dev/ttyHS1). MUST match the router's
  * --serial-baudrate on the Linux side (the stock per-board systemd generator
  * drop-in, /var/lib/arduino-router/config/10-imola.conf) - a mismatch
  * silently breaks the whole link.
  *
- * Reverted to the library default 115200 (2026-07-14): this had been raised
- * to 1000000 (base-station/provision-baud.sh installed a systemd override)
- * to carry the fuser's full-resolution float32 spectrum push (~64 KB/s at
- * 15.6 Hz) directly over Bridge notify. That data-rate problem is root-cause
- * unrelated to baud, though - the recurring Bridge wedge is a msgpack framing
- * desync on the continuous notify stream that reproduces identically at 1M
- * and 2M baud (see docs/progress2.md section 2). The actual fix is moving
- * the bulk stream off the UART entirely onto the dedicated MCU<->MPU SPI bus
- * (docs/progress2.md "THE NEXT CHANGE", spi_link.{h,cpp}), which leaves this
- * link carrying RPC/control traffic only - 115200 is ample for that, and
- * provision-baud.sh's override is no longer needed (drop-in removed
- * on-device; script kept for reference/rollback).
+ * Was reverted to the library default 115200 on 2026-07-14 after the bulk
+ * fuser stream moved off this link onto the dedicated SPI bus (see
+ * docs/progress2.md section 2-3) - the earlier 1M/2M raise had been chasing
+ * a msgpack framing-desync wedge that was root-cause unrelated to baud.
+ * With only RPC/control traffic left on the UART, 115200 was ample, but
+ * this link is otherwise capable of much more.
+ *
+ * Root-caused and raised to 500000 on 2026-07-20 (was 115200). Root cause
+ * has two layers - a fully-explained one and a partially-characterized one:
+ *
+ * 1) THE BIG ONE, fully explained: /dev/ttyHS1's Linux driver (`ttyHS1...
+ *    is a MSM`, `/sys/class/tty/ttyHS1/uartclk` = 32000000) derives baud
+ *    from a 32 MHz reference with classic 16x-oversampling, i.e.
+ *    divisor = 32e6 / (16 * baud) = 2e6 / baud, ROUNDED TO AN INTEGER.
+ *    That divisor collapses at exactly the rates that failed hardest:
+ *      - 4000000 -> divisor 0.5, can't round down to a real divisor without
+ *        halving the actual baud to 2000000 against an MCU genuinely
+ *        driving LPUART1 at 4M - a straight 2x mismatch, so the router
+ *        fails to decode a single byte from MCU boot onward (confirmed:
+ *        2/2 clean reflash+recovery cycles, zero providers ever registered).
+ *      - 2000000 -> divisor exactly 1.0, the lowest a 16x-oversampled UART
+ *        can run - right at/beyond where these designs lose sampling
+ *        margin. Boots looking clean (one-off Bridge.call succeeds!) but a
+ *        real back-to-back soak wedges it solid (0/50, every call eating
+ *        the full 10s timeout) - a single ad-hoc call after reflash is NOT
+ *        a valid stability check on this link, it will lie to you.
+ *      - 1000000 -> divisor exactly 2.0, still on the losing side of the
+ *        margin: passes a clean 20-call burst, then wedges on the next
+ *        burst after just ~90s. Reconfirmed independently later the same
+ *        session (fresh reflash, board reboot + USB reconnect in between):
+ *        identical signature both times - clean burst1, dead on the very
+ *        first call of burst2. Fails faster/harder than 666667 (divisor 3),
+ *        consistent with the monotonic margin-vs-divisor pattern.
+ *      - 666667 -> divisor exactly 3.0 (2e6/3): passed a 20+90s-idle+20
+ *        soak clean, but WEDGED on a longer 100+180s-idle+100 exposure -
+ *        divisor 3 has more margin than 1-2 but still not enough.
+ *      - 500000 -> divisor exactly 4.0: clean on every test run, including
+ *        one LONGER than the exposure that broke 666667 (50+300s-idle+50,
+ *        zero failures). This is the value in use now.
+ *    (STM32U585 LPUART1 is comfortably not the bottleneck at any of these -
+ *    kernel clock SYSCLK/1=160MHz, BRR divides evenly at every rate tested,
+ *    and its own baud ceiling per RM0456 (ck_lpuart/3) is ~53 Mbaud.)
+ *
+ * 2) THE RESIDUAL RISK, NOT fully characterized: divisor precision alone
+ *    doesn't explain everything - 666667 (a mathematically clean divisor)
+ *    still wedged given enough elapsed time, meaning failure likelihood
+ *    scales with baud even away from the worst divisor edge cases, not
+ *    just jumps to zero above divisor 2. Ruled out this session: mic_sampler
+ *    (isolation test - commented out mic_sampler_start(), wedge still
+ *    reproduced at 1M with mic fully disabled); any application-level
+ *    irq_lock()/interrupt-masking (grepped the whole sketch/ tree, zero
+ *    hits - rgb_display.cpp's PWM+DMA path explicitly documents "no
+ *    irq_lock, no busy-wait"); STM32-side hardware RX errors (SWD-read
+ *    LPUART1's ISR register live mid-wedge - PE/FE/NE/ORE all clear,
+ *    though the read landed after the fact so this isn't conclusive for a
+ *    transient error). Leading unconfirmed hypothesis: physical
+ *    signal-integrity marginality on this specific link (this board has a
+ *    prior loose-connector incident, see mic/SAI capture bug notes) -
+ *    higher baud means less voltage/timing margin per bit against the same
+ *    absolute noise, and the failures pattern like a rare, roughly
+ *    time-distributed event rather than anything tied to Bridge call load
+ *    specifically (matrix/rgb/accel/spi_link/fuser all run continuously
+ *    regardless of Bridge traffic, so "idle" bursts in testing were never
+ *    actually idle from the MCU's perspective). Not resolved further this
+ *    session - would need a scope on the physical UART lines to confirm.
+ *
+ * Don't raise this past 500000 without a REAL soak test first: burst of
+ * calls, idle gap of several minutes (not seconds), another burst - a
+ * clean boot or a single successful call proves nothing on this link.
  *
  * Bridge.begin(BRIDGE_BAUD) is idempotent - only the first caller's baud
  * actually takes effect - but every module passes BRIDGE_BAUD so the
  * effective baud doesn't depend on setup() ordering. */
-#define BRIDGE_BAUD 115200
+#define BRIDGE_BAUD 500000
 
 #endif /* APP_CONFIG_H_ */

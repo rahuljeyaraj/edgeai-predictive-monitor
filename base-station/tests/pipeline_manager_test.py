@@ -226,12 +226,42 @@ def test_decommission_removes_mid_commissioning_node():
     print("decommission refused for an unknown node raises NodeNotFoundError: PASS")
 
 
+def test_non_sensor_channel_bin_key_is_ignored_not_raised():
+    """Regression test: a frame.bins key that isn't a SensorChannel (e.g. a
+    hypothetical regression in the ingestion-layer bins/display_bins split,
+    docs/CHART_CLUTTER_PLAN.md S1) must not crash sensor_config inference --
+    this exact shape (an "accel_x" key alongside "accel"/"mic") took down
+    the whole SPI ingestion thread the first time the per-axis accel
+    channels were tried against real hardware, before that split existed."""
+    tmp_dir = tempfile.mkdtemp(prefix="pipeline_manager_test_")
+    registry = Registry(os.path.join(tmp_dir, "registry.json"))
+    manager = PipelineManager(registry, default_gate_factory)
+
+    frame = SensorFrame(
+        node_id="regression-node",
+        source=FrameSource.SPI,
+        timestamp=0.0,
+        bins={
+            "mic": tuple(1.0 for _ in range(512)),
+            "accel": tuple(1.0 for _ in range(512)),
+            "accel_x": tuple(1.0 for _ in range(512)),  # not a SensorChannel
+        },
+    )
+    manager.route(frame)  # must not raise
+
+    entry = registry.get("regression-node")
+    assert entry.sensor_config == frozenset({SensorChannel.MIC, SensorChannel.ACCEL}), \
+        entry.sensor_config
+    print("non-SensorChannel bins key is skipped, not raised, during sensor_config inference: PASS")
+
+
 if __name__ == "__main__":
     try:
         main()
         test_commissioned_node_routes_through_inference_and_writes_history()
         test_frame_bin_count_mismatch_raises()
         test_uncommissioned_node_only_counts_frames()
+        test_non_sensor_channel_bin_key_is_ignored_not_raised()
         test_decommission_removes_mid_commissioning_node()
     except AssertionError as e:
         print(f"RESULT: FAIL - {e}")

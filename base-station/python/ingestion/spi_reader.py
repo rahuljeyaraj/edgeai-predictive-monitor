@@ -37,7 +37,9 @@ from typing import Callable, Optional
 
 from arduino.app_utils import Bridge
 
+import telemetry_schema as schema
 from bridge_lock import BRIDGE_LOCK
+from registry import SensorChannel
 from sensor_frame import BASE_STATION_NODE_ID, FrameSource, SensorFrame
 from telemetry_frame import DecodedFrame, MalformedFrameError, decode_frame
 
@@ -175,11 +177,48 @@ class SpiConsumer:
         if self._on_decoded is not None:
             self._on_decoded(decoded)
 
+        # decoded.bins is schema-driven (every SPECTRUM channel the schema
+        # knows about, model-facing or not) -- split off the channels that
+        # aren't a SensorChannel (the per-axis accel_x/y/z overlay,
+        # docs/CHART_CLUTTER_PLAN.md S1) into display_bins so gate/manager/
+        # features keep seeing exactly the model-relevant set in .bins, same
+        # as before this frame started carrying extra display channels.
+        model_bins, display_bins = {}, {}
+        for name, bins in decoded.bins.items():
+            try:
+                SensorChannel(name)
+            except ValueError:
+                display_bins[name] = bins
+            else:
+                model_bins[name] = bins
+
+        # decoded.scalars/.time_series are raw wire ids (telemetry_frame.py's
+        # tested contract); resolve to the same friendly names decoded.bins
+        # already uses (schema.SCALAR_NAME_BY_ID/CHANNEL_NAME_BY_ID) for
+        # SensorFrame's dashboard-facing shape (docs/CHART_CLUTTER_PLAN.md S1).
+        # An id with no schema entry is dropped, same as an unmapped
+        # channel_id already is for .bins.
+        scalars = {schema.SCALAR_NAME_BY_ID[sid]: value
+                   for sid, value in decoded.scalars.items()
+                   if sid in schema.SCALAR_NAME_BY_ID}
+        time_series = {schema.CHANNEL_NAME_BY_ID[cid]: (ts.fs, ts.samples)
+                       for cid, ts in decoded.time_series.items()
+                       if cid in schema.CHANNEL_NAME_BY_ID}
+        # (fs, fft_size) per channel actually present in decoded.bins -- the
+        # dashboard's frequency-axis conversion (charts.js) needs this
+        # regardless of whether the channel is model- or display-only.
+        spectrum_meta = {name: (s.fs, s.fft_size) for name, s in decoded.spectra.items()
+                          if name in decoded.bins}
+
         self._on_frame(SensorFrame(
             node_id=BASE_STATION_NODE_ID,
             source=FrameSource.SPI,
             timestamp=time.time(),
-            bins=decoded.bins,
+            bins=model_bins,
+            display_bins=display_bins,
+            scalars=scalars,
+            time_series=time_series,
+            spectrum_meta=spectrum_meta,
         ))
         return True
 

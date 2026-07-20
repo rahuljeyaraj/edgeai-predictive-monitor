@@ -30,13 +30,13 @@ int mic_fft_size(void);
 float mic_sample_rate_hz(void);
 void mic_copy_full_spectrum(float *out);
 
-#if FUSER_RAW_CAPTURE_MODE
-/* Raw, un-FFT'd window access for fuser.cpp's raw-capture mode (see
- * app_config.h's FUSER_RAW_CAPTURE_MODE). mic_copy_raw_window() copies
- * mic_fft_size() float32 samples into out[] - same mutex-guarded
+/* Raw, un-FFT'd window access. Originally fuser.cpp's raw-capture-mode-only
+ * accessor; now also used unconditionally by normal mode for the mic
+ * decimated time-domain section (docs/CHART_CLUTTER_PLAN.md S1), so this is
+ * no longer gated behind FUSER_RAW_CAPTURE_MODE. mic_copy_raw_window()
+ * copies mic_fft_size() float32 samples into out[] - same mutex-guarded
  * latest-window handoff as mic_copy_full_spectrum(). */
 void mic_copy_raw_window(float *out);
-#endif
 
 #if BENCHMARK_STATS_ENABLED
 /* Cumulative-since-boot capture-stage counters (docs/Sensor_Throughput_

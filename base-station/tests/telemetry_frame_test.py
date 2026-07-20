@@ -142,6 +142,42 @@ def test_scalar_set_decodes():
     print("SCALAR_SET body decodes to id->value scalars: PASS")
 
 
+def test_new_scalar_tile_ids_decode():
+    """docs/CHART_CLUTTER_PLAN.md S1's scalar tiles beyond rms/kurtosis --
+    crest_factor/peak/std/skewness, added to telemetry_schema.json alongside
+    the per-axis accel channels below."""
+    ids = {name: schema.SCALAR_ID_BY_NAME[name]
+           for name in ("crest_factor", "peak", "std", "skewness")}
+    values = {ids["crest_factor"]: 4.5, ids["peak"]: 12.0, ids["std"]: 0.8, ids["skewness"]: -0.2}
+    body = encode_scalar_body(values)
+    payload = encode_frame([encode_section(BASE, schema.PERF_CHANNEL_ID, K_SCALAR, body)])
+    decoded = decode_frame(payload)
+    for sid, expected in values.items():
+        assert abs(decoded.scalars[sid] - expected) < 1e-6, decoded.scalars
+    print("new scalar tile ids (crest_factor/peak/std/skewness) decode: PASS")
+
+
+def test_per_axis_accel_channels_resolve_to_names():
+    """Per-axis accel spectra (docs/CHART_CLUTTER_PLAN.md S1's multi-axis
+    overlay chart) are additive channels, separate from the fused `accel`
+    channel the model reads -- confirm all three resolve to their own names
+    and land in frame.bins independently."""
+    x_bins = tuple(float(i) for i in range(64))
+    y_bins = tuple(float(i) * 2 for i in range(64))
+    z_bins = tuple(float(i) * 3 for i in range(64))
+    payload = encode_spectrum_frame(BASE, [
+        (schema.CHANNEL_ID_BY_NAME["accel_x"], 1600.0, 1024, x_bins),
+        (schema.CHANNEL_ID_BY_NAME["accel_y"], 1600.0, 1024, y_bins),
+        (schema.CHANNEL_ID_BY_NAME["accel_z"], 1600.0, 1024, z_bins),
+    ])
+    decoded = decode_frame(payload)
+    assert decoded.bins["accel_x"] == x_bins, decoded.bins
+    assert decoded.bins["accel_y"] == y_bins, decoded.bins
+    assert decoded.bins["accel_z"] == z_bins, decoded.bins
+    assert "accel" not in decoded.bins, "fused accel channel must stay independent"
+    print("per-axis accel_x/y/z channels resolve to distinct names in frame.bins: PASS")
+
+
 def test_time_series_decodes():
     samples = (0.5, -0.25, 0.125, -0.75)  # exactly representable in float32
     body = encode_timeseries_body(48000.0, samples)
@@ -188,6 +224,8 @@ def main():
     test_zero_fill_present_section_is_real_data()
     test_bin_count_zero_omits_channel()
     test_scalar_set_decodes()
+    test_new_scalar_tile_ids_decode()
+    test_per_axis_accel_channels_resolve_to_names()
     test_time_series_decodes()
     test_malformed_frames_raise()
     test_empty_frame_zero_sections()

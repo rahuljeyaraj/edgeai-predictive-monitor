@@ -9,6 +9,23 @@
  * generic section-list frame (docs/SENSOR_TELEMETRY_FRAME_PLAN.md S3, Phase A),
  * and hands that frame to the SPI transport.
  *
+ * Normal mode's frame (docs/CHART_CLUTTER_PLAN.md S1's dashboard data needs)
+ * carries, every epoch: the fused accel spectrum (unchanged, model input),
+ * per-axis accel_x/y/z spectra (additive - display-only, never fed to the
+ * model), and one SCALAR_SET of accel-derived scalar tiles (rms/kurtosis/
+ * crest_factor/peak/std/skewness, computed on the combined tri-axial vector
+ * magnitude). Every FUSER_TIME_SERIES_EVERY_N-th epoch (app_config.h) also
+ * piggybacks decimated accel x/y/z + mic TIME_SERIES sections for the
+ * collapsible "Raw signals" panel - not every epoch, since that data is
+ * substantially bigger and would otherwise slow the whole frame (including
+ * the anomaly score and spectrum charts riding the same pull).
+ *
+ * Note this differs from FUSER_RAW_CAPTURE_MODE below: that mode is a
+ * separate, full-resolution, slow-cadence offline-dataset-capture tool: it
+ * REPLACES the whole frame body and is not meant to run permanently. This
+ * dashboard-facing time-series piggyback is decimated, fast-cadence, and
+ * layered ON TOP of the normal spectrum+scalar frame.
+ *
  * Frame = [num_sections u8] then, per section,
  * [source_id u8][channel_id u8][data_kind u8][section_len u16][body]; a
  * SPECTRUM body is [fs f32][fft_size u16][bin_count u16][bins f32...]. Channel/
@@ -55,6 +72,7 @@
 
 #include <Arduino_RouterBridge.h>
 #include <zephyr/kernel.h>
+#include <cmath>
 #include <cstring>
 
 /* FUSER_EPOCH_MS (~15.6 frames/s) and FUSER_THREAD_PRIORITY now live in
@@ -99,23 +117,41 @@
 #define FUSER_ACTIVE_EPOCH_MS FUSER_EPOCH_MS
 #endif
 
-/* Worst-case section count the frame buffer is sized for. Two today (mic +
- * accel); headroom for the near-term experiments the plan is for (per-axis
- * triaxial accel = 3, + mic, + a SCALAR_SET of RMS/kurtosis/...). Only affects
- * the static buffer ceiling below - the actual num_sections written each frame
- * is chosen in the thread loop. */
-#define FUSER_MAX_SECTIONS 6
+/* Normal mode's section accounting (raw-capture mode's own sizing is
+ * directly below, unaffected). Every fused frame carries
+ * FUSER_NUM_SPECTRUM_SECTIONS SPECTRUM sections (mic, accel-fused, + per-axis
+ * accel x/y/z for docs/CHART_CLUTTER_PLAN.md S1's multi-axis overlay chart)
+ * and one SCALAR_SET section (the accel-derived scalar tiles); every
+ * FUSER_TIME_SERIES_EVERY_N-th frame (app_config.h) additionally piggybacks
+ * FUSER_NUM_TS_SECTIONS decimated TIME_SERIES sections (the collapsible "Raw
+ * signals" panel) - see app_config.h's FUSER_TIME_SERIES_EVERY_N comment and
+ * the fuser_epoch_count gating below for why that's piggybacked rather than
+ * sent every frame. FUSER_MAX_SECTIONS is the worst-case total (both kinds
+ * present in the same frame) - only affects the static buffer ceiling below,
+ * the actual per-frame num_sections is computed in the thread loop. */
+#define FUSER_NUM_SPECTRUM_SECTIONS 5  /* mic, accel, accel_x, accel_y, accel_z */
+#define FUSER_NUM_SCALARS 6            /* rms, kurtosis, crest_factor, peak, std, skewness */
+#define FUSER_NUM_TS_SECTIONS 4         /* accel_x_raw, accel_y_raw, accel_z_raw, mic_raw */
+#define FUSER_MAX_SECTIONS (FUSER_NUM_SPECTRUM_SECTIONS + 1 + FUSER_NUM_TS_SECTIONS)  /* 10 */
 
 /* Per-section wire overhead: the 5-byte section header (source/channel/kind +
  * section_len u16) plus a SPECTRUM body's own fs/fft_size/bin_count preamble
- * (4 + 2 + 2). A SPECTRUM section is the largest kind, so sizing every slot as
- * a max-bin spectrum is the true worst case. */
+ * (4 + 2 + 2). */
 #define FUSER_SECTION_OVERHEAD (5 + 4 + 2 + 2)
+#define FUSER_SPECTRUM_SECTION_LEN (FUSER_SECTION_OVERHEAD + FUSER_MAX_BINS * sizeof(float))
+/* SCALAR_SET body: count u8 + (id u16 + value f32) per scalar. */
+#define FUSER_SCALAR_SECTION_LEN (5 + 1 + FUSER_NUM_SCALARS * (2 + 4))
+/* TIME_SERIES body: fs f32 + sample_count u16 + samples f32[]; sections carry
+ * FUSER_TS_DECIMATED_SAMPLES (app_config.h), NOT the native FFT window length
+ * - the whole reason the piggyback stays bounded regardless of which
+ * sensor's window is longer (mic's is 2x accel's). */
+#define FUSER_TS_SECTION_LEN (5 + 4 + 2 + FUSER_TS_DECIMATED_SAMPLES * sizeof(float))
 
 /* BSS scratch, not thread stack - same reason the samplers use static working
  * buffers (see mic_sampler.cpp): a few KB of frame/bin data shouldn't inflate
- * the thread stack. fuser_frame_buf is sized for the worst case (1 num_sections
- * byte + FUSER_MAX_SECTIONS max-bin SPECTRUM sections); SPI_LINK_MAX_PAYLOAD
+ * the thread stack. fuser_frame_buf is sized for the true worst case (1
+ * num_sections byte + 5 max-bin SPECTRUM + 1 SCALAR_SET + 4 decimated
+ * TIME_SERIES - the every-Nth-frame's heavier composition); SPI_LINK_MAX_PAYLOAD
  * (spi_link.cpp) must be >= this, and spi_link_stage_frame() clamps defensively.
  */
 #if FUSER_RAW_CAPTURE_MODE
@@ -148,9 +184,44 @@ static uint8_t fuser_frame_buf[FUSER_RAW_FRAME_BUF_LEN];
 #else
 static float fuser_mic_bins[FUSER_MAX_BINS];
 static float fuser_accel_bins[FUSER_MAX_BINS];
-static uint8_t fuser_frame_buf[1 + FUSER_MAX_SECTIONS *
-                                       (FUSER_SECTION_OVERHEAD +
-                                        FUSER_MAX_BINS * sizeof(float))];
+static float fuser_accel_x_bins[FUSER_MAX_BINS];
+static float fuser_accel_y_bins[FUSER_MAX_BINS];
+static float fuser_accel_z_bins[FUSER_MAX_BINS];
+
+/* Raw per-axis/mic windows, needed unconditionally now (not just raw-capture
+ * mode) to compute the accel-derived scalar tiles and the piggybacked
+ * decimated time-series sections. Lengths mirror each sampler's own FFT_LEN
+ * derivation (mic *4, accel *2 of its bin count) - fuser.cpp has no direct
+ * access to those file-local #defines, only the runtime
+ * accel_fft_size()/mic_fft_size() accessors, so these compile-time twins
+ * exist solely to size these buffers (same caveat as raw-capture mode's
+ * FUSER_RAW_ACCEL_SAMPLES/FUSER_RAW_MIC_SAMPLES above, deliberately
+ * duplicated rather than shared since the two modes compile mutually
+ * exclusively). Keep in sync if either sampler's multiplier ever changes. */
+#define FUSER_ACCEL_WINDOW_SAMPLES (ACCEL_FFT_BIN_COUNT * 2)
+#define FUSER_MIC_WINDOW_SAMPLES (MIC_FFT_BIN_COUNT * 4)
+static float fuser_accel_raw_x[FUSER_ACCEL_WINDOW_SAMPLES];
+static float fuser_accel_raw_y[FUSER_ACCEL_WINDOW_SAMPLES];
+static float fuser_accel_raw_z[FUSER_ACCEL_WINDOW_SAMPLES];
+static float fuser_mic_raw[FUSER_MIC_WINDOW_SAMPLES];
+
+/* Combined tri-axial vector-magnitude scratch (sqrt(x^2+y^2+z^2) per sample)
+ * the scalar tiles are computed from. Accel-only, not mic: the offline
+ * experiment harness (tools/offline_experiment.py) found accel's rms/kurtosis
+ * separate healthy from a real tested fault by 74-87 sigma vs. mic-only's
+ * +6 sigma, so a mic scalar row would be unjustified clutter right now
+ * (docs/CHART_CLUTTER_PLAN.md's whole point is cutting clutter). Same length
+ * as the accel raw window. */
+static float fuser_accel_vecmag[FUSER_ACCEL_WINDOW_SAMPLES];
+
+/* Reused across all 4 TIME_SERIES sections in turn (decimate, write, move to
+ * the next channel) - write_timeseries_section() copies it into the frame
+ * buffer immediately, so one scratch buffer is enough. */
+static float fuser_ts_scratch[FUSER_TS_DECIMATED_SAMPLES];
+
+static uint8_t fuser_frame_buf[1 + FUSER_NUM_SPECTRUM_SECTIONS * FUSER_SPECTRUM_SECTION_LEN +
+                                   FUSER_SCALAR_SECTION_LEN +
+                                   FUSER_NUM_TS_SECTIONS * FUSER_TS_SECTION_LEN];
 #endif
 
 /* Little-endian appenders (the Cortex-M and the Linux MPU are both LE, matching
@@ -191,11 +262,12 @@ static void write_spectrum_section(uint8_t *buf, size_t *pos, uint8_t channel_id
   *pos += (size_t)bin_count * sizeof(float);
 }
 
-#if FUSER_RAW_CAPTURE_MODE
 /* Append one TIME_SERIES section (source_id fixed to this base station).
  * Body is [fs f32][sample_count u16][samples f32...] - the raw-capture
  * counterpart to write_spectrum_section() above, minus the un-FFT'd data's
- * fft_size/bin_count fields (a raw window has no bins yet). */
+ * fft_size/bin_count fields (a raw window has no bins yet). Used by both
+ * raw-capture mode (full-resolution) and normal mode's piggybacked decimated
+ * sections. */
 static void write_timeseries_section(uint8_t *buf, size_t *pos, uint8_t channel_id,
                                      float fs, const float *samples,
                                      uint16_t sample_count) {
@@ -209,7 +281,93 @@ static void write_timeseries_section(uint8_t *buf, size_t *pos, uint8_t channel_
   memcpy(&buf[*pos], samples, (size_t)sample_count * sizeof(float));
   *pos += (size_t)sample_count * sizeof(float);
 }
-#endif
+
+#if !FUSER_RAW_CAPTURE_MODE
+/* Append one SCALAR_SET section (source_id fixed to this base station,
+ * channel_id fixed to TELEM_CHANNEL_PERF - scalars aren't tied to one wire
+ * channel, same convention tests/telemetry_frame_test.py's
+ * test_scalar_set_decodes() already uses). Body is
+ * [count u8][ids u16...][values f32...], parallel count-length arrays. */
+static void write_scalar_section(uint8_t *buf, size_t *pos, const uint16_t *ids,
+                                 const float *values, uint8_t count) {
+  uint16_t section_len = (uint16_t)(1 + (uint32_t)count * (2 + 4));
+  put_u8(buf, pos, TELEM_SOURCE_BASE_STATION);
+  put_u8(buf, pos, TELEM_CHANNEL_PERF);
+  put_u8(buf, pos, TELEM_KIND_SCALAR_SET);
+  put_u16(buf, pos, section_len);
+  put_u8(buf, pos, count);
+  for (uint8_t i = 0; i < count; i++) {
+    put_u16(buf, pos, ids[i]);
+  }
+  for (uint8_t i = 0; i < count; i++) {
+    put_f32(buf, pos, values[i]);
+  }
+}
+
+/* Simple stride decimation (skip samples, no averaging) for the piggybacked
+ * time-series sections - a chart line doesn't need the full FFT window
+ * length to read as smooth, and this isn't used for any frequency-domain
+ * analysis. in_len must be an exact multiple of out_len (true for both accel
+ * 1024/256=4 and mic 2048/256=8). */
+static void decimate_stride(const float *in, int in_len, float *out, int out_len) {
+  int stride = in_len / out_len;
+  for (int i = 0; i < out_len; i++) {
+    out[i] = in[i * stride];
+  }
+}
+
+/* Combined tri-axial vector magnitude, sample-by-sample - the standard
+ * "overall vibration" signal the scalar tiles summarize (see
+ * fuser_accel_vecmag's comment for why accel-only, no mic). */
+static void compute_vector_magnitude(const float *x, const float *y, const float *z,
+                                     int len, float *out) {
+  for (int i = 0; i < len; i++) {
+    out[i] = sqrtf(x[i] * x[i] + y[i] * y[i] + z[i] * z[i]);
+  }
+}
+
+/* Scalar tile math on the combined vector-magnitude signal
+ * (docs/CHART_CLUTTER_PLAN.md S1's "Scalar tiles" section). rms()/kurtosis()
+ * mirror python/tools/offline_experiment.py's formulas exactly (population
+ * std/excess kurtosis) so the on-device number means the same thing that
+ * tool already validated (+74-87 sigma healthy/fault separation, see
+ * offline-experiment-harness notes) rather than a second, potentially-
+ * drifting implementation. crest_factor/peak/std are standard vibration-
+ * analysis definitions; skewness is the standard third-standardized-moment
+ * (not itself validated by the offline harness, unlike rms/kurtosis). */
+static void compute_scalars(const float *mag, int len, float *out_rms, float *out_kurtosis,
+                            float *out_crest, float *out_peak, float *out_std,
+                            float *out_skew) {
+  float sum = 0.0f, sumsq = 0.0f, peak = 0.0f;
+  for (int i = 0; i < len; i++) {
+    sum += mag[i];
+    sumsq += mag[i] * mag[i];
+    if (mag[i] > peak) peak = mag[i];  // mag[] is sqrt(...), always >= 0
+  }
+  float mean = sum / len;
+  float rms = sqrtf(sumsq / len);
+  float variance = sumsq / len - mean * mean;
+  if (variance < 0.0f) variance = 0.0f;  // fp rounding guard
+  float std = sqrtf(variance);
+
+  float m3 = 0.0f, m4 = 0.0f;
+  for (int i = 0; i < len; i++) {
+    float d = mag[i] - mean;
+    float d2 = d * d;
+    m3 += d2 * d;
+    m4 += d2 * d2;
+  }
+  m3 /= len;
+  m4 /= len;
+
+  *out_rms = rms;
+  *out_peak = peak;
+  *out_std = std;
+  *out_crest = (rms > 0.0f) ? (peak / rms) : 0.0f;
+  *out_kurtosis = (std > 0.0f) ? (m4 / (std * std * std * std) - 3.0f) : 0.0f;  // excess
+  *out_skew = (std > 0.0f) ? (m3 / (std * std * std)) : 0.0f;
+}
+#endif  /* !FUSER_RAW_CAPTURE_MODE */
 
 #if BENCHMARK_STATS_ENABLED
 /* Single writer (fuser_thread_entry), read by fuser_get_stats() from
@@ -251,6 +409,10 @@ static void fuser_thread_entry(void *p1, void *p2, void *p3) {
    * mic, ...) - see this file's header comment and FUSER_RAW_FRAME_BUF_LEN's
    * comment on why they're never combined into one frame. */
   bool send_mic_next = false;
+#else
+  /* Gates the every-Nth-frame time-series piggyback - see app_config.h's
+   * FUSER_TIME_SERIES_EVERY_N comment. */
+  uint32_t fuser_epoch_count = 0;
 #endif
 
   /* Let setup() finish first. This thread (FUSER_THREAD_PRIORITY, app_config.h)
@@ -298,23 +460,77 @@ static void fuser_thread_entry(void *p1, void *p2, void *p3) {
 
     size_t frame_len = pos;
 #else
-    /* Sample-and-hold: copy the latest published spectra (each mutex-guarded
-     * inside the accessor). Between epochs where a sampler produced nothing
-     * new, its buffer simply still holds the previous block - same behaviour
-     * as the old repo's msgq sample-and-hold. */
+    /* Sample-and-hold: copy the latest published spectra/raw windows (each
+     * mutex-guarded inside the accessor). Between epochs where a sampler
+     * produced nothing new, its buffer simply still holds the previous block
+     * - same behaviour as the old repo's msgq sample-and-hold. */
     mic_copy_full_spectrum(fuser_mic_bins);
     accel_copy_full_spectrum(fuser_accel_bins);
+    accel_copy_axis_spectra(fuser_accel_x_bins, fuser_accel_y_bins, fuser_accel_z_bins);
+    accel_copy_raw_window(fuser_accel_raw_x, fuser_accel_raw_y, fuser_accel_raw_z);
 
-    /* Assemble the section-list frame: [num_sections u8] then one SPECTRUM
-     * section per channel. To experiment with a different channel set, change
+    /* Scalar tiles (docs/CHART_CLUTTER_PLAN.md S1): accel-only, computed from
+     * the combined tri-axial vector magnitude - see fuser_accel_vecmag's
+     * comment for why accel-only. Cheap (one pass over 1024 floats), so this
+     * runs every epoch regardless of the time-series piggyback below. */
+    compute_vector_magnitude(fuser_accel_raw_x, fuser_accel_raw_y, fuser_accel_raw_z,
+                             FUSER_ACCEL_WINDOW_SAMPLES, fuser_accel_vecmag);
+    float scalar_rms, scalar_kurtosis, scalar_crest, scalar_peak, scalar_std, scalar_skew;
+    compute_scalars(fuser_accel_vecmag, FUSER_ACCEL_WINDOW_SAMPLES, &scalar_rms,
+                    &scalar_kurtosis, &scalar_crest, &scalar_peak, &scalar_std, &scalar_skew);
+    const uint16_t scalar_ids[FUSER_NUM_SCALARS] = {
+        TELEM_SCALAR_RMS, TELEM_SCALAR_KURTOSIS, TELEM_SCALAR_CREST_FACTOR,
+        TELEM_SCALAR_PEAK, TELEM_SCALAR_STD, TELEM_SCALAR_SKEWNESS};
+    const float scalar_values[FUSER_NUM_SCALARS] = {
+        scalar_rms, scalar_kurtosis, scalar_crest, scalar_peak, scalar_std, scalar_skew};
+
+    /* Every FUSER_TIME_SERIES_EVERY_N-th frame additionally piggybacks the
+     * decimated raw-signal sections - see app_config.h's
+     * FUSER_TIME_SERIES_EVERY_N comment for why this isn't every frame. */
+    bool send_time_series = (fuser_epoch_count % FUSER_TIME_SERIES_EVERY_N) == 0;
+    fuser_epoch_count++;
+    if (send_time_series) {
+      mic_copy_raw_window(fuser_mic_raw);
+    }
+
+    /* Assemble the section-list frame: [num_sections u8] then one section per
+     * channel/scalar-set. To experiment with a different channel set, change
      * num_sections and the write_*_section() calls here (ids from
      * telemetry_schema.h) - nothing else on either end needs editing. */
     size_t pos = 0;
-    put_u8(fuser_frame_buf, &pos, 2);  // num_sections: mic + accel
+    uint8_t num_sections = FUSER_NUM_SPECTRUM_SECTIONS + 1 +
+                           (uint8_t)(send_time_series ? FUSER_NUM_TS_SECTIONS : 0);
+    put_u8(fuser_frame_buf, &pos, num_sections);
     write_spectrum_section(fuser_frame_buf, &pos, TELEM_CHANNEL_MIC, mic_fs,
                            mic_fft, fuser_mic_bins, (uint16_t)mic_bins);
     write_spectrum_section(fuser_frame_buf, &pos, TELEM_CHANNEL_ACCEL, accel_fs,
                            accel_fft, fuser_accel_bins, (uint16_t)accel_bins);
+    write_spectrum_section(fuser_frame_buf, &pos, TELEM_CHANNEL_ACCEL_X, accel_fs,
+                           accel_fft, fuser_accel_x_bins, (uint16_t)accel_bins);
+    write_spectrum_section(fuser_frame_buf, &pos, TELEM_CHANNEL_ACCEL_Y, accel_fs,
+                           accel_fft, fuser_accel_y_bins, (uint16_t)accel_bins);
+    write_spectrum_section(fuser_frame_buf, &pos, TELEM_CHANNEL_ACCEL_Z, accel_fs,
+                           accel_fft, fuser_accel_z_bins, (uint16_t)accel_bins);
+    write_scalar_section(fuser_frame_buf, &pos, scalar_ids, scalar_values, FUSER_NUM_SCALARS);
+
+    if (send_time_series) {
+      decimate_stride(fuser_accel_raw_x, FUSER_ACCEL_WINDOW_SAMPLES, fuser_ts_scratch,
+                      FUSER_TS_DECIMATED_SAMPLES);
+      write_timeseries_section(fuser_frame_buf, &pos, TELEM_CHANNEL_ACCEL_X_RAW, accel_fs,
+                               fuser_ts_scratch, FUSER_TS_DECIMATED_SAMPLES);
+      decimate_stride(fuser_accel_raw_y, FUSER_ACCEL_WINDOW_SAMPLES, fuser_ts_scratch,
+                      FUSER_TS_DECIMATED_SAMPLES);
+      write_timeseries_section(fuser_frame_buf, &pos, TELEM_CHANNEL_ACCEL_Y_RAW, accel_fs,
+                               fuser_ts_scratch, FUSER_TS_DECIMATED_SAMPLES);
+      decimate_stride(fuser_accel_raw_z, FUSER_ACCEL_WINDOW_SAMPLES, fuser_ts_scratch,
+                      FUSER_TS_DECIMATED_SAMPLES);
+      write_timeseries_section(fuser_frame_buf, &pos, TELEM_CHANNEL_ACCEL_Z_RAW, accel_fs,
+                               fuser_ts_scratch, FUSER_TS_DECIMATED_SAMPLES);
+      decimate_stride(fuser_mic_raw, FUSER_MIC_WINDOW_SAMPLES, fuser_ts_scratch,
+                      FUSER_TS_DECIMATED_SAMPLES);
+      write_timeseries_section(fuser_frame_buf, &pos, TELEM_CHANNEL_MIC_RAW, mic_fs,
+                               fuser_ts_scratch, FUSER_TS_DECIMATED_SAMPLES);
+    }
 
     size_t frame_len = pos;
 #endif

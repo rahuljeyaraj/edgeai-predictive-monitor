@@ -37,11 +37,18 @@
     {"name": "accel_x_raw", "id": 2, "kind": "TIME_SERIES"},
     {"name": "accel_y_raw", "id": 3, "kind": "TIME_SERIES"},
     {"name": "accel_z_raw", "id": 4, "kind": "TIME_SERIES"},
-    {"name": "mic_raw",     "id": 5, "kind": "TIME_SERIES"}
+    {"name": "mic_raw",     "id": 5, "kind": "TIME_SERIES"},
+    {"name": "accel_x", "id": 6, "kind": "SPECTRUM"},
+    {"name": "accel_y", "id": 7, "kind": "SPECTRUM"},
+    {"name": "accel_z", "id": 8, "kind": "SPECTRUM"}
   ],
   "perf_channel_id": 255,
   "scalars": {
     "rms": 1,
-    "kurtosis": 2
+    "kurtosis": 2,
+    "crest_factor": 3,
+    "peak": 4,
+    "std": 5,
+    "skewness": 6
   }
 }

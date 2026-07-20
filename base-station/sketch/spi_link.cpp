@@ -88,17 +88,24 @@
 
 /* SPI framing. Magic is an arbitrary sentinel matched verbatim on the MPU side
  * (main.py / tests). Max payload is sized for the fuser's generic section-list
- * frame worst case (docs/SENSOR_TELEMETRY_FRAME_PLAN.md S3): 1 num_sections byte
- * + FUSER_MAX_SECTIONS (6) max-bin SPECTRUM sections, each 5-byte section header
- * + 8-byte fs/fft/bin_count preamble + 512*4 bins = 1 + 6*2061 = 12367 B; 12480
- * gives a little slack. Kept as a named constant here rather than #include'ing
- * fuser internals - spi_link_stage_frame() clamps to it defensively, and the
- * fuser sizes its own buffer identically. TSIZE and the GPDMA block length are
- * both 16-bit (max 65535), so even this larger frame fits with room to spare;
- * the chunked pull (spi_arm) already sub-divides it CHUNK_SIZE bytes at a time,
- * so the on-wire transfer size is unaffected by this ceiling. */
+ * frame worst case (docs/SENSOR_TELEMETRY_FRAME_PLAN.md S3,
+ * docs/CHART_CLUTTER_PLAN.md S1's dashboard data): 1 num_sections byte + 5
+ * max-bin SPECTRUM sections (mic, accel-fused, accel_x/y/z; each 5-byte
+ * section header + 8-byte fs/fft/bin_count preamble + 512*4 bins = 2061 B) +
+ * 1 SCALAR_SET section (5-byte header + 1 count byte + 6 scalars * 6 B = 42 B)
+ * + 4 decimated TIME_SERIES sections, piggybacked every FUSER_TIME_SERIES_EVERY_N-th
+ * frame (5-byte header + 4-byte fs + 2-byte sample_count + 256*4 samples =
+ * 1035 B each) = 1 + 5*2061 + 42 + 4*1035 = 14488 B; 14600 gives a little
+ * slack. Kept as a named constant here rather than #include'ing fuser
+ * internals - spi_link_stage_frame() clamps to it defensively, and the fuser
+ * sizes its own buffer identically. TSIZE and the GPDMA block length are both
+ * 16-bit (max 65535), so even this larger frame fits with room to spare; the
+ * chunked pull (spi_arm) already sub-divides it CHUNK_SIZE bytes at a time,
+ * so the on-wire transfer size is unaffected by this ceiling (it does mean
+ * more chunks, hence more spi_arm RPC round-trips per frame - see
+ * ingestion/spi_reader.py's own reasoning on why that's the real fps cost). */
 #define SPI_LINK_MAGIC 0x46555331u /* "1SUF" on the wire (LE) - just a sentinel */
-#define SPI_LINK_MAX_PAYLOAD 12480
+#define SPI_LINK_MAX_PAYLOAD 14600
 #define SPI_LINK_HEADER_LEN 8 /* sizeof(spi_link_frame_header) */
 #define SPI_LINK_CRC_LEN 4
 #define SPI_LINK_MAX_FRAME \

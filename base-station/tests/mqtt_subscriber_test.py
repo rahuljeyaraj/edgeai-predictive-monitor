@@ -31,7 +31,9 @@ from sensor_frame import FrameSource
 from mqtt_subscriber import MalformedMessageError, normalize_spectrum_message, MqttSubscriber
 from wire_protocol import ChannelSpectrum
 import telemetry_schema as schema
-from telemetry_frame import encode_frame, encode_scalar_body, encode_section, encode_spectrum_frame
+from telemetry_frame import (encode_frame, encode_scalar_body, encode_section,
+                              encode_spectrum_body, encode_spectrum_frame,
+                              encode_timeseries_body)
 from registry import Registry, SensorChannel
 from gate import MotorStateGate
 from manager import PipelineManager
@@ -104,6 +106,57 @@ def test_scalar_only_frame_is_skipped():
     frame = normalize_spectrum_message(TOPIC, payload)
     assert frame is None, frame
     print("scalar-only (no spectrum) frame returns None (normal skip): PASS")
+
+
+def test_per_axis_accel_channels_land_in_display_bins_not_bins():
+    """Regression test: per-axis accel_x/y/z spectra
+    (docs/CHART_CLUTTER_PLAN.md S1) aren't a SensorChannel, so they must
+    land in display_bins, NOT bins -- mixing them into bins broke
+    manager.py's _infer_sensor_config() (SensorChannel('accel_x') raises)
+    the first time this was tried against real hardware."""
+    accel = ChannelSpectrum(fs=4000.0, fft_size=1024, bins=tuple(float(i) for i in range(512)))
+    axis = ChannelSpectrum(fs=4000.0, fft_size=1024, bins=tuple(float(i) * 2 for i in range(512)))
+    payload = encode_spectrum_frame(_SAT, [
+        (schema.CHANNEL_ID_BY_NAME["accel"], accel.fs, accel.fft_size, accel.bins),
+        (schema.CHANNEL_ID_BY_NAME["accel_x"], axis.fs, axis.fft_size, axis.bins),
+        (schema.CHANNEL_ID_BY_NAME["accel_y"], axis.fs, axis.fft_size, axis.bins),
+        (schema.CHANNEL_ID_BY_NAME["accel_z"], axis.fs, axis.fft_size, axis.bins),
+    ])
+    frame = normalize_spectrum_message(TOPIC, payload)
+    assert frame is not None
+    assert set(frame.bins.keys()) == {"accel"}, frame.bins.keys()
+    assert set(frame.display_bins.keys()) == {"accel_x", "accel_y", "accel_z"}, \
+        frame.display_bins.keys()
+    assert frame.display_bins["accel_x"] == axis.bins, frame.display_bins["accel_x"]
+    print("per-axis accel_x/y/z land in display_bins, model-facing bins only has accel: PASS")
+
+
+def test_scalars_and_time_series_resolve_to_names():
+    """docs/CHART_CLUTTER_PLAN.md S1: a frame carrying spectrum bins alongside
+    a SCALAR_SET and a TIME_SERIES section should resolve the latter two to
+    the same friendly names decoded.bins already uses (schema.py's
+    SCALAR_NAME_BY_ID/CHANNEL_NAME_BY_ID) -- not the raw wire ids."""
+    accel = ChannelSpectrum(fs=4000.0, fft_size=256, bins=tuple(float(i) for i in range(128)))
+    scalar_body = encode_scalar_body({
+        schema.SCALAR_ID_BY_NAME["rms"]: 0.5,
+        schema.SCALAR_ID_BY_NAME["kurtosis"]: 3.2,
+    })
+    ts_body = encode_timeseries_body(4000.0, (1.0, 2.0, 3.0))
+    payload = encode_frame([
+        encode_section(_SAT, schema.CHANNEL_ID_BY_NAME["accel"], schema.DATA_KIND["SPECTRUM"],
+                       encode_spectrum_body(accel.fs, accel.fft_size, accel.bins)),
+        encode_section(_SAT, schema.PERF_CHANNEL_ID, schema.DATA_KIND["SCALAR_SET"], scalar_body),
+        encode_section(_SAT, schema.CHANNEL_ID_BY_NAME["accel_x_raw"],
+                       schema.DATA_KIND["TIME_SERIES"], ts_body),
+    ])
+    frame = normalize_spectrum_message(TOPIC, payload)
+    assert frame is not None
+    # float32 wire round-trip (e.g. 3.2 -> 3.200000047683716), same tolerance
+    # telemetry_frame_test.py's own scalar assertions use.
+    assert abs(frame.scalars["rms"] - 0.5) < 1e-6, frame.scalars
+    assert abs(frame.scalars["kurtosis"] - 3.2) < 1e-6, frame.scalars
+    assert frame.time_series["accel_x_raw"] == (4000.0, (1.0, 2.0, 3.0)), frame.time_series
+    print("scalars/time_series resolve to friendly names alongside bins: PASS")
 
 
 def test_malformed_messages_raise():
@@ -184,6 +237,8 @@ def main():
     test_absent_channel_omitted_from_frame_bins()
     test_empty_frame_is_skipped()
     test_scalar_only_frame_is_skipped()
+    test_per_axis_accel_channels_land_in_display_bins_not_bins()
+    test_scalars_and_time_series_resolve_to_names()
     test_malformed_messages_raise()
     test_malformed_topic_raises()
     test_subscriber_routes_to_pipeline_manager_like_spi()

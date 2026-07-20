@@ -33,13 +33,22 @@ int accel_fft_size(void);
 float accel_sample_rate_hz(void);
 void accel_copy_full_spectrum(float *out);
 
-#if FUSER_RAW_CAPTURE_MODE
-/* Raw, un-FFT'd per-axis window access for fuser.cpp's raw-capture mode
- * (see app_config.h's FUSER_RAW_CAPTURE_MODE). accel_copy_raw_window()
+/* Per-axis (not summed) full-resolution spectra, same bin count/fs/fft_size
+ * as accel_copy_full_spectrum() since it's the same FFT just not summed
+ * across axes -- feeds the per-axis SPECTRUM sections (fuser.cpp normal
+ * mode) that let the dashboard overlay 1-3 accel axes on one chart
+ * (docs/CHART_CLUTTER_PLAN.md S1). Mutex-guarded, same latest-window
+ * handoff as accel_copy_full_spectrum(). */
+void accel_copy_axis_spectra(float *out_x, float *out_y, float *out_z);
+
+/* Raw, un-FFT'd per-axis window access. Originally fuser.cpp's raw-capture-
+ * mode-only accessor; now also used unconditionally by normal mode to
+ * compute the accel-derived scalar tiles (rms/kurtosis/...) and the
+ * decimated time-domain sections (docs/CHART_CLUTTER_PLAN.md S1) - so this
+ * is no longer gated behind FUSER_RAW_CAPTURE_MODE. accel_copy_raw_window()
  * copies accel_fft_size() float32 samples into each of out_x/y/z - same
  * mutex-guarded latest-window handoff as accel_copy_full_spectrum(). */
 void accel_copy_raw_window(float *out_x, float *out_y, float *out_z);
-#endif
 
 #if BENCHMARK_STATS_ENABLED
 /* Cumulative-since-boot pipeline-stage counters, read by fuser.cpp's
