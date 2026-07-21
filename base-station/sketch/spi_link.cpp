@@ -104,9 +104,26 @@
  * chunked pull (spi_arm) already sub-divides it CHUNK_SIZE bytes at a time,
  * so the on-wire transfer size is unaffected by this ceiling (it does mean
  * more chunks, hence more spi_arm RPC round-trips per frame - see
- * ingestion/spi_reader.py's own reasoning on why that's the real fps cost). */
+ * ingestion/spi_reader.py's own reasoning on why that's the real fps cost).
+ *
+ * FUSER_RAW_CAPTURE_MODE raises this instead: that mode's one combined frame
+ * (accel x/y/z + mic raw TIME_SERIES sections, all in one epoch - see
+ * fuser.cpp's FUSER_RAW_FRAME_BUF_LEN) needs 1 + 3*(11 + 1024*4) +
+ * (11 + 2048*4) = 20525 B, well past normal mode's 14600. This is a real RAM
+ * tradeoff, not a free bump: it grows spi_link_pending_buf/spi_link_frame_buf
+ * below AND spi_link_selftest_payload by the same delta each, on a board
+ * already flagged "Low memory available, stability problems may occur" at
+ * the smaller size. Accepted deliberately (2026-07-21) so a labeled capture
+ * run gets exactly matched x/y/z/mic window counts instead of independently-
+ * arriving, uneven ones - but this is exactly why FUSER_RAW_CAPTURE_MODE
+ * stays a temporary, supervised data-collection build (app_config.h's own
+ * comment): normal mode's buffers stay at the smaller, safer 14600. */
 #define SPI_LINK_MAGIC 0x46555331u /* "1SUF" on the wire (LE) - just a sentinel */
+#if FUSER_RAW_CAPTURE_MODE
+#define SPI_LINK_MAX_PAYLOAD 20525
+#else
 #define SPI_LINK_MAX_PAYLOAD 14600
+#endif
 #define SPI_LINK_HEADER_LEN 8 /* sizeof(spi_link_frame_header) */
 #define SPI_LINK_CRC_LEN 4
 #define SPI_LINK_MAX_FRAME \

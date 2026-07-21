@@ -143,16 +143,22 @@
  * for offline experimentation (docs/SENSOR_TELEMETRY_FRAME_PLAN.md) - not
  * meant to run permanently, flip back to 0 and reflash once a rig capture
  * session is done. See fuser.cpp's raw-mode block for the frame layout. */
-#define FUSER_RAW_CAPTURE_MODE 0
+#define FUSER_RAW_CAPTURE_MODE 1
 
-/* Raw-mode-only epoch. One accel raw window (1024 samples @ 1600Hz ODR)
- * takes ~640ms to fill; a faster epoch than that would resend the same
+/* Raw-mode-only epoch. One accel raw window (1024 samples) takes
+ * 1024/ACCEL_ODR_HZ to fill; a faster epoch than that would resend the same
  * window twice (a byte-for-byte duplicate landing in two different labeled
  * capture files - worse than window overlap, straightforward leakage if the
- * dupe crosses a train/test split). 1000ms gives margin and keeps the raw
- * frame's data rate (~20KB every other epoch, accel/mic alternate - see
- * fuser.cpp) far under the SPI link's budget; no reason to rush capture. */
-#define FUSER_RAW_EPOCH_MS 1000
+ * dupe crosses a train/test split). At the original 1600Hz ODR that was
+ * ~640ms, hence the old 1000ms epoch here -- but ACCEL_ODR_HZ was since
+ * raised to 12800Hz (8x) without this constant being revisited, leaving the
+ * live-preview stream idling ~900ms/epoch producing nothing new. Fill time
+ * is now 1024/12800 = 80ms; 100ms keeps the same margin-over-fill-time
+ * philosophy (~25%, vs. the original ~56%) while actually tracking the
+ * current ODR. Keep in sync with ACCEL_ODR_HZ if it changes again. Data
+ * rate (~20KB every other epoch, accel/mic alternate - see fuser.cpp) is
+ * still far under the SPI link's budget even at this cadence. */
+#define FUSER_RAW_EPOCH_MS 100
 
 /* Normal-mode (FUSER_RAW_CAPTURE_MODE=0) time-domain piggyback: sending the
  * accel x/y/z + mic decimated time-series sections on every fused frame

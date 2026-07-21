@@ -57,9 +57,11 @@
  *
  * FUSER_RAW_CAPTURE_MODE (app_config.h, default 0) rebuilds this whole thread
  * body to instead stream raw, un-FFT'd TIME_SERIES windows (3 accel axes kept
- * separate + raw mic) at a slower FUSER_RAW_EPOCH_MS cadence, alternating one
- * accel frame / one mic frame per epoch - for offline sensor/bin-count
- * experimentation off a labeled rig capture, not normal operation. See the
+ * separate + raw mic) at a slower FUSER_RAW_EPOCH_MS cadence, all 4 channels
+ * combined into one frame per epoch (matching normal mode's own single-
+ * frame-per-epoch guarantee, so a labeled capture run gets exactly matched
+ * x/y/z/mic window counts) - for offline sensor/bin-count experimentation
+ * off a labeled rig capture, not normal operation. See the
  * `#if FUSER_RAW_CAPTURE_MODE` blocks below.
  */
 #include "fuser.h"
@@ -166,15 +168,20 @@
 /* TIME_SERIES section overhead: 5-byte section header + fs f32 + sample_count
  * u16 (no bin_count field, unlike SPECTRUM). */
 #define FUSER_RAW_TS_OVERHEAD (5 + 4 + 2)
-#define FUSER_RAW_ACCEL_FRAME_LEN \
-  (1 + 3 * (FUSER_RAW_TS_OVERHEAD + FUSER_RAW_ACCEL_SAMPLES * sizeof(float)))
-#define FUSER_RAW_MIC_FRAME_LEN \
-  (1 + (FUSER_RAW_TS_OVERHEAD + FUSER_RAW_MIC_SAMPLES * sizeof(float)))
-/* The two raw frame kinds (3-axis accel / mono mic) alternate, never both in
- * one frame - buffer only needs to cover the larger of the two. */
-#define FUSER_RAW_FRAME_BUF_LEN \
-  (FUSER_RAW_ACCEL_FRAME_LEN > FUSER_RAW_MIC_FRAME_LEN ? FUSER_RAW_ACCEL_FRAME_LEN \
-                                                        : FUSER_RAW_MIC_FRAME_LEN)
+#define FUSER_RAW_ACCEL_SECTIONS_LEN \
+  (3 * (FUSER_RAW_TS_OVERHEAD + FUSER_RAW_ACCEL_SAMPLES * sizeof(float)))
+#define FUSER_RAW_MIC_SECTION_LEN \
+  (FUSER_RAW_TS_OVERHEAD + FUSER_RAW_MIC_SAMPLES * sizeof(float))
+/* All 4 raw channels (accel x/y/z + mic) now go out together in ONE frame
+ * every epoch, instead of alternating accel-only/mic-only epochs -- a
+ * labeled capture run needs exactly matched x/y/z/mic window counts to feed
+ * the autoencoder (host-side pairing of independently-arriving frames isn't
+ * good enough), and this is the same single-frame-per-epoch guarantee
+ * normal mode's own fused spectrum frame already has. This needed
+ * SPI_LINK_MAX_PAYLOAD raised (spi_link.cpp, raw-capture-mode-only) to fit
+ * the much bigger combined frame -- see that constant's comment for the
+ * exact size math and the RAM tradeoff this accepts. */
+#define FUSER_RAW_FRAME_BUF_LEN (1 + FUSER_RAW_ACCEL_SECTIONS_LEN + FUSER_RAW_MIC_SECTION_LEN)
 
 static float fuser_accel_raw_x[FUSER_RAW_ACCEL_SAMPLES];
 static float fuser_accel_raw_y[FUSER_RAW_ACCEL_SAMPLES];
@@ -404,12 +411,7 @@ static void fuser_thread_entry(void *p1, void *p2, void *p3) {
   float accel_fs = accel_sample_rate_hz();
   uint16_t accel_fft = (uint16_t)accel_fft_size();
 
-#if FUSER_RAW_CAPTURE_MODE
-  /* Alternates which raw frame kind goes out each epoch (accel 3-axis, then
-   * mic, ...) - see this file's header comment and FUSER_RAW_FRAME_BUF_LEN's
-   * comment on why they're never combined into one frame. */
-  bool send_mic_next = false;
-#else
+#if !FUSER_RAW_CAPTURE_MODE
   /* Gates the every-Nth-frame time-series piggyback - see app_config.h's
    * FUSER_TIME_SERIES_EVERY_N comment. */
   uint32_t fuser_epoch_count = 0;
@@ -437,26 +439,24 @@ static void fuser_thread_entry(void *p1, void *p2, void *p3) {
     int64_t frame_start = k_uptime_get();
 
 #if FUSER_RAW_CAPTURE_MODE
-    /* Sample-and-hold, same as normal mode, but only the channel this epoch
-     * is sending - see FUSER_RAW_EPOCH_MS's comment (app_config.h) for why
-     * this cadence can't outrun accel's ~640ms window-fill time. */
+    /* Sample-and-hold, same as normal mode, but all 4 raw channels every
+     * epoch (accel x/y/z + mic, one combined frame) - see
+     * FUSER_RAW_FRAME_BUF_LEN's comment for why this replaced the old
+     * accel-only/mic-only alternation, and FUSER_RAW_EPOCH_MS's comment
+     * (app_config.h) for why this cadence can't outrun accel's ~80ms
+     * window-fill time. */
     size_t pos = 0;
-    if (send_mic_next) {
-      mic_copy_raw_window(fuser_mic_raw);
-      put_u8(fuser_frame_buf, &pos, 1);  // num_sections: mic raw only
-      write_timeseries_section(fuser_frame_buf, &pos, TELEM_CHANNEL_MIC_RAW,
-                               mic_fs, fuser_mic_raw, mic_fft);
-    } else {
-      accel_copy_raw_window(fuser_accel_raw_x, fuser_accel_raw_y, fuser_accel_raw_z);
-      put_u8(fuser_frame_buf, &pos, 3);  // num_sections: accel x/y/z raw
-      write_timeseries_section(fuser_frame_buf, &pos, TELEM_CHANNEL_ACCEL_X_RAW,
-                               accel_fs, fuser_accel_raw_x, accel_fft);
-      write_timeseries_section(fuser_frame_buf, &pos, TELEM_CHANNEL_ACCEL_Y_RAW,
-                               accel_fs, fuser_accel_raw_y, accel_fft);
-      write_timeseries_section(fuser_frame_buf, &pos, TELEM_CHANNEL_ACCEL_Z_RAW,
-                               accel_fs, fuser_accel_raw_z, accel_fft);
-    }
-    send_mic_next = !send_mic_next;
+    mic_copy_raw_window(fuser_mic_raw);
+    accel_copy_raw_window(fuser_accel_raw_x, fuser_accel_raw_y, fuser_accel_raw_z);
+    put_u8(fuser_frame_buf, &pos, 4);  // num_sections: accel x/y/z + mic, all raw
+    write_timeseries_section(fuser_frame_buf, &pos, TELEM_CHANNEL_ACCEL_X_RAW,
+                             accel_fs, fuser_accel_raw_x, accel_fft);
+    write_timeseries_section(fuser_frame_buf, &pos, TELEM_CHANNEL_ACCEL_Y_RAW,
+                             accel_fs, fuser_accel_raw_y, accel_fft);
+    write_timeseries_section(fuser_frame_buf, &pos, TELEM_CHANNEL_ACCEL_Z_RAW,
+                             accel_fs, fuser_accel_raw_z, accel_fft);
+    write_timeseries_section(fuser_frame_buf, &pos, TELEM_CHANNEL_MIC_RAW,
+                             mic_fs, fuser_mic_raw, mic_fft);
 
     size_t frame_len = pos;
 #else

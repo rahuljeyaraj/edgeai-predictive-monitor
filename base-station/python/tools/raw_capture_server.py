@@ -62,7 +62,6 @@ FRONTEND_DIR = os.path.join(_PYTHON_DIR, "frontend")
 
 RAW_CHANNEL_NAMES = ("accel_x_raw", "accel_y_raw", "accel_z_raw", "mic_raw")
 ACCEL_CHANNEL_NAMES = ("accel_x_raw", "accel_y_raw", "accel_z_raw")
-_AXIS_SUFFIX = {"accel_x_raw": "x", "accel_y_raw": "y", "accel_z_raw": "z"}
 
 
 class StartBody(BaseModel):
@@ -255,11 +254,21 @@ def create_app(recorder: RawCaptureRecorder, bin_count: int, mic_bin_count: int)
             broadcast_threadsafe(app, {"type": "raw_window", "channel": "mic_raw", **mic_payload})
 
         if all(name in accel_samples for name in ACCEL_CHANNEL_NAMES):
-            scalars = {}
-            for name in ACCEL_CHANNEL_NAMES:
-                axis = _AXIS_SUFFIX[name]
-                scalars[f"rms_{axis}"] = raw_features.rms(accel_samples[name])
-                scalars[f"kurtosis_{axis}"] = raw_features.kurtosis(accel_samples[name])
+            # Same 6 scalar tiles + same combined-vector-magnitude input as
+            # fuser.cpp's compute_scalars() (normal mode only) -- that
+            # firmware path is compiled out under FUSER_RAW_CAPTURE_MODE, so
+            # this is where the equivalent numbers come from while capturing.
+            mag = raw_features.vector_magnitude(
+                accel_samples["accel_x_raw"], accel_samples["accel_y_raw"],
+                accel_samples["accel_z_raw"])
+            scalars = {
+                "rms": raw_features.rms(mag),
+                "kurtosis": raw_features.kurtosis(mag),
+                "crest_factor": raw_features.crest_factor(mag),
+                "peak": raw_features.peak(mag),
+                "std": raw_features.std(mag),
+                "skewness": raw_features.skewness(mag),
+            }
             broadcast_threadsafe(app, {"type": "raw_scalars", "t": time.time(), "scalars": scalars})
 
         # Live per-channel window counts (the toolbar's counts readout) --
@@ -291,10 +300,11 @@ def main():
                               "matching pull_captures.sh's expected location -- NOT "
                               "raw_capture.py's own documented default of /data/captures, "
                               "which fails with PermissionError on a real container)")
-    parser.add_argument("--bin-count", type=int, default=32,
-                         help="live-preview accel spectrum resolution (default 32, matches "
-                              "offline_experiment.py's own default). Cosmetic only -- the full "
-                              "raw window is always saved, so this doesn't limit later offline "
+    parser.add_argument("--bin-count", type=int, default=512,
+                         help="live-preview accel spectrum resolution (default 512 -- matches "
+                              "ACCEL_FFT_BIN_COUNT/app_config.h, i.e. accel's native FFT "
+                              "resolution, factor=1/no pooling). Cosmetic only -- the full raw "
+                              "window is always saved, so this doesn't limit later offline "
                               "analysis at a different bin count")
     parser.add_argument("--mic-bin-count", type=int, default=None,
                          help="live-preview mic spectrum resolution (default: same as --bin-count)")

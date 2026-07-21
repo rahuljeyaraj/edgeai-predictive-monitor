@@ -47,3 +47,30 @@ def kurtosis(x: np.ndarray) -> float:
     if std <= 0:
         return 0.0
     return float(np.mean(((x - x.mean()) / std) ** 4) - 3.0)  # excess kurtosis
+
+
+def std(x: np.ndarray) -> float:
+    return float(x.std())  # population std (ddof=0), matches fuser.cpp's compute_scalars
+
+
+def peak(x: np.ndarray) -> float:
+    return float(x.max())
+
+
+def crest_factor(x: np.ndarray) -> float:
+    r = rms(x)
+    return float(x.max() / r) if r > 0 else 0.0
+
+
+def skewness(x: np.ndarray) -> float:
+    s = x.std()
+    if s <= 0:
+        return 0.0
+    return float(np.mean(((x - x.mean()) / s) ** 3))
+
+
+def vector_magnitude(x: np.ndarray, y: np.ndarray, z: np.ndarray) -> np.ndarray:
+    """Combined tri-axial magnitude, sample-by-sample -- the same "overall
+    vibration" signal fuser.cpp's compute_scalars() derives its own on-device
+    scalar tiles from (normal mode only; this is that math's raw-mode twin)."""
+    return np.sqrt(x ** 2 + y ** 2 + z ** 2)

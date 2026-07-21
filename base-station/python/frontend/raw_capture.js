@@ -2,7 +2,9 @@
 /*
  * Live view for tools/raw_capture_server.py (docs/SENSOR_TELEMETRY_FRAME_PLAN.md):
  * accel x/y/z spectrum, mic spectrum, raw time-domain, and 6 rolling scalar
- * trends (rms/kurtosis per accel axis), fed entirely over /ws. Standalone
+ * trends (rms/kurtosis/crest_factor/peak/std/skewness, on the combined
+ * tri-axial vector magnitude -- same math as fuser.cpp's normal-mode scalar
+ * tiles), fed entirely over /ws. Standalone
  * page (not part of index.html's Fleet/Network/Performance tab switcher --
  * this only makes sense while the firmware is in FUSER_RAW_CAPTURE_MODE, an
  * exclusive alternative to the normal live dashboard, not a tab alongside it).
@@ -34,8 +36,37 @@
     accel_x_raw: "#3987e5", accel_y_raw: "#9085e9", accel_z_raw: "#d55181",
     mic_raw: "#d95926",
   };
-  const AXIS_SUFFIX = { accel_x_raw: "x", accel_y_raw: "y", accel_z_raw: "z" };
   const ACCEL_CHANNELS = ["accel_x_raw", "accel_y_raw", "accel_z_raw"];
+
+  // The 6 scalar tiles raw_capture_server.py computes on the combined
+  // tri-axial vector magnitude (same math + same input signal as fuser.cpp's
+  // compute_scalars(), normal mode's on-device equivalent) -- split into an
+  // amplitude group (same units as the raw signal) and a shape group
+  // (dimensionless), since plotting all 6 on one y-axis would let rms/peak/std
+  // swamp crest_factor/kurtosis/skewness's much smaller range.
+  const AMPLITUDE_SCALARS = ["rms", "peak", "std"];
+  const SHAPE_SCALARS = ["crest_factor", "kurtosis", "skewness"];
+  const SCALAR_COLORS = {
+    rms: "#3987e5", peak: "#9085e9", std: "#d55181",
+    crest_factor: "#3987e5", kurtosis: "#9085e9", skewness: "#d55181",
+  };
+
+  // raw_features.py's downsample() average-pools fft_magnitude()'s raw,
+  // DC-dropped bins (indices 0..N/2-1, true frequency (i+1)*fs/N each) into
+  // `spectrum.length` buckets of `factor` raw bins apiece. A displayed
+  // bucket's representative frequency is that group's mean true frequency,
+  // NOT k*fs/samples.length (that formula ignores both the pooling factor
+  // and the DC-drop offset, badly compressing/shifting the axis whenever
+  // factor > 1 -- e.g. it showed accel's spectrum as 0-388Hz instead of the
+  // real 0-6400Hz Nyquist range at the old bin-count=32 default).
+  function spectrumFreqAxis(spectrumLen, sampleLen, fs) {
+    if (!sampleLen || !spectrumLen) return [];
+    const rawLen = sampleLen / 2;
+    const factor = rawLen / spectrumLen;
+    const freqPerRawBin = fs / sampleLen;
+    return Array.from({ length: spectrumLen },
+      (_, k) => ((factor * (2 * k + 1) + 1) / 2) * freqPerRawBin);
+  }
 
   function smallFont() {
     return { family: FONT_FAMILY, color: TEXT_COLOR, size: 10 };
@@ -90,10 +121,9 @@
   function buildAccelSpectrumFigure() {
     const traces = ACCEL_CHANNELS.filter((name) => latest[name]).map((name) => {
       const { spectrum, fs, samples } = latest[name];
-      const freqStep = samples.length ? fs / samples.length : 1;
       return {
         type: "scatter", mode: "lines", name,
-        x: spectrum.map((_, k) => k * freqStep), y: spectrum,
+        x: spectrumFreqAxis(spectrum.length, samples.length, fs), y: spectrum,
         line: { color: AXIS_COLORS[name], width: 1.5 },
       };
     });
@@ -109,10 +139,9 @@
     const traces = [];
     if (latest.mic_raw) {
       const { spectrum, fs, samples } = latest.mic_raw;
-      const freqStep = samples.length ? fs / samples.length : 1;
       traces.push({
         type: "scatter", mode: "lines", name: "mic",
-        x: spectrum.map((_, k) => k * freqStep), y: spectrum,
+        x: spectrumFreqAxis(spectrum.length, samples.length, fs), y: spectrum,
         line: { color: AXIS_COLORS.mic_raw, width: 1.5 },
       });
     }
@@ -202,31 +231,45 @@
     }
   }
 
+  // All 3 accel axes ride one batched message (raw_capture_server.py sends
+  // one "raw_accel_epoch" per epoch, not one "raw_window" per axis, so a
+  // redraw happens once per epoch instead of 3x) -- distinct handler/shape
+  // from handleRawWindow's single-channel "raw_window" messages above.
+  function handleRawAccelEpoch(msg) {
+    ACCEL_CHANNELS.forEach((name) => {
+      const payload = msg.channels[name];
+      if (payload) {
+        latest[name] = { fs: payload.fs, samples: payload.samples, spectrum: payload.spectrum };
+      }
+    });
+    redrawAccel();
+  }
+
   // ---------------------------------------------------------------------
   // Scalar trends (extendTraces ring buffer -- see file docstring)
   // ---------------------------------------------------------------------
 
   function mountScalarCharts() {
-    const rmsTraces = ACCEL_CHANNELS.map((name) => ({
-      type: "scatter", mode: "lines", name: `rms_${AXIS_SUFFIX[name]}`,
-      x: [], y: [], line: { color: AXIS_COLORS[name], width: 1.5 },
+    const amplitudeTraces = AMPLITUDE_SCALARS.map((name) => ({
+      type: "scatter", mode: "lines", name,
+      x: [], y: [], line: { color: SCALAR_COLORS[name], width: 1.5 },
     }));
-    const kurtosisTraces = ACCEL_CHANNELS.map((name) => ({
-      type: "scatter", mode: "lines", name: `kurtosis_${AXIS_SUFFIX[name]}`,
-      x: [], y: [], line: { color: AXIS_COLORS[name], width: 1.5 },
+    const shapeTraces = SHAPE_SCALARS.map((name) => ({
+      type: "scatter", mode: "lines", name,
+      x: [], y: [], line: { color: SCALAR_COLORS[name], width: 1.5 },
     }));
-    const rmsLayout = {
-      ...darkLayoutBase(), uirevision: "rms", height: 200,
+    const amplitudeLayout = {
+      ...darkLayoutBase(), uirevision: "amplitude-scalars", height: 200,
       xaxis: axisBase({ title: { text: "Time since Start (s)", font: smallFont() } }),
       yaxis: axisBase({}),
     };
-    const kurtosisLayout = {
-      ...darkLayoutBase(), uirevision: "kurtosis", height: 200,
+    const shapeLayout = {
+      ...darkLayoutBase(), uirevision: "shape-scalars", height: 200,
       xaxis: axisBase({ title: { text: "Time since Start (s)", font: smallFont() } }),
       yaxis: axisBase({}),
     };
-    Plotly.newPlot(els.rms, rmsTraces, rmsLayout, SPECTRUM_CONFIG);
-    Plotly.newPlot(els.kurtosis, kurtosisTraces, kurtosisLayout, SPECTRUM_CONFIG);
+    Plotly.newPlot(els.rms, amplitudeTraces, amplitudeLayout, SPECTRUM_CONFIG);
+    Plotly.newPlot(els.kurtosis, shapeTraces, shapeLayout, SPECTRUM_CONFIG);
     mounted.scalars = true;
     scalarT0 = null;
   }
@@ -236,17 +279,15 @@
     if (scalarT0 === null) scalarT0 = msg.t;
     const t = msg.t - scalarT0;
 
-    const rmsUpdate = { x: ACCEL_CHANNELS.map(() => [t]), y: [] };
-    const kurtosisUpdate = { x: ACCEL_CHANNELS.map(() => [t]), y: [] };
-    ACCEL_CHANNELS.forEach((name) => {
-      const axis = AXIS_SUFFIX[name];
-      rmsUpdate.y.push([msg.scalars[`rms_${axis}`]]);
-      kurtosisUpdate.y.push([msg.scalars[`kurtosis_${axis}`]]);
-    });
+    const amplitudeUpdate = { x: AMPLITUDE_SCALARS.map(() => [t]), y: [] };
+    const shapeUpdate = { x: SHAPE_SCALARS.map(() => [t]), y: [] };
+    AMPLITUDE_SCALARS.forEach((name) => amplitudeUpdate.y.push([msg.scalars[name]]));
+    SHAPE_SCALARS.forEach((name) => shapeUpdate.y.push([msg.scalars[name]]));
 
-    const traceIndices = ACCEL_CHANNELS.map((_, i) => i);
-    Plotly.extendTraces(els.rms, rmsUpdate, traceIndices, MAX_SCALAR_POINTS);
-    Plotly.extendTraces(els.kurtosis, kurtosisUpdate, traceIndices, MAX_SCALAR_POINTS);
+    const amplitudeIndices = AMPLITUDE_SCALARS.map((_, i) => i);
+    const shapeIndices = SHAPE_SCALARS.map((_, i) => i);
+    Plotly.extendTraces(els.rms, amplitudeUpdate, amplitudeIndices, MAX_SCALAR_POINTS);
+    Plotly.extendTraces(els.kurtosis, shapeUpdate, shapeIndices, MAX_SCALAR_POINTS);
   }
 
   // ---------------------------------------------------------------------
@@ -351,6 +392,8 @@
       }
       if (msg.type === "raw_window") {
         handleRawWindow(msg);
+      } else if (msg.type === "raw_accel_epoch") {
+        handleRawAccelEpoch(msg);
       } else if (msg.type === "raw_scalars") {
         handleRawScalars(msg);
       } else if (msg.type === "capture_status") {
