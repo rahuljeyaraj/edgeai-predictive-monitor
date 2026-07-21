@@ -253,7 +253,7 @@ cd base-station/python
 .venv/bin/pip install -r requirements.txt -r tools/requirements-offline-experiment.txt
 
 # test one specific config
-.venv/bin/python3 tools/offline_experiment.py --axis-mode separate --bin-count 64 --scalars rms kurtosis
+.venv/bin/python3 tools/offline_experiment.py --axis-mode separate --bin-count 64 --scalars rms kurtosis std peak crest_factor skewness
 
 # sweep a grid of configs, ranked by healthy-vs-fault separation, with a plot
 .venv/bin/python3 tools/offline_experiment.py --sweep --plot-out ../../out.png
@@ -264,6 +264,12 @@ cd base-station/python
 - `--healthy-label` accepts multiple labels (e.g.
   `--healthy-label healthy_noload healthy_load`) to pool sub-conditions for
   training while still reporting each one's own separation.
+- `--scalars` accepts any of 6 per-axis time-domain scalars: `rms`,
+  `kurtosis`, `std`, `peak`, `crest_factor`, `skewness` — pass any subset.
+- `--sweep` tries axis fusion (summed/separate/none) × accel+mic fusion
+  (with/without mic) × spectrum resolution (bin counts 8 through 512) ×
+  scalar combos (none, each of the 6 alone, and all 6 together) — 280
+  configs total, ranked by worst-case healthy-vs-fault separation.
 - The report is in **sigma units matching production commissioning**
   (warning = 8σ, fault = 15σ) — a number here means the same thing it would
   mean after real commissioning on the device.

@@ -86,46 +86,16 @@ def load_captures(captures_dir):
 # Feature engineering (mirrors accel_sampler.cpp/mic_sampler.cpp/features.py)
 # ---------------------------------------------------------------------------
 
-def fft_magnitude(window: np.ndarray) -> np.ndarray:
-    """Same convention as the firmware's *_fft_magnitude(): DC (bin 0)
-    dropped, bins 1..N/2 kept -- N/2 bins total for an N-sample window."""
-    return np.abs(np.fft.rfft(window))[1:]
+sys.path.insert(0, os.path.join(_HERE, "..", "common"))
+from raw_features import (  # noqa: E402
+    fft_magnitude, downsample, peak_normalize,
+    rms, kurtosis, std, peak, crest_factor, skewness,
+)
 
-
-def downsample(mag: np.ndarray, bin_count: int) -> np.ndarray:
-    """Average-pool down to bin_count buckets, same scheme as the firmware's
-    accel_spectrum_downsample()/get_mic_spectrum(). len(mag) must divide
-    evenly by bin_count."""
-    if len(mag) % bin_count != 0:
-        raise ValueError(f"{len(mag)} FFT bins doesn't divide evenly by "
-                          f"--bin-count={bin_count} (divisors of {len(mag)}: "
-                          f"{[d for d in range(1, len(mag) + 1) if len(mag) % d == 0]})")
-    factor = len(mag) // bin_count
-    return mag.reshape(bin_count, factor).mean(axis=1)
-
-
-def peak_normalize(bins: np.ndarray) -> np.ndarray:
-    """Same as pipeline/features.py's normalize_bins -- rescale to this
-    block's own peak so absolute amplitude (motor load, placement, mic gain)
-    doesn't swamp the shape the autoencoder needs to learn."""
-    peak = bins.max()
-    if peak <= 0:
-        return np.zeros_like(bins)
-    return bins / peak
-
-
-def kurtosis(x: np.ndarray) -> float:
-    std = x.std()
-    if std <= 0:
-        return 0.0
-    return float(np.mean(((x - x.mean()) / std) ** 4) - 3.0)  # excess kurtosis
-
-
-def rms(x: np.ndarray) -> float:
-    return float(np.sqrt(np.mean(x ** 2)))
-
-
-_SCALAR_FUNCS = {"rms": rms, "kurtosis": kurtosis}
+_SCALAR_FUNCS = {
+    "rms": rms, "kurtosis": kurtosis, "std": std,
+    "peak": peak, "crest_factor": crest_factor, "skewness": skewness,
+}
 
 
 class FeatureConfig:
@@ -321,44 +291,21 @@ def summarize(scores_by_label, healthy_labels):
             "worst_sigma": worst_sigma}
 
 
-def save_diagnostic_plot(path, by_label, cfg: FeatureConfig, scores_by_label, summary):
-    """Three panels, sharing one color per label: (1) one example raw window
-    per label for a representative channel, (2) that window's spectrum as
-    the model actually sees it (binned + peak-normalized), (3) the
-    reconstruction-error (anomaly score) distribution per label with the
-    healthy mean and the 8sigma/15sigma warning/fault reference lines
-    (summarize()'s same thresholds). Point is to see input -> features ->
-    score in one place, not just the score table print_report() gives."""
+def save_diagnostic_plot(path, by_label, cfg: FeatureConfig, scores_by_label, summary, healthy_labels):
+    """Two panels, sharing one color per label: (1) the reconstruction-error
+    (anomaly score) distribution per label with the healthy mean and the
+    8sigma/15sigma warning/fault reference lines (summarize()'s same
+    thresholds), (2) a ranked bar chart of each fault label's separation
+    from healthy in sigmas -- the same number print_report() prints, made
+    visual so weak vs. strong faults are obvious at a glance."""
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
-    channel = ACCEL_AXES[0] if cfg.include_accel else MIC_CHANNEL
-    bin_count = cfg.bin_count if cfg.include_accel else cfg.mic_bin_count
-
     labels = sorted(by_label)
     colors = {label: c for label, c in zip(labels, plt.cm.tab10.colors)}
 
-    fig, (ax_raw, ax_spec, ax_score) = plt.subplots(3, 1, figsize=(10, 12))
-
-    for label in labels:
-        run = next((r for r in by_label[label] if channel in r and r[channel].shape[0] > 0), None)
-        if run is None:
-            continue
-        window = run[channel][0]
-        ax_raw.plot(window, label=label, color=colors[label], alpha=0.8)
-        mag = peak_normalize(downsample(fft_magnitude(window), bin_count))
-        ax_spec.plot(mag, label=label, color=colors[label], alpha=0.8)
-
-    ax_raw.set_title(f"Example raw window - channel: {channel}")
-    ax_raw.set_xlabel("sample")
-    ax_raw.set_ylabel("raw value")
-    ax_raw.legend(fontsize="small")
-
-    ax_spec.set_title(f"Same window's spectrum ({bin_count} bins, peak-normalized) - what the model sees")
-    ax_spec.set_xlabel("bin")
-    ax_spec.set_ylabel("normalized magnitude")
-    ax_spec.legend(fontsize="small")
+    fig, (ax_score, ax_sigma) = plt.subplots(2, 1, figsize=(10, 9))
 
     all_scores = [s for scores in scores_by_label.values() for s in scores]
     use_log = all(s > 0 for s in all_scores)
@@ -381,6 +328,21 @@ def save_diagnostic_plot(path, by_label, cfg: FeatureConfig, scores_by_label, su
     ax_score.set_xlabel("score" + (" (log scale)" if use_log else ""))
     ax_score.set_ylabel("count")
     ax_score.legend(fontsize="small")
+
+    fault_labels = sorted(
+        (l for l in summary["per_label"] if l not in healthy_labels),
+        key=lambda l: summary["per_label"][l]["sigmas_above_healthy"],
+    )
+    bar_colors = [colors.get(l, "gray") for l in fault_labels]
+    sigmas = [summary["per_label"][l]["sigmas_above_healthy"] for l in fault_labels]
+    ax_sigma.barh(fault_labels, sigmas, color=bar_colors)
+    ax_sigma.axvline(_WARNING_SIGMA, color="orange", linestyle="--", linewidth=1,
+                      label=f"{_WARNING_SIGMA:.0f}sigma warning")
+    ax_sigma.axvline(_FAULT_SIGMA, color="red", linestyle="--", linewidth=1,
+                      label=f"{_FAULT_SIGMA:.0f}sigma fault")
+    ax_sigma.set_title("Separation from healthy, by label")
+    ax_sigma.set_xlabel("sigmas above healthy mean")
+    ax_sigma.legend(fontsize="small")
 
     fig.suptitle(str(cfg))
     fig.tight_layout()
@@ -411,13 +373,25 @@ def print_report(cfg, input_dim, summary, healthy_labels):
 # CLI
 # ---------------------------------------------------------------------------
 
+_SWEEP_BIN_COUNTS = (8, 16, 32, 64, 128, 256, 512)
+
+# Curated rather than the full 2^6=64-subset power set of _SCALAR_FUNCS: none,
+# each scalar alone (to see which one individually helps), and all six
+# together. Combined with axis_mode x bin_count x include_mic this already
+# multiplies out to hundreds of configs, each a fresh autoencoder training
+# run -- a full power set would blow that up another 8x for little extra
+# signal over "alone" vs "everything".
+_SWEEP_SCALAR_COMBOS = ((),) + tuple((name,) for name in _SCALAR_FUNCS) + \
+    (tuple(_SCALAR_FUNCS),)
+
+
 def _sweep_configs():
     for axis_mode in ("summed", "separate", "none"):
-        for bin_count in (16, 32, 64):
+        for bin_count in _SWEEP_BIN_COUNTS:
             for include_mic in (True, False):
                 if axis_mode == "none" and not include_mic:
                     continue  # no channels left at all - not a valid config
-                for scalars in ((), ("rms", "kurtosis")):
+                for scalars in _SWEEP_SCALAR_COMBOS:
                     yield FeatureConfig(axis_mode=axis_mode, bin_count=bin_count,
                                         include_mic=include_mic, scalars=scalars)
 
@@ -449,7 +423,7 @@ def main():
                               "must evenly divide 1024 for the current 2048-sample mic window)")
     parser.add_argument("--exclude-mic", action="store_true",
                          help="accel-only feature vector")
-    parser.add_argument("--scalars", nargs="*", choices=("rms", "kurtosis"), default=(),
+    parser.add_argument("--scalars", nargs="*", choices=tuple(_SCALAR_FUNCS), default=(),
                          help="append per-axis time-domain scalar(s) to the feature vector")
     parser.add_argument("--epochs", type=int, default=300,
                          help="autoencoder training epochs (default matches "
@@ -491,7 +465,8 @@ def main():
                 print(f"  {summary['worst_sigma']:+7.1f}sigma  dim={input_dim:<5} {cfg}")
             if args.plot_out:
                 best_cfg, _, best_summary, best_scores = ranked[0]
-                save_diagnostic_plot(args.plot_out, by_label, best_cfg, best_scores, best_summary)
+                save_diagnostic_plot(args.plot_out, by_label, best_cfg, best_scores, best_summary,
+                                      args.healthy_label)
                 print(f"\nSaved best-config plot ({best_cfg}) -> {args.plot_out}")
         return
 
@@ -502,7 +477,7 @@ def main():
     summary = summarize(scores_by_label, args.healthy_label)
     print_report(cfg, input_dim, summary, args.healthy_label)
     if args.plot_out:
-        save_diagnostic_plot(args.plot_out, by_label, cfg, scores_by_label, summary)
+        save_diagnostic_plot(args.plot_out, by_label, cfg, scores_by_label, summary, args.healthy_label)
         print(f"\nSaved plot -> {args.plot_out}")
 
 
