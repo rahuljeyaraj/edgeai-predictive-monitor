@@ -35,7 +35,19 @@
  * MIC_FFT_BIN_COUNT comment for why the multiplier differs). */
 #define MIC_FFT_BIN_COUNT 512
 #define ACCEL_FFT_BIN_COUNT 512
-#define ACCEL_ODR_HZ 1600 /* KX134 output data rate - see accel_sampler.cpp's KX134_ODCNTL_OSA_1600HZ */
+/* KX134 output data rate. Raised from the original 1600Hz baseline toward
+ * maximizing detectable vibration frequency (Nyquist = ODR/2), but NOT all
+ * the way to the KX134-1211's 25600Hz hardware ceiling: that was tried and
+ * confirmed (2026-07-21 A/B test, live hardware) to stall the SPI/Bridge
+ * telemetry pipeline entirely (frames_ok stuck at 0) - almost certainly
+ * accel_sampler_thread (priority 3, above Bridge's 5) no longer yielding
+ * enough at that rate and starving Bridge, this board's #1 recurring failure
+ * mode (see accel_sampler.cpp's header comment / rpc-transport project notes).
+ * 12800Hz (8x original, Nyquist=6400Hz) is a deliberate step back from that
+ * ceiling to leave headroom - see accel_sampler.cpp's
+ * KX134_ODCNTL_OSA_12800HZ. Revisit lower (or fix the thread-priority root
+ * cause) if this also proves unstable under sustained load. */
+#define ACCEL_ODR_HZ 12800
 
 /* Bridge's 256-byte round-trip ceiling forces both get_*_spectrum views down
  * to an average-pooled bucket count - same value/reasoning in both samplers. */

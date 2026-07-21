@@ -62,16 +62,25 @@
  * in this core either, same as mic_sampler.cpp - re-derived here at
  * ACCEL_FFT_LEN=1024 instead of mic's 2048, not shared code, same reasoning as
  * that file's own comment on why) - mirrors the old repo as closely as the
- * platform allows. One deliberate parameter change: ODR is 1600Hz here
- * (KX134_ODCNTL_OSA_1600HZ), not the old repo's final tuned 12800Hz -
- * that value was arrived at through several rounds of hardware tuning specific
- * to *their* DMA-backed Zephyr spi_ll_stm32.c pipeline (docs/Sensor_Throughput_
- * Tuning_Plan.md in the old repo), which doesn't carry over to this core's
- * ZephyrSPI wrapper (not confirmed DMA-backed here). 1600Hz is that same repo's
- * own original, safe starting point before any of that tuning began - this port
- * prioritizes a correct first bring-up over throughput; revisit once this is
- * confirmed stable, same "measure before assuming" spirit as the old repo's own
- * tuning process.
+ * platform allows. ODR started at 1600Hz for a correct first bring-up
+ * (safe baseline, well below the old repo's DMA-tuned 12800Hz), then an
+ * attempt to raise it to the KX134-1211's absolute 25600Hz ceiling
+ * (KX134_ODCNTL_OSA_25600HZ, to maximize detectable vibration frequency,
+ * Nyquist = ODR/2) was tried and confirmed on live hardware (2026-07-21 A/B
+ * test) to stall the SPI/Bridge telemetry pipeline entirely (MPU-side
+ * frames_ok stuck at 0, never recovering) - most likely
+ * accel_sampler_thread (priority 3, above Bridge's own update thread at
+ * priority 5) no longer yielding often enough at that rate to let Bridge
+ * run, this board's documented #1 recurring failure mode (see
+ * rpc-transport project notes). Reverting to 1600Hz confirmed the pipeline
+ * immediately recovers (frames_ok climbing, ~1.97fps, 0 drops), isolating
+ * the cause to ODR specifically. Now set to 12800Hz
+ * (KX134_ODCNTL_OSA_12800HZ) as a deliberate step back from that ceiling -
+ * 8x the original rate (Nyquist=6400Hz) while leaving headroom below the
+ * point that broke Bridge. Verify accel_fifo_full_count via
+ * get_accel_info()/get_bench_stats and MPU-side frames_ok/fps after any
+ * further increase; drop back toward 1600Hz (or fix the underlying
+ * thread-priority contention) if instability recurs.
  *
  * Bridge exposure, like mic_sampler.cpp, necessarily differs from the old repo
  * (which had none - accel_sampler_thread only ever fed the not-yet-ported
@@ -131,11 +140,13 @@
 #define KX134_CNTL1_GSEL_8G 0x00 /* GSEL1:0 = 00 -> +/-8g, best LSB resolution for general vibration monitoring */
 #define KX134_CNTL1_CONFIG_BITS (KX134_CNTL1_RES | KX134_CNTL1_GSEL_8G)
 
-/* ODCNTL OSA<3:0> - 1600Hz, the old repo's own original/safe baseline (see this
- * file's header comment for why this port doesn't jump straight to that repo's
- * later-tuned 12800Hz). Must match ACCEL_ODR_HZ (app_config.h) - this is the
- * KX134 register bit pattern for that rate, not independently tunable. */
-#define KX134_ODCNTL_OSA_1600HZ 0x0B
+/* ODCNTL OSA<3:0> - 12800Hz. A deliberate step back from the KX134-1211's
+ * 25600Hz hardware ceiling (0x0F), which a live-hardware A/B test
+ * (2026-07-21) confirmed stalls the SPI/Bridge telemetry pipeline entirely -
+ * see this file's header comment. Must match ACCEL_ODR_HZ (app_config.h) -
+ * this is the KX134 register bit pattern for that rate, not independently
+ * tunable. */
+#define KX134_ODCNTL_OSA_12800HZ 0x0E
 
 #define KX134_INC1_IEN1 (1 << 5) /* physical INT1 pin enabled */
 #define KX134_INC1_IEA1 (1 << 4) /* INT1 active HIGH */
@@ -157,7 +168,7 @@
 #define KX134_FIFO_MAX_FRAMES 86 /* TRM: 86 sets of 16-bit samples is the hardware buffer's cap */
 #define KX134_FIFO_BYTES_PER_FRAME 6 /* X_L,X_H,Y_L,Y_H,Z_L,Z_H per frame */
 
-#define ACCEL_READ_TIMEOUT_MS 1000 /* generous vs. one frame every ~0.625ms at 1600Hz ODR */
+#define ACCEL_READ_TIMEOUT_MS 1000 /* generous vs. one frame every ~78us at 12800Hz ODR */
 
 /* Signaled by accel_int1_isr() on every INT1/BFI pulse, taken by
  * accel_read_block() - capped at 1 (not a counting queue), same "only whether a
@@ -613,7 +624,7 @@ void accel_sampler_start(void) {
   /* Standby (PC1=0) before touching any other register - required by the TRM
    * for CNTL1/ODCNTL/INC1/INC4 writes, same as the old repo's hal_accel_init(). */
   kx134_write_reg(KX134_REG_CNTL1, 0x00);
-  kx134_write_reg(KX134_REG_ODCNTL, KX134_ODCNTL_OSA_1600HZ);
+  kx134_write_reg(KX134_REG_ODCNTL, KX134_ODCNTL_OSA_12800HZ);
   kx134_write_reg(KX134_REG_INC1, KX134_INC1_CONFIG);
   kx134_write_reg(KX134_REG_INC4, KX134_INC4_CONFIG);
   kx134_write_reg(KX134_REG_CNTL1, KX134_CNTL1_CONFIG_BITS); /* RES/GSEL set, PC1 still 0 */
