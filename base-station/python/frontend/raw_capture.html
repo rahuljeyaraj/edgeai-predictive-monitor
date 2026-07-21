@@ -24,6 +24,10 @@
         <label for="capture-label">Label</label>
         <input id="capture-label" type="text" placeholder="e.g. healthy, imbalance" autocomplete="off">
       </div>
+      <div class="capture-toolbar__label">
+        <label for="capture-duration">Auto-stop (s)</label>
+        <input id="capture-duration" type="number" min="1" step="1" placeholder="e.g. 60" autocomplete="off">
+      </div>
       <button id="capture-start" class="btn-primary">Start</button>
       <button id="capture-stop" class="btn-primary btn-primary--stop" disabled>Stop</button>
       <div class="capture-toolbar__status">

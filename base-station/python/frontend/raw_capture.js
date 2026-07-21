@@ -295,6 +295,7 @@
   // ---------------------------------------------------------------------
 
   const labelInput = document.getElementById("capture-label");
+  const durationInput = document.getElementById("capture-duration");
   const startBtn = document.getElementById("capture-start");
   const stopBtn = document.getElementById("capture-stop");
   const dotEl = document.getElementById("capture-dot");
@@ -304,6 +305,11 @@
   let localStartedAt = null;
   let tickHandle = null;
   let wasRecording = false;
+  let autoStopHandle = null;
+
+  function clearAutoStop() {
+    if (autoStopHandle) { clearTimeout(autoStopHandle); autoStopHandle = null; }
+  }
 
   function renderCounts(counts) {
     const parts = Object.entries(counts).map(([name, n]) => `${name}: ${n}`);
@@ -314,6 +320,7 @@
     startBtn.disabled = status.recording;
     stopBtn.disabled = !status.recording;
     labelInput.disabled = status.recording;
+    durationInput.disabled = status.recording;
     dotEl.classList.toggle("capture-dot--active", status.recording);
     renderCounts(status.counts || {});
 
@@ -325,9 +332,11 @@
       if (localStartedAt === null) localStartedAt = Date.now() - (status.elapsed_s || 0) * 1000;
       if (!tickHandle) tickHandle = setInterval(tickElapsed, 1000);
       tickElapsed();
+      if (!wasRecording) scheduleAutoStop(status.elapsed_s || 0);
     } else {
       localStartedAt = null;
       if (tickHandle) { clearInterval(tickHandle); tickHandle = null; }
+      clearAutoStop();
       statusTextEl.textContent = "Idle";
     }
     wasRecording = status.recording;
@@ -337,6 +346,26 @@
     if (localStartedAt === null) return;
     const elapsed = Math.floor((Date.now() - localStartedAt) / 1000);
     statusTextEl.textContent = `Recording "${labelInput.value.trim()}" -- ${elapsed}s`;
+  }
+
+  // Auto-stop: purely a client-side timer that calls the same stopCapture()
+  // a manual click would -- the server has no notion of a duration limit.
+  // `alreadyElapsed` accounts for a page reload mid-recording (status carries
+  // elapsed_s), so the remaining time is duration - alreadyElapsed, not the
+  // full duration again.
+  function scheduleAutoStop(alreadyElapsed) {
+    clearAutoStop();
+    const duration = parseFloat(durationInput.value);
+    if (!duration || duration <= 0) return;
+    const remaining = duration - alreadyElapsed;
+    if (remaining <= 0) {
+      stopCapture();
+      return;
+    }
+    autoStopHandle = setTimeout(() => {
+      autoStopHandle = null;
+      stopCapture();
+    }, remaining * 1000);
   }
 
   async function startCapture() {
