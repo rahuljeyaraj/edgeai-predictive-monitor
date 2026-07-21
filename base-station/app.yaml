@@ -9,7 +9,7 @@ icon: 📳
 
 # A list of network ports that the application exposes.
 # Example: [80, 443]
-ports: [8080]
+ports: [8080, 8081]
 
 # A list of bricks used by this application.
 # TODO(Telegram alerts, docs/DASHBOARD_IDEAS_BACKLOG.md): once App Lab is
