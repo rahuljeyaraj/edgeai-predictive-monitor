@@ -742,8 +742,17 @@ body {
   cursor: pointer;
 }
 
-.btn-primary:hover {
+.btn-primary:hover:not(:disabled) {
   filter: brightness(1.08);
+}
+
+.btn-primary:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.btn-primary--stop {
+  background-color: var(--color-fault);
 }
 
 .btn-text {
@@ -826,4 +835,82 @@ body {
   font-size: 12px;
   color: #cbd5e1;
   cursor: pointer;
+}
+
+/* ---- tools/raw_capture_server.py's raw_capture.html -- standalone page,
+   not a tab in index.html's switcher (only makes sense while the firmware
+   is in FUSER_RAW_CAPTURE_MODE, an exclusive alternative to the normal
+   live dashboard). Reuses .perf-card/.perf-charts/.chart-plotly from the
+   Performance page for the same card+grid layout. ---- */
+
+.capture-page {
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.capture-toolbar {
+  flex-direction: row;
+  align-items: center;
+  gap: 20px;
+  flex-wrap: wrap;
+}
+
+.capture-toolbar__label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.capture-toolbar__label label {
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 11px;
+  color: #94a3b8;
+}
+
+.capture-toolbar__label input {
+  font: inherit;
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 13px;
+  color: #e2e8f0;
+  background-color: #0f172a;
+  border: 1px solid #334155;
+  border-radius: 6px;
+  padding: 7px 10px;
+  min-width: 180px;
+}
+
+.capture-toolbar__label input:disabled {
+  opacity: 0.6;
+}
+
+.capture-toolbar__status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 13px;
+  color: #e2e8f0;
+}
+
+.capture-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background-color: #4d4d4d;
+  flex-shrink: 0;
+}
+
+.capture-dot--active {
+  background-color: var(--color-fault);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--color-fault) 25%, transparent);
+}
+
+.capture-counts {
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 12px;
+  color: #64748b;
+  white-space: nowrap;
+  overflow-x: auto;
 }

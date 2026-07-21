@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>EdgeAI Raw Capture</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="topbar">
+    <h1 class="topbar__title">
+      <svg class="topbar__logo" viewBox="0 0 220 66" role="img" aria-label="EdgeAI Predictive Monitor logo">
+        <text x="0" y="34" font-family="Arial, sans-serif" font-size="30" font-weight="800" letter-spacing="0.3">
+          <tspan fill="#f8fafc">Edge</tspan><tspan fill="#22d3ee">AI</tspan>
+        </text>
+        <text x="1" y="52" font-family="Arial, sans-serif" font-size="11" font-weight="500" letter-spacing="1.5" fill="#94a3b8">RAW CAPTURE</text>
+      </svg>
+    </h1>
+  </header>
+
+  <section class="capture-page" aria-label="Raw capture">
+    <div class="capture-toolbar perf-card">
+      <div class="capture-toolbar__label">
+        <label for="capture-label">Label</label>
+        <input id="capture-label" type="text" placeholder="e.g. healthy, imbalance" autocomplete="off">
+      </div>
+      <button id="capture-start" class="btn-primary">Start</button>
+      <button id="capture-stop" class="btn-primary btn-primary--stop" disabled>Stop</button>
+      <div class="capture-toolbar__status">
+        <span id="capture-dot" class="capture-dot"></span>
+        <span id="capture-status-text">Idle</span>
+      </div>
+      <div id="capture-counts" class="capture-counts"></div>
+    </div>
+
+    <div class="perf-charts">
+      <div class="perf-card">
+        <div class="perf-chart__top"><span class="perf-chart__label">Accel spectrum (x/y/z)</span></div>
+        <div id="chart-accel-spectrum" class="chart-plotly"></div>
+      </div>
+      <div class="perf-card">
+        <div class="perf-chart__top"><span class="perf-chart__label">Mic spectrum</span></div>
+        <div id="chart-mic-spectrum" class="chart-plotly"></div>
+      </div>
+    </div>
+
+    <div class="perf-card">
+      <div class="perf-chart__top"><span class="perf-chart__label">Raw time-domain</span></div>
+      <div class="perf-charts">
+        <div id="chart-raw-accel" class="chart-plotly"></div>
+        <div id="chart-raw-mic" class="chart-plotly"></div>
+      </div>
+    </div>
+
+    <div class="perf-charts">
+      <div class="perf-card">
+        <div class="perf-chart__top"><span class="perf-chart__label">RMS (x/y/z)</span></div>
+        <div id="chart-rms" class="chart-plotly"></div>
+      </div>
+      <div class="perf-card">
+        <div class="perf-chart__top"><span class="perf-chart__label">Kurtosis (x/y/z)</span></div>
+        <div id="chart-kurtosis" class="chart-plotly"></div>
+      </div>
+    </div>
+  </section>
+
+  <script src="vendor/plotly-cartesian.min.js"></script>
+  <script src="raw_capture.js"></script>
+</body>
+</html>

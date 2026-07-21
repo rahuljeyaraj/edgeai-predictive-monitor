@@ -247,7 +247,13 @@ def standardize_scalars(vectors: np.ndarray, spectral_dim: int, mu, sigma) -> np
 # Train + score one config
 # ---------------------------------------------------------------------------
 
-def run_config(by_label, cfg: FeatureConfig, healthy_label, epochs, seed):
+def run_config(by_label, cfg: FeatureConfig, healthy_labels, epochs, seed):
+    """healthy_labels: sequence of label names to pool for training + the
+    baseline mu/sigma -- lets e.g. healthy_noload + healthy_load be trained
+    on together (mirrors commissioning.py just taking whatever "running,
+    healthy" data arrives) while every label, including each healthy
+    sub-label, still gets its own row in scores_by_label so you can see
+    whether one condition alone drifts away from the pooled baseline."""
     vectors_by_label = {}
     spectral_dim = None
     for label, runs in by_label.items():
@@ -257,12 +263,13 @@ def run_config(by_label, cfg: FeatureConfig, healthy_label, epochs, seed):
         spectral_dim = dim
         vectors_by_label[label] = vectors
 
-    if healthy_label not in vectors_by_label:
-        raise SystemExit(f"no usable windows for healthy label {healthy_label!r} "
+    missing = [l for l in healthy_labels if l not in vectors_by_label]
+    if missing:
+        raise SystemExit(f"no usable windows for healthy label(s) {missing!r} "
                           f"under config ({cfg}) -- available labels: "
                           f"{sorted(vectors_by_label)}")
 
-    healthy_raw = vectors_by_label[healthy_label]
+    healthy_raw = np.concatenate([vectors_by_label[l] for l in healthy_labels], axis=0)
     if cfg.scalars:
         tail = healthy_raw[:, spectral_dim:]
         mu, sigma = tail.mean(axis=0), tail.std(axis=0)
@@ -275,9 +282,10 @@ def run_config(by_label, cfg: FeatureConfig, healthy_label, epochs, seed):
                           if cfg.scalars else vectors)
 
     torch.manual_seed(seed)
-    input_dim = scaled[healthy_label].shape[1]
+    healthy_scaled = np.concatenate([scaled[l] for l in healthy_labels], axis=0)
+    input_dim = healthy_scaled.shape[1]
     model = build_autoencoder(input_dim)
-    healthy_vectors = [tuple(row) for row in scaled[healthy_label]]
+    healthy_vectors = [tuple(row) for row in healthy_scaled]
     train_autoencoder(model, healthy_vectors, epochs=epochs)
 
     scores_by_label = {
@@ -287,10 +295,10 @@ def run_config(by_label, cfg: FeatureConfig, healthy_label, epochs, seed):
     return scores_by_label, input_dim
 
 
-def summarize(scores_by_label, healthy_label):
-    healthy_scores = scores_by_label[healthy_label]
+def summarize(scores_by_label, healthy_labels):
+    healthy_scores = [s for l in healthy_labels for s in scores_by_label[l]]
     mu = statistics.fmean(healthy_scores)
-    sigma = statistics.pstdev(healthy_scores)  # population: this batch IS the baseline
+    sigma = statistics.pstdev(healthy_scores)  # population: this pooled batch IS the baseline
 
     per_label = {}
     for label, scores in scores_by_label.items():
@@ -302,7 +310,11 @@ def summarize(scores_by_label, healthy_label):
             "min": min(scores), "max": max(scores), "sigmas_above_healthy": sigmas_above,
         }
 
-    fault_labels = [l for l in per_label if l != healthy_label]
+    # Anything not folded into the training pool is a "fault" for ranking
+    # purposes -- so an un-pooled healthy sub-label (e.g. healthy_load left
+    # out of --healthy-label) would otherwise get scored as if it were a
+    # fault. Exclude the whole healthy set, not just one label.
+    fault_labels = [l for l in per_label if l not in healthy_labels]
     worst_sigma = (min(per_label[l]["sigmas_above_healthy"] for l in fault_labels)
                    if fault_labels else None)
     return {"healthy_mu": mu, "healthy_sigma": sigma, "per_label": per_label,
@@ -376,11 +388,12 @@ def save_diagnostic_plot(path, by_label, cfg: FeatureConfig, scores_by_label, su
     plt.close(fig)
 
 
-def print_report(cfg, input_dim, summary, healthy_label):
+def print_report(cfg, input_dim, summary, healthy_labels):
     print(f"\n=== {cfg}  (input_dim={input_dim}) ===")
-    print(f"healthy baseline: mu={summary['healthy_mu']:.6g} sigma={summary['healthy_sigma']:.3g}")
+    print(f"healthy baseline (pooled: {', '.join(healthy_labels)}): "
+          f"mu={summary['healthy_mu']:.6g} sigma={summary['healthy_sigma']:.3g}")
     for label, s in sorted(summary["per_label"].items()):
-        marker = " (healthy)" if label == healthy_label else \
+        marker = " (healthy)" if label in healthy_labels else \
             f"  {s['sigmas_above_healthy']:+.1f}sigma"
         print(f"  {label:<16} n={s['n']:<4} mean={s['mean']:.6g} std={s['std']:.3g} "
               f"range=[{s['min']:.6g}, {s['max']:.6g}]{marker}")
@@ -416,8 +429,13 @@ def main():
                          help="directory of raw_capture.py .npz files (adb-pulled), "
                               f"default: {os.path.relpath(_DEFAULT_CAPTURES_DIR, _HERE)} "
                               "(base-station/captures/, alongside pull_captures.sh)")
-    parser.add_argument("--healthy-label", default="healthy",
-                         help="label whose windows train the autoencoder (default: healthy)")
+    parser.add_argument("--healthy-label", nargs="+", default=["healthy"],
+                         help="label(s) whose windows train the autoencoder, pooled "
+                              "together for training + the baseline mu/sigma (default: "
+                              "healthy). Pass multiple to pool sub-conditions, e.g. "
+                              "--healthy-label healthy_noload healthy_load -- each is "
+                              "still reported as its own row so you can see whether one "
+                              "condition alone drifts from the pooled baseline")
     parser.add_argument("--axis-mode", choices=("summed", "separate", "none"), default="summed",
                          help="accel 3-axis fusion: bin-sum (current firmware behavior), "
                               "keep axes as separate concatenated blocks, or 'none' to "
