@@ -129,11 +129,24 @@ def wire_local_status_led(registry: Registry) -> None:
         if node_id != BASE_STATION_NODE_ID:
             return
         led = color_for(status)
-        try:
-            with BRIDGE_LOCK:
-                Bridge.call("set_rgb", f"{led.rgb.lstrip('#')},{LED_MODE_TO_INT[led.mode]},{led.period_ms}")
-        except Exception:
-            logger.exception("failed to push local status LED for %r", node_id)
+
+        def push() -> None:
+            try:
+                with BRIDGE_LOCK:
+                    Bridge.call("set_rgb", f"{led.rgb.lstrip('#')},{LED_MODE_TO_INT[led.mode]},{led.period_ms}")
+            except Exception:
+                logger.exception("failed to push local status LED for %r", node_id)
+
+        # Off the frame-ingestion thread, same reason telegram_alerts.py's
+        # on_status_change backgrounds its send(): this fires from inside
+        # PipelineManager.route()'s per-node lock, on whichever thread
+        # routed the triggering frame (spi_reader's SPI-consumer thread, or
+        # the MQTT client thread for a satellite node). Bridge.call blocks
+        # on BRIDGE_LOCK -- the same lock the SPI-consumer thread grabs on
+        # every single frame pull -- so a synchronous call here would stall
+        # ingestion (and every dashboard broadcast) fleet-wide, not just
+        # for this node, until it clears.
+        threading.Thread(target=push, daemon=True).start()
 
     registry.on_status_change(on_status_change)
 
@@ -167,18 +180,26 @@ def wire_local_matrix_text(registry: Registry) -> None:
 
     def on_status_change(node_id: str, status) -> None:
         text = fleet_status_text(registry.list().values())
-        try:
-            with BRIDGE_LOCK:
-                # Scroll speed first, then text: set_matrix_text resets the
-                # scroll position (and any new text restarts the scroll), so
-                # the speed must already be in effect when the text lands --
-                # the same ordering display_matrix_test.py relies on. Both
-                # args go over the wire as strings; integer RPC params fail
-                # Arduino_RPClite's type-check (see matrix_display.cpp).
-                Bridge.call("set_matrix_scroll_speed", str(MATRIX_SCROLL_SPEED_MS))
-                Bridge.call("set_matrix_text", text)
-        except Exception:
-            logger.exception("failed to push fleet status to LED matrix")
+
+        def push() -> None:
+            try:
+                with BRIDGE_LOCK:
+                    # Scroll speed first, then text: set_matrix_text resets
+                    # the scroll position (and any new text restarts the
+                    # scroll), so the speed must already be in effect when
+                    # the text lands -- the same ordering
+                    # display_matrix_test.py relies on. Both args go over
+                    # the wire as strings; integer RPC params fail
+                    # Arduino_RPClite's type-check (see matrix_display.cpp).
+                    Bridge.call("set_matrix_scroll_speed", str(MATRIX_SCROLL_SPEED_MS))
+                    Bridge.call("set_matrix_text", text)
+            except Exception:
+                logger.exception("failed to push fleet status to LED matrix")
+
+        # See wire_local_status_led's comment above: this fires on the
+        # frame-ingestion thread (for every node's status change, not just
+        # the base station's own) and must never block it on BRIDGE_LOCK.
+        threading.Thread(target=push, daemon=True).start()
 
     registry.on_status_change(on_status_change)
 
