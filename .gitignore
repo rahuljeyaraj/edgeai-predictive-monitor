@@ -10,6 +10,9 @@ venv/
 build/
 .west/
 
+# PlatformIO build artifacts (satellite/)
+.pio/
+
 # Arduino App Lab / CLI local cache
 .arduino-app-cli/
 
