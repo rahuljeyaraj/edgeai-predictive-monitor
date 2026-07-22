@@ -224,6 +224,7 @@ const Charts = (() => {
         anomalySeeded: false,
         anomalyLive: true, // false once the user drags the rangeslider away from the live tail
         anomalyPinnedRange: null, // [x0, x1] the user scrubbed to, while anomalyLive is false
+        anomalyWindowSeconds: ANOMALY_WINDOW_SECONDS, // live-tail width; user-adjustable via the rangeslider
 
         tilesEl: null,
         anomalyEl: null, anomalyMounted: false,
@@ -437,26 +438,50 @@ const Charts = (() => {
     };
   }
 
-  // [x0, x1] for the live tail: fixed ANOMALY_WINDOW_SECONDS width anchored
-  // to the newest point (or "now" pre-first-point), never to the buffer's
-  // actual min/max. That's what makes the window a constant size from the
-  // very first point instead of growing until ANOMALY_MAX_POINTS fills up
-  // (the old autorange-driven "compresses, then suddenly snaps into a
-  // moving window" behavior).
+  // [x0, x1] for the live tail: node.anomalyWindowSeconds wide (starts at
+  // ANOMALY_WINDOW_SECONDS, but the user can narrow/widen it -- see
+  // onAnomalyRelayout below) anchored to the newest point (or "now"
+  // pre-first-point), never to the buffer's actual min/max. That's what
+  // makes the window a constant size from the very first point instead of
+  // growing until ANOMALY_MAX_POINTS fills up (the old autorange-driven
+  // "compresses, then suddenly snaps into a moving window" behavior).
   function anomalyLiveRange(node) {
     const n = node.anomaly.length;
     const latestT = n ? node.anomaly[n - 1].t : Date.now() / 1000;
-    return [new Date((latestT - ANOMALY_WINDOW_SECONDS) * 1000), new Date(latestT * 1000)];
+    return [new Date((latestT - node.anomalyWindowSeconds) * 1000), new Date(latestT * 1000)];
   }
 
   // Fired on every rangeslider drag (registered once at mount, see
-  // attachExpanded). Dragging away from the live edge pins the view there
-  // (node.anomalyLive = false) so the next redraw doesn't yank it back to
-  // the live tail out from under the user; dragging back within
-  // ANOMALY_LIVE_SNAP_TOLERANCE_SECONDS of "now" resumes live-follow.
+  // attachExpanded). "Live" means the right edge is still at/near "now" --
+  // dragging the *left* handle alone (narrowing/widening the window while
+  // still tracking the tail, e.g. "zoom into just the new part") stays live
+  // but adopts the user's new width via node.anomalyWindowSeconds, instead
+  // of every flush() tick reverting it to the ANOMALY_WINDOW_SECONDS default
+  // just because the right edge still reads as "live" (that conflation --
+  // "right edge is live" treated as "so the old fixed default width must be
+  // what's wanted" -- was the actual bug: a left-handle-only drag kept
+  // re-qualifying as live on every intermediate relayout event during the
+  // drag, so the custom width it carried was thrown away on the very next
+  // redraw). Dragging the right handle away from "now" (or both handles)
+  // pins the view exactly where dropped (node.anomalyLive = false) until
+  // the user drags back within ANOMALY_LIVE_SNAP_TOLERANCE_SECONDS of "now"
+  // or clicks the LIVE pill.
+  //
+  // A rangeslider drag emits a single `"xaxis.range": [x0, x1]` array key,
+  // NOT the `"xaxis.range[0]"`/`"xaxis.range[1]"` bracket-indexed pair a
+  // main-plot zoom-box drag or a programmatic Plotly.relayout() call uses
+  // -- confirmed against a real rangeslider drag, not assumed. Handling
+  // only the bracket form here silently never matched a real drag, so
+  // anomalyLive never flipped and every drag got overwritten by the next
+  // live-range redraw within one flush() tick.
   function onAnomalyRelayout(nodeId, node, ev) {
-    const x0 = ev["xaxis.range[0]"];
-    const x1 = ev["xaxis.range[1]"];
+    let x0, x1;
+    if (Array.isArray(ev["xaxis.range"])) {
+      [x0, x1] = ev["xaxis.range"];
+    } else {
+      x0 = ev["xaxis.range[0]"];
+      x1 = ev["xaxis.range[1]"];
+    }
     if (x0 === undefined || x1 === undefined) return;
     const n = node.anomaly.length;
     const latestMs = n ? node.anomaly[n - 1].t * 1000 : Date.now();
@@ -464,6 +489,8 @@ const Charts = (() => {
     if (Math.abs(latestMs - rightEdgeMs) <= ANOMALY_LIVE_SNAP_TOLERANCE_SECONDS * 1000) {
       node.anomalyLive = true;
       node.anomalyPinnedRange = null;
+      const widthSeconds = (rightEdgeMs - new Date(x0).getTime()) / 1000;
+      if (widthSeconds > 0) node.anomalyWindowSeconds = widthSeconds;
     } else {
       node.anomalyLive = false;
       node.anomalyPinnedRange = [x0, x1];
