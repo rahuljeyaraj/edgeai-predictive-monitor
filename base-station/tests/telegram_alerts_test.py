@@ -162,7 +162,7 @@ def test_warning_and_fault_alert_matching_subscribers(tmp_dir):
     alert_store.add_subscriber(chat_id=2, user_id=2, first_name="FaultOnly")
     alert_store.update_prefs(2, fault_only=True)
 
-    registry.add("node-1", sensor_config=frozenset({SensorChannel.ACCEL}))
+    registry.add("node-1", sensor_config=frozenset({SensorChannel.MIC}))
     registry.start_commissioning("node-1")
     registry.stop_collecting("node-1")
     registry.complete_commissioning("node-1", model_path="unused.pt")  # -> HEALTHY
@@ -186,7 +186,7 @@ def test_node_scope_filters_alerts(tmp_dir):
     alert_store.add_subscriber(chat_id=1, user_id=1, first_name="Node1Only")
     alert_store.update_prefs(1, fault_only=False, node_ids=["node-1"])
 
-    registry.add("node-2", sensor_config=frozenset({SensorChannel.ACCEL}))
+    registry.add("node-2", sensor_config=frozenset({SensorChannel.MIC}))
     registry.start_commissioning("node-2")
     registry.stop_collecting("node-2")
     registry.complete_commissioning("node-2", model_path="unused.pt")
@@ -204,7 +204,7 @@ def test_recovery_to_healthy_sends_all_clear(tmp_dir):
     wire_telegram_alerts(registry, bot, alert_store)
     alert_store.add_subscriber(chat_id=1, user_id=1, first_name="Both")
 
-    registry.add("node-1", sensor_config=frozenset({SensorChannel.ACCEL}))
+    registry.add("node-1", sensor_config=frozenset({SensorChannel.MIC}))
     registry.start_commissioning("node-1")
     registry.stop_collecting("node-1")
     registry.complete_commissioning("node-1", model_path="unused.pt")  # HEALTHY, no alert expected
@@ -226,7 +226,7 @@ def test_no_alert_on_initial_commissioning_to_healthy(tmp_dir):
     wire_telegram_alerts(registry, bot, alert_store)
     alert_store.add_subscriber(chat_id=1, user_id=1, first_name="Both")
 
-    registry.add("node-1", sensor_config=frozenset({SensorChannel.ACCEL}))
+    registry.add("node-1", sensor_config=frozenset({SensorChannel.MIC}))
     registry.start_commissioning("node-1")
     registry.stop_collecting("node-1")
     registry.complete_commissioning("node-1", model_path="unused.pt")  # UNCOMMISSIONED-ish -> HEALTHY

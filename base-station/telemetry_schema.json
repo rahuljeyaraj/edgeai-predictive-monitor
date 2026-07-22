@@ -49,6 +49,34 @@
     "crest_factor": 3,
     "peak": 4,
     "std": 5,
-    "skewness": 6
+    "skewness": 6,
+
+    "rms_x": 7,
+    "kurtosis_x": 8,
+    "std_x": 9,
+    "peak_x": 10,
+    "crest_factor_x": 11,
+    "skewness_x": 12,
+
+    "rms_y": 13,
+    "kurtosis_y": 14,
+    "std_y": 15,
+    "peak_y": 16,
+    "crest_factor_y": 17,
+    "skewness_y": 18,
+
+    "rms_z": 19,
+    "kurtosis_z": 20,
+    "std_z": 21,
+    "peak_z": 22,
+    "crest_factor_z": 23,
+    "skewness_z": 24,
+
+    "rms_mic": 25,
+    "kurtosis_mic": 26,
+    "std_mic": 27,
+    "peak_mic": 28,
+    "crest_factor_mic": 29,
+    "skewness_mic": 30
   }
 }

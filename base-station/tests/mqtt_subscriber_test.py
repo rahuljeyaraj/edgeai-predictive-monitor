@@ -47,45 +47,51 @@ TOPIC = "epm/a4cf12/data"
 _SAT = schema.SOURCE_ID["satellite"]
 
 
-def spectrum_message(mic=None, accel=None) -> bytes:
+def spectrum_message(mic=None, accel=None, accel_x=None) -> bytes:
     """The raw section-list telemetry frame that is now the MQTT data-topic
-    message body -- one SPECTRUM section per present channel, no envelope."""
+    message body -- one SPECTRUM section per present channel, no envelope.
+    `accel` is the old combined channel (still a valid wire channel, no
+    longer a SensorChannel -- see test_per_axis_accel_channels_land_in_display_bins_not_bins);
+    `accel_x` stands in for a model-facing per-axis channel."""
     sections = []
     if mic is not None:
         sections.append((schema.CHANNEL_ID_BY_NAME["mic"], mic.fs, mic.fft_size, mic.bins))
     if accel is not None:
         sections.append((schema.CHANNEL_ID_BY_NAME["accel"], accel.fs, accel.fft_size, accel.bins))
+    if accel_x is not None:
+        sections.append(
+            (schema.CHANNEL_ID_BY_NAME["accel_x"], accel_x.fs, accel_x.fft_size, accel_x.bins))
     return encode_spectrum_frame(_SAT, sections)
 
 
 def test_valid_spectrum_message_decodes_dense_bins():
-    accel = ChannelSpectrum(fs=4000.0, fft_size=256, bins=tuple(float(i) for i in range(128)))
-    frame = normalize_spectrum_message(TOPIC, spectrum_message(accel=accel), timestamp=200.0)
+    accel_x = ChannelSpectrum(fs=4000.0, fft_size=256, bins=tuple(float(i) for i in range(128)))
+    frame = normalize_spectrum_message(TOPIC, spectrum_message(accel_x=accel_x), timestamp=200.0)
     assert frame is not None
     assert frame.node_id == "a4cf12", frame.node_id
     assert frame.source == FrameSource.MQTT, frame.source
     assert frame.timestamp == 200.0, frame.timestamp
     assert "mic" not in frame.bins, frame.bins
-    assert frame.bins["accel"] == accel.bins, frame.bins["accel"]
-    print("valid SPECTRUM message decodes into exact dense accel_bins: PASS")
+    assert frame.bins["accel_x"] == accel_x.bins, frame.bins["accel_x"]
+    print("valid SPECTRUM message decodes into exact dense accel_x bins: PASS")
 
 
 def test_fused_channels_message_reconstructs_both_channels():
     mic = ChannelSpectrum(fs=16000.0, fft_size=512, bins=tuple(float(i) * 0.5 for i in range(256)))
-    accel = ChannelSpectrum(fs=4000.0, fft_size=256, bins=tuple(float(i) for i in range(128)))
-    frame = normalize_spectrum_message(TOPIC, spectrum_message(mic=mic, accel=accel))
+    accel_x = ChannelSpectrum(fs=4000.0, fft_size=256, bins=tuple(float(i) for i in range(128)))
+    frame = normalize_spectrum_message(TOPIC, spectrum_message(mic=mic, accel_x=accel_x))
     assert frame is not None
-    assert set(frame.bins.keys()) == {"accel", "mic"}, frame.bins.keys()
-    assert frame.bins["accel"] == accel.bins, frame.bins["accel"]
+    assert set(frame.bins.keys()) == {"accel_x", "mic"}, frame.bins.keys()
+    assert frame.bins["accel_x"] == accel_x.bins, frame.bins["accel_x"]
     assert frame.bins["mic"] == mic.bins, frame.bins["mic"]
-    print("fused channels payload decodes both accel and mic bins: PASS")
+    print("fused channels payload decodes both accel_x and mic bins: PASS")
 
 
 def test_absent_channel_omitted_from_frame_bins():
-    accel = ChannelSpectrum(fs=4000.0, fft_size=256, bins=tuple(float(i) for i in range(128)))
-    frame = normalize_spectrum_message(TOPIC, spectrum_message(mic=None, accel=accel))
+    accel_x = ChannelSpectrum(fs=4000.0, fft_size=256, bins=tuple(float(i) for i in range(128)))
+    frame = normalize_spectrum_message(TOPIC, spectrum_message(mic=None, accel_x=accel_x))
     assert frame is not None
-    assert set(frame.bins.keys()) == {"accel"}, frame.bins.keys()
+    assert set(frame.bins.keys()) == {"accel_x"}, frame.bins.keys()
     print("channel with no section is absent from frame.bins: PASS")
 
 
@@ -108,14 +114,19 @@ def test_scalar_only_frame_is_skipped():
     print("scalar-only (no spectrum) frame returns None (normal skip): PASS")
 
 
-def test_per_axis_accel_channels_land_in_display_bins_not_bins():
-    """Regression test: per-axis accel_x/y/z spectra
-    (docs/CHART_CLUTTER_PLAN.md S1) aren't a SensorChannel, so they must
-    land in display_bins, NOT bins -- mixing them into bins broke
-    manager.py's _infer_sensor_config() (SensorChannel('accel_x') raises)
-    the first time this was tried against real hardware."""
+def test_combined_accel_channel_lands_in_display_bins_not_bins():
+    """Regression test, inverted from its original form: per-axis
+    accel_x/y/z spectra are now SensorChannel members (the fault-detection
+    model's per-axis feature vector, docs/SENSOR_TELEMETRY_FRAME_PLAN.md),
+    while the OLD combined `accel` channel -- still written to the wire by
+    fuser.cpp for whatever else might read it -- is no longer one, so it
+    must land in display_bins, NOT bins. Mixing a non-SensorChannel wire
+    key into bins broke manager.py's _infer_sensor_config() (SensorChannel(name)
+    raises) the first time an unmapped channel was tried against real
+    hardware; this confirms the split still holds now that the roles have
+    flipped."""
     accel = ChannelSpectrum(fs=4000.0, fft_size=1024, bins=tuple(float(i) for i in range(512)))
-    axis = ChannelSpectrum(fs=4000.0, fft_size=1024, bins=tuple(float(i) * 2 for i in range(512)))
+    axis = ChannelSpectrum(fs=4000.0, fft_size=256, bins=tuple(float(i) * 2 for i in range(128)))
     payload = encode_spectrum_frame(_SAT, [
         (schema.CHANNEL_ID_BY_NAME["accel"], accel.fs, accel.fft_size, accel.bins),
         (schema.CHANNEL_ID_BY_NAME["accel_x"], axis.fs, axis.fft_size, axis.bins),
@@ -124,11 +135,11 @@ def test_per_axis_accel_channels_land_in_display_bins_not_bins():
     ])
     frame = normalize_spectrum_message(TOPIC, payload)
     assert frame is not None
-    assert set(frame.bins.keys()) == {"accel"}, frame.bins.keys()
-    assert set(frame.display_bins.keys()) == {"accel_x", "accel_y", "accel_z"}, \
-        frame.display_bins.keys()
-    assert frame.display_bins["accel_x"] == axis.bins, frame.display_bins["accel_x"]
-    print("per-axis accel_x/y/z land in display_bins, model-facing bins only has accel: PASS")
+    assert set(frame.bins.keys()) == {"accel_x", "accel_y", "accel_z"}, frame.bins.keys()
+    assert set(frame.display_bins.keys()) == {"accel"}, frame.display_bins.keys()
+    assert frame.bins["accel_x"] == axis.bins, frame.bins["accel_x"]
+    assert frame.display_bins["accel"] == accel.bins, frame.display_bins["accel"]
+    print("combined accel lands in display_bins, model-facing bins has accel_x/y/z: PASS")
 
 
 def test_scalars_and_time_series_resolve_to_names():
@@ -200,13 +211,11 @@ def test_subscriber_routes_to_pipeline_manager_like_spi():
     subscriber._on_frame = manager.route
     subscriber._dropped = 0
 
-    # fft_size=1024 -> 512 bins, matching the registry's fixed ACCEL-only
-    # input_dim so the new ingest-time frame-length check (manager.py)
-    # passes -- this is the satellite fft_size convention that
-    # the satellite firmware convention.
-    accel = ChannelSpectrum(fs=4000.0, fft_size=1024, bins=tuple(0.0 for _ in range(512)))
+    # fft_size=256 -> 128 bins, matching the registry's per-channel spectral
+    # dim so the ingest-time frame-length check (manager.py) passes.
+    accel_x = ChannelSpectrum(fs=4000.0, fft_size=256, bins=tuple(0.0 for _ in range(128)))
     valid_msg = mqtt.MQTTMessage(mid=0, topic=TOPIC.encode())
-    valid_msg.payload = spectrum_message(accel=accel)
+    valid_msg.payload = spectrum_message(accel_x=accel_x)
     subscriber._handle_message(None, None, valid_msg)
 
     malformed_msg = mqtt.MQTTMessage(mid=0, topic=TOPIC.encode())
@@ -226,9 +235,9 @@ def test_subscriber_routes_to_pipeline_manager_like_spi():
     print("SPECTRUM message routed to its own pipeline via PipelineManager.route: PASS")
 
     entry = registry.get("a4cf12")
-    assert entry.sensor_config == frozenset({SensorChannel.ACCEL}), entry.sensor_config
-    assert entry.input_dim == 512, entry.input_dim
-    print("registry auto-gained entry for satellite node, sensor_config=ACCEL: PASS")
+    assert entry.sensor_config == frozenset({SensorChannel.ACCEL_X}), entry.sensor_config
+    assert entry.input_dim == 134, entry.input_dim
+    print("registry auto-gained entry for satellite node, sensor_config=ACCEL_X: PASS")
 
 
 def main():
@@ -237,7 +246,7 @@ def main():
     test_absent_channel_omitted_from_frame_bins()
     test_empty_frame_is_skipped()
     test_scalar_only_frame_is_skipped()
-    test_per_axis_accel_channels_land_in_display_bins_not_bins()
+    test_combined_accel_channel_lands_in_display_bins_not_bins()
     test_scalars_and_time_series_resolve_to_names()
     test_malformed_messages_raise()
     test_malformed_topic_raises()

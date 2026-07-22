@@ -9,12 +9,14 @@
  * generic section-list frame (docs/SENSOR_TELEMETRY_FRAME_PLAN.md S3, Phase A),
  * and hands that frame to the SPI transport.
  *
- * Normal mode's frame (docs/CHART_CLUTTER_PLAN.md S1's dashboard data needs)
- * carries, every epoch: the fused accel spectrum (unchanged, model input),
- * per-axis accel_x/y/z spectra (additive - display-only, never fed to the
- * model), and one SCALAR_SET of accel-derived scalar tiles (rms/kurtosis/
- * crest_factor/peak/std/skewness, computed on the combined tri-axial vector
- * magnitude). Every FUSER_TIME_SERIES_EVERY_N-th epoch (app_config.h) also
+ * Normal mode's frame (docs/SENSOR_TELEMETRY_FRAME_PLAN.md's per-axis+scalars
+ * feature-representation work) carries, every epoch: the fused accel
+ * spectrum (display-only now, superseded by per-axis for the model),
+ * per-axis accel_x/y/z + mic spectra pooled to FUSER_MODEL_SPECTRUM_BINS
+ * (model input), and one SCALAR_SET of rms/kurtosis/std/peak/crest_factor/
+ * skewness computed separately per accel axis (x/y/z) + mic (model input,
+ * mirrors tools/offline_experiment.py's own per-channel scalar computation).
+ * Every FUSER_TIME_SERIES_EVERY_N-th epoch (app_config.h) also
  * piggybacks decimated accel x/y/z + mic TIME_SERIES sections for the
  * collapsible "Raw signals" panel - not every epoch, since that data is
  * substantially bigger and would otherwise slow the whole frame (including
@@ -122,17 +124,24 @@
 /* Normal mode's section accounting (raw-capture mode's own sizing is
  * directly below, unaffected). Every fused frame carries
  * FUSER_NUM_SPECTRUM_SECTIONS SPECTRUM sections (mic, accel-fused, + per-axis
- * accel x/y/z for docs/CHART_CLUTTER_PLAN.md S1's multi-axis overlay chart)
- * and one SCALAR_SET section (the accel-derived scalar tiles); every
- * FUSER_TIME_SERIES_EVERY_N-th frame (app_config.h) additionally piggybacks
- * FUSER_NUM_TS_SECTIONS decimated TIME_SERIES sections (the collapsible "Raw
- * signals" panel) - see app_config.h's FUSER_TIME_SERIES_EVERY_N comment and
- * the fuser_epoch_count gating below for why that's piggybacked rather than
+ * accel x/y/z - the per-axis ones feed BOTH docs/CHART_CLUTTER_PLAN.md S1's
+ * multi-axis overlay chart AND, now pooled to FUSER_MODEL_SPECTRUM_BINS bins,
+ * the fault-detection model) and one SCALAR_SET section (rms/kurtosis/std/
+ * peak/crest_factor/skewness computed separately per accel axis (x/y/z) +
+ * mic, model input -- see the scalar block in fuser_thread_entry and
+ * docs/SENSOR_TELEMETRY_FRAME_PLAN.md; exactly mirrors
+ * tools/offline_experiment.py's own per-channel scalar computation, no
+ * combined-tri-axial-magnitude variant); every FUSER_TIME_SERIES_EVERY_N-th
+ * frame (app_config.h) additionally piggybacks FUSER_NUM_TS_SECTIONS
+ * decimated TIME_SERIES sections (the collapsible "Raw signals" panel) -
+ * see app_config.h's FUSER_TIME_SERIES_EVERY_N comment and the
+ * fuser_epoch_count gating below for why that's piggybacked rather than
  * sent every frame. FUSER_MAX_SECTIONS is the worst-case total (both kinds
  * present in the same frame) - only affects the static buffer ceiling below,
  * the actual per-frame num_sections is computed in the thread loop. */
 #define FUSER_NUM_SPECTRUM_SECTIONS 5  /* mic, accel, accel_x, accel_y, accel_z */
-#define FUSER_NUM_SCALARS 6            /* rms, kurtosis, crest_factor, peak, std, skewness */
+#define FUSER_NUM_SCALARS 24           /* rms/kurtosis/std/peak/crest_factor/skewness,
+                                         * computed separately per accel axis (x/y/z) + mic */
 #define FUSER_NUM_TS_SECTIONS 4         /* accel_x_raw, accel_y_raw, accel_z_raw, mic_raw */
 #define FUSER_MAX_SECTIONS (FUSER_NUM_SPECTRUM_SECTIONS + 1 + FUSER_NUM_TS_SECTIONS)  /* 10 */
 
@@ -195,6 +204,16 @@ static float fuser_accel_x_bins[FUSER_MAX_BINS];
 static float fuser_accel_y_bins[FUSER_MAX_BINS];
 static float fuser_accel_z_bins[FUSER_MAX_BINS];
 
+/* Pooled down to FUSER_MODEL_SPECTRUM_BINS (app_config.h) right before the
+ * wire write - mic/accel_x/accel_y/accel_z only, the channels the
+ * fault-detection model actually consumes. The combined `accel` channel
+ * (fuser_accel_bins above) stays at full FUSER_MAX_BINS resolution, unused
+ * by the model but left as-is for whatever else may still read it. */
+static float fuser_model_mic_bins[FUSER_MODEL_SPECTRUM_BINS];
+static float fuser_model_accel_x_bins[FUSER_MODEL_SPECTRUM_BINS];
+static float fuser_model_accel_y_bins[FUSER_MODEL_SPECTRUM_BINS];
+static float fuser_model_accel_z_bins[FUSER_MODEL_SPECTRUM_BINS];
+
 /* Raw per-axis/mic windows, needed unconditionally now (not just raw-capture
  * mode) to compute the accel-derived scalar tiles and the piggybacked
  * decimated time-series sections. Lengths mirror each sampler's own FFT_LEN
@@ -211,15 +230,6 @@ static float fuser_accel_raw_x[FUSER_ACCEL_WINDOW_SAMPLES];
 static float fuser_accel_raw_y[FUSER_ACCEL_WINDOW_SAMPLES];
 static float fuser_accel_raw_z[FUSER_ACCEL_WINDOW_SAMPLES];
 static float fuser_mic_raw[FUSER_MIC_WINDOW_SAMPLES];
-
-/* Combined tri-axial vector-magnitude scratch (sqrt(x^2+y^2+z^2) per sample)
- * the scalar tiles are computed from. Accel-only, not mic: the offline
- * experiment harness (tools/offline_experiment.py) found accel's rms/kurtosis
- * separate healthy from a real tested fault by 74-87 sigma vs. mic-only's
- * +6 sigma, so a mic scalar row would be unjustified clutter right now
- * (docs/CHART_CLUTTER_PLAN.md's whole point is cutting clutter). Same length
- * as the accel raw window. */
-static float fuser_accel_vecmag[FUSER_ACCEL_WINDOW_SAMPLES];
 
 /* Reused across all 4 TIME_SERIES sections in turn (decimate, write, move to
  * the next channel) - write_timeseries_section() copies it into the frame
@@ -323,33 +333,47 @@ static void decimate_stride(const float *in, int in_len, float *out, int out_len
   }
 }
 
-/* Combined tri-axial vector magnitude, sample-by-sample - the standard
- * "overall vibration" signal the scalar tiles summarize (see
- * fuser_accel_vecmag's comment for why accel-only, no mic). */
-static void compute_vector_magnitude(const float *x, const float *y, const float *z,
-                                     int len, float *out) {
-  for (int i = 0; i < len; i++) {
-    out[i] = sqrtf(x[i] * x[i] + y[i] * y[i] + z[i] * z[i]);
+/* Average-pool a full FUSER_MAX_BINS-resolution spectrum down to
+ * FUSER_MODEL_SPECTRUM_BINS buckets for the wire - same scheme as
+ * accel_sampler.cpp's accel_spectrum_downsample()/mic_sampler.cpp's
+ * mic_get_spectrum(), just a different bucket count (the fault-detection
+ * model's feature-vector resolution, not the legacy 32-bin Bridge-RPC view -
+ * see FUSER_MODEL_SPECTRUM_BINS's comment, app_config.h). Only the wire's
+ * spectrum bin depth shrinks - the native FFT window (and therefore
+ * compute_scalars()'s time-domain inputs below) is completely untouched. */
+#define FUSER_MODEL_DOWNSAMPLE_FACTOR (FUSER_MAX_BINS / FUSER_MODEL_SPECTRUM_BINS)
+static void fuser_pool_spectrum(const float *in, float *out) {
+  for (int b = 0; b < FUSER_MODEL_SPECTRUM_BINS; b++) {
+    float sum = 0.0f;
+    for (int i = 0; i < FUSER_MODEL_DOWNSAMPLE_FACTOR; i++) {
+      sum += in[b * FUSER_MODEL_DOWNSAMPLE_FACTOR + i];
+    }
+    out[b] = sum / (float)FUSER_MODEL_DOWNSAMPLE_FACTOR;
   }
 }
 
-/* Scalar tile math on the combined vector-magnitude signal
- * (docs/CHART_CLUTTER_PLAN.md S1's "Scalar tiles" section). rms()/kurtosis()
- * mirror python/tools/offline_experiment.py's formulas exactly (population
+/* Scalar tile math, called on each raw per-axis accel window and the raw
+ * mic window separately (model input - see fuser_thread_entry; NOT a
+ * combined tri-axial magnitude - that erases the directional signature an
+ * imbalance fault produces). rms()/kurtosis() mirror
+ * python/tools/offline_experiment.py's formulas exactly (population
  * std/excess kurtosis) so the on-device number means the same thing that
- * tool already validated (+74-87 sigma healthy/fault separation, see
- * offline-experiment-harness notes) rather than a second, potentially-
- * drifting implementation. crest_factor/peak/std are standard vibration-
- * analysis definitions; skewness is the standard third-standardized-moment
- * (not itself validated by the offline harness, unlike rms/kurtosis). */
+ * tool already validated against real captures (docs/SENSOR_TELEMETRY_FRAME_PLAN.md)
+ * rather than a second, potentially-drifting implementation. crest_factor/
+ * peak/std are standard vibration-analysis definitions; skewness is the
+ * standard third-standardized-moment. Note `peak` here is "max signed
+ * value," not "max magnitude" (the input is signed raw accel/mic data, not
+ * a nonnegative magnitude) -- this matches raw_features.py's peak() (x.max(),
+ * also not abs-max) exactly, so the offline-validated separation numbers
+ * already reflect this convention - don't "fix" it with fabsf(). */
 static void compute_scalars(const float *mag, int len, float *out_rms, float *out_kurtosis,
                             float *out_crest, float *out_peak, float *out_std,
                             float *out_skew) {
-  float sum = 0.0f, sumsq = 0.0f, peak = 0.0f;
+  float sum = 0.0f, sumsq = 0.0f, peak = mag[0];
   for (int i = 0; i < len; i++) {
     sum += mag[i];
     sumsq += mag[i] * mag[i];
-    if (mag[i] > peak) peak = mag[i];  // mag[] is sqrt(...), always >= 0
+    if (mag[i] > peak) peak = mag[i];
   }
   float mean = sum / len;
   float rms = sqrtf(sumsq / len);
@@ -392,12 +416,15 @@ static void fuser_thread_entry(void *p1, void *p2, void *p3) {
   ARG_UNUSED(p3);
 
 #if !FUSER_RAW_CAPTURE_MODE
-  /* Metadata is fixed at bring-up (compile-time constants behind the
-   * accessors), read once. Bin counts are clamped to the buffer ceiling
-   * defensively; in practice both are FUSER_MAX_BINS. */
-  int mic_bins = mic_full_bin_count();
+  /* Metadata is fixed at bring-up (compile-time constant behind the
+   * accessor), read once. Bin count is clamped to the buffer ceiling
+   * defensively; in practice it's FUSER_MAX_BINS. Only `accel` (the
+   * combined channel) still sends at this full resolution - mic/accel_x/y/z
+   * go out pooled to FUSER_MODEL_SPECTRUM_BINS instead (fuser_pool_spectrum()
+   * always reads a fixed FUSER_MAX_BINS input, same convention as
+   * accel_sampler.cpp's accel_spectrum_downsample(), so mic's own bin count
+   * no longer needs a local/clamped copy here). */
   int accel_bins = accel_full_bin_count();
-  if (mic_bins > FUSER_MAX_BINS) mic_bins = FUSER_MAX_BINS;
   if (accel_bins > FUSER_MAX_BINS) accel_bins = FUSER_MAX_BINS;
 #endif
 
@@ -410,6 +437,19 @@ static void fuser_thread_entry(void *p1, void *p2, void *p3) {
   uint16_t mic_fft = (uint16_t)mic_fft_size();
   float accel_fs = accel_sample_rate_hz();
   uint16_t accel_fft = (uint16_t)accel_fft_size();
+
+#if !FUSER_RAW_CAPTURE_MODE
+  /* mic/accel_x/y/z go out pooled FUSER_MODEL_DOWNSAMPLE_FACTOR:1 (see
+   * fuser_pool_spectrum()) -- fft_size on the wire must shrink by the same
+   * factor, or the dashboard's k*fs/fft_size frequency-axis math (charts.js)
+   * treats each pooled (wider) bin as if it were still one of the original
+   * narrow bins, compressing the whole displayed range by that factor (e.g.
+   * mic's real 0-24kHz span was rendering as 0-6kHz before this fix). The
+   * combined `accel` channel stays unpooled, so it keeps the un-divided
+   * accel_fft. */
+  uint16_t mic_fft_pooled = mic_fft / FUSER_MODEL_DOWNSAMPLE_FACTOR;
+  uint16_t accel_fft_pooled = accel_fft / FUSER_MODEL_DOWNSAMPLE_FACTOR;
+#endif
 
 #if !FUSER_RAW_CAPTURE_MODE
   /* Gates the every-Nth-frame time-series piggyback - see app_config.h's
@@ -468,30 +508,61 @@ static void fuser_thread_entry(void *p1, void *p2, void *p3) {
     accel_copy_full_spectrum(fuser_accel_bins);
     accel_copy_axis_spectra(fuser_accel_x_bins, fuser_accel_y_bins, fuser_accel_z_bins);
     accel_copy_raw_window(fuser_accel_raw_x, fuser_accel_raw_y, fuser_accel_raw_z);
+    /* Now unconditional (was only inside the send_time_series piggyback
+     * below) - per-mic scalars (right below) need a fresh raw window every
+     * epoch, same cadence as the accel raw copy above. */
+    mic_copy_raw_window(fuser_mic_raw);
 
-    /* Scalar tiles (docs/CHART_CLUTTER_PLAN.md S1): accel-only, computed from
-     * the combined tri-axial vector magnitude - see fuser_accel_vecmag's
-     * comment for why accel-only. Cheap (one pass over 1024 floats), so this
-     * runs every epoch regardless of the time-series piggyback below. */
-    compute_vector_magnitude(fuser_accel_raw_x, fuser_accel_raw_y, fuser_accel_raw_z,
-                             FUSER_ACCEL_WINDOW_SAMPLES, fuser_accel_vecmag);
-    float scalar_rms, scalar_kurtosis, scalar_crest, scalar_peak, scalar_std, scalar_skew;
-    compute_scalars(fuser_accel_vecmag, FUSER_ACCEL_WINDOW_SAMPLES, &scalar_rms,
-                    &scalar_kurtosis, &scalar_crest, &scalar_peak, &scalar_std, &scalar_skew);
+    /* Pool mic/accel_x/y/z down to FUSER_MODEL_SPECTRUM_BINS for the wire -
+     * see fuser_pool_spectrum()'s comment. The combined `accel` channel
+     * (fuser_accel_bins) stays full-resolution, unpooled. */
+    fuser_pool_spectrum(fuser_mic_bins, fuser_model_mic_bins);
+    fuser_pool_spectrum(fuser_accel_x_bins, fuser_model_accel_x_bins);
+    fuser_pool_spectrum(fuser_accel_y_bins, fuser_model_accel_y_bins);
+    fuser_pool_spectrum(fuser_accel_z_bins, fuser_model_accel_z_bins);
+
+    /* Scalar tiles: the same 6 scalar functions computed separately on each
+     * raw per-axis accel window and the raw mic window (model input --
+     * combining x/y/z into one magnitude erases the directional signature
+     * an imbalance fault produces; per-axis/per-channel is what
+     * tools/offline_experiment.py validated at +38.5 sigma worst-case
+     * separation, vs. only +1.8 sigma on a combined tri-axial magnitude --
+     * exactly replicating that tool's own per-channel approach, no combined
+     * variant). Cheap (a few passes over <=2048 floats), so this runs every
+     * epoch regardless of the time-series piggyback below. */
+    float ax_rms, ax_kurtosis, ax_crest, ax_peak, ax_std, ax_skew;
+    compute_scalars(fuser_accel_raw_x, FUSER_ACCEL_WINDOW_SAMPLES, &ax_rms, &ax_kurtosis,
+                    &ax_crest, &ax_peak, &ax_std, &ax_skew);
+    float ay_rms, ay_kurtosis, ay_crest, ay_peak, ay_std, ay_skew;
+    compute_scalars(fuser_accel_raw_y, FUSER_ACCEL_WINDOW_SAMPLES, &ay_rms, &ay_kurtosis,
+                    &ay_crest, &ay_peak, &ay_std, &ay_skew);
+    float az_rms, az_kurtosis, az_crest, az_peak, az_std, az_skew;
+    compute_scalars(fuser_accel_raw_z, FUSER_ACCEL_WINDOW_SAMPLES, &az_rms, &az_kurtosis,
+                    &az_crest, &az_peak, &az_std, &az_skew);
+    float mic_rms, mic_kurtosis, mic_crest, mic_peak, mic_std, mic_skew;
+    compute_scalars(fuser_mic_raw, FUSER_MIC_WINDOW_SAMPLES, &mic_rms, &mic_kurtosis,
+                    &mic_crest, &mic_peak, &mic_std, &mic_skew);
+
     const uint16_t scalar_ids[FUSER_NUM_SCALARS] = {
-        TELEM_SCALAR_RMS, TELEM_SCALAR_KURTOSIS, TELEM_SCALAR_CREST_FACTOR,
-        TELEM_SCALAR_PEAK, TELEM_SCALAR_STD, TELEM_SCALAR_SKEWNESS};
+        TELEM_SCALAR_RMS_X, TELEM_SCALAR_KURTOSIS_X, TELEM_SCALAR_STD_X,
+        TELEM_SCALAR_PEAK_X, TELEM_SCALAR_CREST_FACTOR_X, TELEM_SCALAR_SKEWNESS_X,
+        TELEM_SCALAR_RMS_Y, TELEM_SCALAR_KURTOSIS_Y, TELEM_SCALAR_STD_Y,
+        TELEM_SCALAR_PEAK_Y, TELEM_SCALAR_CREST_FACTOR_Y, TELEM_SCALAR_SKEWNESS_Y,
+        TELEM_SCALAR_RMS_Z, TELEM_SCALAR_KURTOSIS_Z, TELEM_SCALAR_STD_Z,
+        TELEM_SCALAR_PEAK_Z, TELEM_SCALAR_CREST_FACTOR_Z, TELEM_SCALAR_SKEWNESS_Z,
+        TELEM_SCALAR_RMS_MIC, TELEM_SCALAR_KURTOSIS_MIC, TELEM_SCALAR_STD_MIC,
+        TELEM_SCALAR_PEAK_MIC, TELEM_SCALAR_CREST_FACTOR_MIC, TELEM_SCALAR_SKEWNESS_MIC};
     const float scalar_values[FUSER_NUM_SCALARS] = {
-        scalar_rms, scalar_kurtosis, scalar_crest, scalar_peak, scalar_std, scalar_skew};
+        ax_rms, ax_kurtosis, ax_std, ax_peak, ax_crest, ax_skew,
+        ay_rms, ay_kurtosis, ay_std, ay_peak, ay_crest, ay_skew,
+        az_rms, az_kurtosis, az_std, az_peak, az_crest, az_skew,
+        mic_rms, mic_kurtosis, mic_std, mic_peak, mic_crest, mic_skew};
 
     /* Every FUSER_TIME_SERIES_EVERY_N-th frame additionally piggybacks the
      * decimated raw-signal sections - see app_config.h's
      * FUSER_TIME_SERIES_EVERY_N comment for why this isn't every frame. */
     bool send_time_series = (fuser_epoch_count % FUSER_TIME_SERIES_EVERY_N) == 0;
     fuser_epoch_count++;
-    if (send_time_series) {
-      mic_copy_raw_window(fuser_mic_raw);
-    }
 
     /* Assemble the section-list frame: [num_sections u8] then one section per
      * channel/scalar-set. To experiment with a different channel set, change
@@ -502,15 +573,15 @@ static void fuser_thread_entry(void *p1, void *p2, void *p3) {
                            (uint8_t)(send_time_series ? FUSER_NUM_TS_SECTIONS : 0);
     put_u8(fuser_frame_buf, &pos, num_sections);
     write_spectrum_section(fuser_frame_buf, &pos, TELEM_CHANNEL_MIC, mic_fs,
-                           mic_fft, fuser_mic_bins, (uint16_t)mic_bins);
+                           mic_fft_pooled, fuser_model_mic_bins, (uint16_t)FUSER_MODEL_SPECTRUM_BINS);
     write_spectrum_section(fuser_frame_buf, &pos, TELEM_CHANNEL_ACCEL, accel_fs,
                            accel_fft, fuser_accel_bins, (uint16_t)accel_bins);
     write_spectrum_section(fuser_frame_buf, &pos, TELEM_CHANNEL_ACCEL_X, accel_fs,
-                           accel_fft, fuser_accel_x_bins, (uint16_t)accel_bins);
+                           accel_fft_pooled, fuser_model_accel_x_bins, (uint16_t)FUSER_MODEL_SPECTRUM_BINS);
     write_spectrum_section(fuser_frame_buf, &pos, TELEM_CHANNEL_ACCEL_Y, accel_fs,
-                           accel_fft, fuser_accel_y_bins, (uint16_t)accel_bins);
+                           accel_fft_pooled, fuser_model_accel_y_bins, (uint16_t)FUSER_MODEL_SPECTRUM_BINS);
     write_spectrum_section(fuser_frame_buf, &pos, TELEM_CHANNEL_ACCEL_Z, accel_fs,
-                           accel_fft, fuser_accel_z_bins, (uint16_t)accel_bins);
+                           accel_fft_pooled, fuser_model_accel_z_bins, (uint16_t)FUSER_MODEL_SPECTRUM_BINS);
     write_scalar_section(fuser_frame_buf, &pos, scalar_ids, scalar_values, FUSER_NUM_SCALARS);
 
     if (send_time_series) {

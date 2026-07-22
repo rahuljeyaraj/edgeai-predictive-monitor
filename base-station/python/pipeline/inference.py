@@ -20,7 +20,7 @@ from typing import FrozenSet, Optional
 from sensor_frame import SensorFrame
 from registry import InvalidTransitionError, NodeStatus, Registry, SensorChannel
 from gate import MotorState, MotorStateGate
-from features import build_feature_vector
+from features import build_feature_vector, standardize_scalars
 from autoencoder import Autoencoder, load_model, reconstruction_error
 
 _CONFIRMABLE_STATUSES = (NodeStatus.HEALTHY, NodeStatus.WARNING, NodeStatus.FAULT)
@@ -62,6 +62,12 @@ class InferencePipeline:
         self._sensor_config: FrozenSet[SensorChannel] = entry.sensor_config
         self._expected_dim: int = entry.input_dim
         self._model: Autoencoder = load_model(entry.model_path)
+        # Scalar-tail standardization stats fit at commissioning time
+        # (pipeline/commissioning.py's train()) -- None for a sensor_config
+        # with no scalar tail at all, in which case standardize_scalars()
+        # below is a no-op.
+        self._scalar_mu = entry.scalar_mu
+        self._scalar_sigma = entry.scalar_sigma
 
         self._status = entry.status if entry.status in _CONFIRMABLE_STATUSES else NodeStatus.HEALTHY
         self._candidate_status: Optional[NodeStatus] = None
@@ -94,7 +100,9 @@ class InferencePipeline:
         if self._gate.update(frame) != MotorState.RUNNING:
             return None
 
-        vector = build_feature_vector(frame, self._sensor_config, self._expected_dim)
+        vector, spectral_dim = build_feature_vector(frame, self._sensor_config, self._expected_dim)
+        if self._scalar_mu is not None:
+            vector = standardize_scalars(vector, spectral_dim, self._scalar_mu, self._scalar_sigma)
         score = reconstruction_error(self._model, vector)
         self._last_score = score
 

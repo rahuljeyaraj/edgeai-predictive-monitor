@@ -19,20 +19,28 @@ import tempfile
 from sensor_frame import FrameSource, SensorFrame
 from registry import NodeStatus, Registry, SensorChannel
 from gate import MotorStateGate
+from features import build_feature_vector
 from autoencoder import build_autoencoder, save_model, train_autoencoder
 from inference import InferencePipeline
 from store import HistoryStore
 
 NODE_ID = "node-1"
 OTHER_NODE_ID = "node-2"
-DIM = 512
+DIM = 128  # SensorChannel.MIC's spectral bin count (registry._DIM_BY_CHANNEL)
+INPUT_DIM = 134  # + 6-value scalar tail
 WARNING_THRESHOLD = 0.05
 FAULT_THRESHOLD = 0.2
 
+# Fixed, identical on every synthetic frame -- these tests are about the
+# history store's own persistence/query behavior, not the scalar tail's
+# signal, so every frame's anomaly-relevant signal comes from mic_bins alone.
+MIC_SCALARS = {"rms_mic": 1.0, "kurtosis_mic": 1.0, "std_mic": 1.0,
+               "peak_mic": 1.0, "crest_factor_mic": 1.0, "skewness_mic": 1.0}
 
-def frame(node_id, accel_bins, timestamp=0.0) -> SensorFrame:
+
+def frame(node_id, mic_bins, timestamp=0.0) -> SensorFrame:
     return SensorFrame(node_id=node_id, source=FrameSource.SPI, timestamp=timestamp,
-                        bins={"accel": accel_bins})
+                        bins={"mic": mic_bins}, scalars=MIC_SCALARS)
 
 
 HEALTHY_BINS = tuple(1.0 for _ in range(DIM))
@@ -42,10 +50,12 @@ FAULT_BINS = tuple(4.0 if i % 2 == 0 else 1.0 for i in range(DIM))
 def new_registry_with_model(tmp_dir: str, node_id: str) -> Registry:
     models_dir = tempfile.mkdtemp(dir=tmp_dir)
     registry = Registry(os.path.join(models_dir, "registry.json"))
-    registry.add(node_id, sensor_config=frozenset({SensorChannel.ACCEL}))
+    registry.add(node_id, sensor_config=frozenset({SensorChannel.MIC}))
 
-    model = build_autoencoder(DIM)
-    train_autoencoder(model, [HEALTHY_BINS] * 5, epochs=500)
+    healthy_vector, _ = build_feature_vector(
+        frame(node_id, HEALTHY_BINS), frozenset({SensorChannel.MIC}), INPUT_DIM)
+    model = build_autoencoder(INPUT_DIM)
+    train_autoencoder(model, [healthy_vector] * 5, epochs=500)
     model_path = os.path.join(models_dir, f"{node_id}.pt")
     save_model(model, model_path)
     registry.start_commissioning(node_id)

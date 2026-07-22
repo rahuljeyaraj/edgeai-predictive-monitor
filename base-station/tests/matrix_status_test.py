@@ -32,8 +32,8 @@ def entry(status: NodeStatus, last_seen=_FRESH) -> RegistryEntry:
     return RegistryEntry(
         node_id="n",
         display_name="n",
-        sensor_config=frozenset({SensorChannel.ACCEL}),
-        input_dim=512,
+        sensor_config=frozenset({SensorChannel.MIC}),
+        input_dim=134,
         status=status,
         last_seen=last_seen,
     )

@@ -47,10 +47,12 @@ MQTT message body with no extra envelope. By default this mirrors real
 firmware's normal-mode shape (base-station/sketch/fuser.cpp) for accel + mic
 + scalars, with one deliberate simplification: this sim emits fused accel OR
 per-axis accel per node, never both together the way real firmware always
-does (see "Accel: fused vs per-axis" below) -- plus one SCALAR_SET section
-(all 6 scalars, computed on the combined tri-axial accel magnitude). The
-command direction (STATUS_LED, epm/<node_id>/cmd) still uses the lean
-[TYPE: 1B][display_rgb_payload] envelope.
+does (see "Accel: fused vs per-axis" below) -- plus one SCALAR_SET section,
+6 scalars computed separately per live channel (accel_x/accel_y/accel_z/mic,
+never a combined tri-axial magnitude), exactly mirroring fuser.cpp's own
+per-channel compute_scalars() calls. The command direction (STATUS_LED,
+epm/<node_id>/cmd) still uses the lean [TYPE: 1B][display_rgb_payload]
+envelope.
 
 Accel: fused vs per-axis -- a node's accel output is controlled by two
 settings: --accel (emit accel spectrum data at all) and --accel-fused
@@ -69,10 +71,13 @@ online -- they switch each between real computed values and an all-zero
 spectrum at the same bin count (common/telemetry_frame.py's own documented
 "zero-fill" convention), simulating a sensor that's still wired up but
 reporting nothing useful (e.g. a loose connector, docs/mic-sai-capture-bug
-territory) rather than one that was never there. Per-axis accel_x/y/z and
-the SCALAR_SET section are display-only/never validated
-(registry.SensorChannel doesn't include them), so those stay freely
-omittable.
+territory) rather than one that was never there. Mic's scalar block follows
+the same zero-fill rule (build_frame() sends all-zero rms_mic/etc. rather
+than omitting them when mic's off). Per-axis accel_x/y/z ARE
+registry.SensorChannel members now (model-relevant, validated) -- toggling
+--accel-per-axis off after a node's first frame committed it would drift
+that node's shape exactly like the fused/mic case above, so treat it as a
+fixed-for-the-session choice, same caveat.
 
 Accel/mic bin count are never locked: unlike a real node, nothing here
 freezes --accel-bin-count/--mic-bin-count (or the UI's matching fields)
@@ -134,7 +139,6 @@ from raw_features import (  # noqa: E402
     rms,
     skewness,
     std,
-    vector_magnitude,
 )
 
 DATA_TOPIC_FMT = "epm/{node_id}/data"
@@ -150,6 +154,9 @@ ACCEL_AXES = ("accel_x_raw", "accel_y_raw", "accel_z_raw")
 MIC_CHANNEL = "mic_raw"
 RAW_CHANNEL_NAMES = ACCEL_AXES + (MIC_CHANNEL,)
 _AXIS_SPECTRUM_NAME = {"accel_x_raw": "accel_x", "accel_y_raw": "accel_y", "accel_z_raw": "accel_z"}
+# Scalar wire-key suffix per raw channel (telemetry_schema.json's rms_x/.../
+# rms_mic naming) -- matches fuser.cpp's per-channel scalar computation.
+_SCALAR_SUFFIX = {"accel_x_raw": "x", "accel_y_raw": "y", "accel_z_raw": "z", "mic_raw": "mic"}
 
 _SCALAR_FUNCS = {
     "rms": rms, "kurtosis": kurtosis, "std": std,
@@ -265,18 +272,29 @@ def build_frame(windows: dict, *, accel_fused: bool, accel_per_axis: bool, mic: 
       preview        -- ChannelSpectrum per built channel ("accel", "mic",
                          and/or "accel_x"/"accel_y"/"accel_z"), for the local
                          debug UI's FFT plots
-      scalar_values  -- {scalar_name: float} for whichever scalars were
-                         computed, for the local debug UI's readout
+      scalar_values  -- {scalar_key: float} for whichever scalars were
+                         computed ("rms_x", "kurtosis_mic", etc.), for the
+                         local debug UI's readout
 
     Fused accel ("accel") and mic are model-relevant (SensorFrame.bins,
     registry.SensorChannel) -- ALWAYS emitted at the given bin_count/
     mic_bin_count once this is called at all, real values when enabled and
     the capture has that data, zero-filled otherwise (module docstring's
-    "zero-fill, not omit"). Per-axis accel_x/y/z (display-only, own
-    axis_bin_count) and the scalar SCALAR_SET section are never validated,
-    so they're freely omitted when disabled or when the capture lacks the
-    axes they need (scalars need all 3; vector_magnitude is inherently
-    tri-axial)."""
+    "zero-fill, not omit"). Per-axis accel_x/y/z are ALSO model-relevant now
+    (registry.SensorChannel includes them), so the same "don't let a
+    committed channel disappear mid-session" caveat now applies to
+    --accel-per-axis too, not just --accel/--mic.
+
+    Scalars are computed per-channel (accel_x/accel_y/accel_z/mic), mirroring
+    fuser.cpp's compute_scalars() -- never a combined tri-axial magnitude, and
+    the wire key is channel-suffixed (rms_x, kurtosis_mic, ...) to match
+    telemetry_schema.json. This is no longer "display-only, never validated"
+    like it used to be: pipeline/features.py's build_feature_vector() now
+    raises if ANY of a live channel's 6 scalar keys is missing from a frame,
+    so unchecking a single scalar checkbox in the local debug UI while
+    accel-per-axis/mic are on will break ingestion for this node just as
+    hard as unchecking all of them -- there's no such thing as "some
+    scalars" anymore, only "all 6 per channel" or "channel not live"."""
     sections = []
     preview = {}
     scalar_values = {}
@@ -293,6 +311,10 @@ def build_frame(windows: dict, *, accel_fused: bool, accel_per_axis: bool, mic: 
             sections.append(encode_section(source_id, channel_id, _KIND_SPECTRUM,
                                             encode_spectrum_body(fs, len(window), bins)))
             preview[axis_name] = ChannelSpectrum(fs=fs, fft_size=len(window), bins=bins)
+            if scalars:
+                suffix = _SCALAR_SUFFIX[name]
+                for scalar_name in scalars:
+                    scalar_values[f"{scalar_name}_{suffix}"] = _SCALAR_FUNCS[scalar_name](window)
 
     present_axes = [name for name in ACCEL_AXES if name in windows]
     if accel_fused and present_axes:
@@ -314,18 +336,25 @@ def build_frame(windows: dict, *, accel_fused: bool, accel_per_axis: bool, mic: 
         # publishes an alias image as if it were real audio above 24kHz.
         mag = downsample(mic_useful_magnitude(fft_magnitude(window)), mic_bin_count)
         mic_bins = tuple(float(v) for v in peak_normalize(mag))
+        if scalars:
+            for scalar_name in scalars:
+                scalar_values[f"{scalar_name}_mic"] = _SCALAR_FUNCS[scalar_name](window)
     else:
         fs = NOMINAL_MIC_FS_HZ
         mic_bins = tuple(0.0 for _ in range(mic_bin_count))
+        # mic's spectrum section is zero-filled rather than omitted when
+        # mic's off/unavailable (above) -- its scalar block must match, or a
+        # node with mic committed as a model channel would suddenly be
+        # missing rms_mic/etc. the moment the capture ran out of mic data.
+        if scalars:
+            for scalar_name in scalars:
+                scalar_values[f"{scalar_name}_mic"] = 0.0
     sections.append(encode_section(source_id, schema.CHANNEL_ID_BY_NAME["mic"], _KIND_SPECTRUM,
                                     encode_spectrum_body(fs, NOMINAL_MIC_FFT_SIZE, mic_bins)))
     preview["mic"] = ChannelSpectrum(fs=fs, fft_size=NOMINAL_MIC_FFT_SIZE, bins=mic_bins)
 
-    if scalars and all(name in windows for name in ACCEL_AXES):
-        x, y, z = (windows[name][0] for name in ACCEL_AXES)
-        combined_signal = vector_magnitude(x, y, z)
-        scalar_values = {name: _SCALAR_FUNCS[name](combined_signal) for name in scalars}
-        values = {schema.SCALAR_ID_BY_NAME[name]: value for name, value in scalar_values.items()}
+    if scalar_values:
+        values = {schema.SCALAR_ID_BY_NAME[key]: value for key, value in scalar_values.items()}
         sections.append(encode_section(source_id, schema.PERF_CHANNEL_ID, _KIND_SCALAR_SET,
                                         encode_scalar_body(values)))
 

@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, Callable, Dict, FrozenSet, Optional
 from sensor_frame import SensorFrame
 from registry import (Registry, RegistryEntry, SensorChannel, NodeNotFoundError,
                        NodeStatus)
+from features import scalar_dim_for
 from gate import MotorStateGate
 from inference import InferenceError, InferencePipeline
 
@@ -49,8 +50,9 @@ def _infer_sensor_config_and_dim(frame: SensorFrame) -> "tuple[FrozenSet[SensorC
     sensor_config + per-channel bin count drives the model's input dim).
     Not every node necessarily uses the same FFT bin count per channel --
     this commits to whatever the node's own first frame actually sent,
-    rather than a fixed global table (registry.input_dim_for()'s 512/channel
-    default is only a fallback for callers with no frame to derive from).
+    rather than a fixed global table (registry.input_dim_for()'s spectral-
+    only per-channel default is only a fallback for callers with no frame to
+    derive from -- see its docstring).
 
     A multi-channel MQTT node's first frame must already carry every
     channel it will ever report (mqtt_subscriber.py's fused "channels"
@@ -77,7 +79,16 @@ def _infer_sensor_config_and_dim(frame: SensorFrame) -> "tuple[FrozenSet[SensorC
             continue
         channels.add(channel)
         dim += len(bins)
-    return frozenset(channels), dim
+    channels = frozenset(channels)
+    # Scalar tail (features.py's build_feature_vector) rides on top of the
+    # spectral bins summed above but isn't itself a frame.bins entry -- it
+    # comes from frame.scalars, keyed by channel-suffixed name (e.g.
+    # "rms_x"), not a SensorChannel value. Without this, a fresh node would
+    # commit an input_dim short by exactly this many columns, and every
+    # frame afterward would fail _validate_frame_bins below forever (silent,
+    # permanent frame-dropping, not a crash -- see that function's comment).
+    dim += scalar_dim_for(channels)
+    return channels, dim
 
 
 def _validate_frame_bins(frame: SensorFrame, entry: RegistryEntry) -> None:
@@ -88,7 +99,8 @@ def _validate_frame_bins(frame: SensorFrame, entry: RegistryEntry) -> None:
     call: a mismatch here means firmware drift, a malformed frame, a live
     reconfiguration mid-session, or a protocol version skew, and should fail
     loudly rather than silently corrupt training data or inference."""
-    actual = sum(len(frame.bins.get(c.value, ())) for c in entry.sensor_config)
+    actual = (sum(len(frame.bins.get(c.value, ())) for c in entry.sensor_config)
+              + scalar_dim_for(entry.sensor_config))
     expected = entry.input_dim
     if actual != expected:
         raise ValueError(

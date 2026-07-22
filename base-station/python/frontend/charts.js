@@ -54,9 +54,11 @@ const Charts = (() => {
   const RENDER_THROTTLE_MS = 300;
   const WS_RECONNECT_MS = 2000;
 
-  // The only two SensorChannel values that exist today (registry/registry.py) --
-  // fixed order matches the doc's own layout order (accel before mic).
-  const ALL_CHANNELS = ["accel", "mic"];
+  // The four SensorChannel values that exist today (registry/registry.py) --
+  // fixed order matches the doc's own layout order (accel axes before mic).
+  // Drives waterfall (one heatmap per present channel) and the
+  // present/absent section gating in detailBodyHtml().
+  const ALL_CHANNELS = ["accel_x", "accel_y", "accel_z", "mic"];
 
   // Reuses the exact status palette already defined in style.css (:root)
   // rather than inventing a new one -- the redesign spec (S2) reserves
@@ -84,23 +86,28 @@ const Charts = (() => {
   // one axis never shifts another axis's color -- docs/CHART_CLUTTER_PLAN.md
   // §5 "fixed hue order, never reassigned based on which axes happen to be
   // present." Reused verbatim across the spectrum chart AND the raw
-  // time-domain chart for the same axis. `accel` (fused fallback trace, used
-  // only when a node has no per-axis axis_channels at all) reuses accel_x's
-  // color since the two never co-occur for the same node.
+  // time-domain chart for the same axis.
   const AXIS_COLORS = {
     accel_x: "#3987e5", accel_y: "#9085e9", accel_z: "#d55181",
     mic: "#d95926",
-    accel: "#3987e5",
   };
 
-  const SCALAR_TILE_DEFS = [
-    { key: "rms", label: "RMS" },
-    { key: "kurtosis", label: "Kurtosis" },
-    { key: "crest_factor", label: "Crest factor" },
-    { key: "peak", label: "Peak" },
-    { key: "std", label: "Std deviation" },
-    { key: "skewness", label: "Skewness" },
-  ];
+  // One group per raw channel (accel x/y/z, mic) -- the model's scalar tail
+  // is computed per-channel now (never a combined tri-axial magnitude, see
+  // fuser.cpp's compute_scalars() call sites), so the tiles mirror that:
+  // 24 keys, matching telemetry_schema.json's rms_x/kurtosis_x/.../rms_mic
+  // wire names exactly.
+  const SCALAR_TILE_DEFS = ["x", "y", "z", "mic"].flatMap((axis) => {
+    const tag = axis === "mic" ? "Mic" : axis.toUpperCase();
+    return [
+      { key: `rms_${axis}`, label: `RMS (${tag})` },
+      { key: `kurtosis_${axis}`, label: `Kurtosis (${tag})` },
+      { key: `std_${axis}`, label: `Std deviation (${tag})` },
+      { key: `peak_${axis}`, label: `Peak (${tag})` },
+      { key: `crest_factor_${axis}`, label: `Crest factor (${tag})` },
+      { key: `skewness_${axis}`, label: `Skewness (${tag})` },
+    ];
+  });
 
   const RIDGE_TRACE_COUNT = 16;
   const RIDGE_X_SHIFT_PER_STEP = -0.4;
@@ -188,12 +195,11 @@ const Charts = (() => {
     if (!nodes[nodeId]) {
       nodes[nodeId] = {
         channels: [],
-        axisChannels: {},   // accel_x/accel_y/accel_z -> latest bins (display-only)
-        liveSpectrum: {},   // mic/accel -> latest bins (fused/model channels)
+        liveSpectrum: {},   // accel_x/accel_y/accel_z/mic -> latest bins (model channels)
         spectrumMeta: {},   // mic/accel/accel_x/accel_y/accel_z -> {fs, fftSize}
-        scalars: {},        // rms/kurtosis/crest_factor/peak/std/skewness -> latest value
+        scalars: {},        // rms_x/kurtosis_x/.../rms_mic/... -> latest value (24 keys)
         timeSeries: {},     // accel_x_raw/accel_y_raw/accel_z_raw/mic_raw -> {fs, samples}
-        waterfall: {},      // mic/accel -> [{t, bins}] ring buffer, UNCHANGED shape/source
+        waterfall: {},      // accel_x/accel_y/accel_z/mic -> [{t, bins}] ring buffer
         waterfallMode: "2d",
         anomaly: [],
         anomalySeeded: false,
@@ -276,9 +282,10 @@ const Charts = (() => {
       if (!node.waterfall[channel]) node.waterfall[channel] = [];
       pushCapped(node.waterfall[channel], { t: msg.timestamp, bins }, WATERFALL_MAX_COLS);
     }
-    for (const [name, bins] of Object.entries(msg.axis_channels || {})) {
-      node.axisChannels[name] = bins;
-    }
+    // msg.axis_channels (SensorFrame.display_bins) is display-only data no
+    // chart reads today (the fused `accel` channel, superseded by the
+    // per-axis accel_x/y/z model channels above) -- deliberately dropped
+    // rather than buffered for nothing.
     for (const [name, meta] of Object.entries(msg.spectrum_meta || {})) {
       node.spectrumMeta[name] = { fs: meta.fs, fftSize: meta.fft_size };
     }
@@ -444,8 +451,12 @@ const Charts = (() => {
     return meta && meta.fftSize ? meta.fs / meta.fftSize : null;
   }
 
+  // Per-axis only -- the fused/combined `accel` channel (old single-line
+  // "raw" spectrum, pre-per-axis) is display-only now and no longer shown;
+  // base station always carries real accel_x/y/z, so there's no fallback
+  // case left to handle.
   function buildAccelSpectrumFigure(nodeId, node) {
-    const axisNames = ["accel_x", "accel_y", "accel_z"].filter((n) => node.axisChannels[n]);
+    const axisNames = ["accel_x", "accel_y", "accel_z"].filter((n) => node.liveSpectrum[n]);
     const traces = [];
     const layout = { ...darkLayoutBase(), uirevision: nodeId, height: 190 };
     let freqStep = null;
@@ -454,7 +465,7 @@ const Charts = (() => {
       layout.showlegend = true;
       layout.legend = { orientation: "h", y: 1.2, font: smallFont() };
       axisNames.forEach((name) => {
-        const bins = node.axisChannels[name];
+        const bins = node.liveSpectrum[name];
         const color = AXIS_COLORS[name];
         const step = freqStepFor(node, name);
         if (step && !freqStep) freqStep = step;
@@ -467,21 +478,6 @@ const Charts = (() => {
             ? `${name} %{x:.0f} Hz: %{y:.3f}<extra></extra>`
             : `${name} bin %{x}: %{y:.3f}<extra></extra>`,
         });
-      });
-    } else if (node.liveSpectrum.accel) {
-      const bins = node.liveSpectrum.accel;
-      const color = AXIS_COLORS.accel;
-      const step = freqStepFor(node, "accel");
-      freqStep = step;
-      traces.push({
-        type: "scatter", mode: "lines",
-        x: bins.map((_, k) => (step ? k * step : k)), y: bins,
-        line: { shape: "spline", color, width: 1.5 },
-        fill: "tozeroy", fillcolor: hexToRgba(color, 0.15),
-        xaxis: "x", yaxis: "y", name: "accel",
-        hovertemplate: step
-          ? "accel %{x:.0f} Hz: %{y:.3f}<extra></extra>"
-          : "accel bin %{x}: %{y:.3f}<extra></extra>",
       });
     }
 
@@ -874,15 +870,19 @@ const Charts = (() => {
   // Section-level omission (whole chart/collapsible present or not) is
   // decided from entry.sensor_config -- REST truth, known from frame 1, so
   // a brand-new node's first expand never flashes "no chart" waiting on a
-  // WS race. Within-chart conditionals (which axes overlay, fused-fallback
-  // trace, which scalar tiles) are decided from this module's own WS-fed
-  // state at mount/render time instead (see the build*Figure functions).
+  // WS race. Within-chart conditionals (which axes overlay, which scalar
+  // tiles) are decided from this module's own WS-fed state at mount/render
+  // time instead (see the build*Figure functions).
   function detailBodyHtml(entry, uiState) {
     const nodeId = entry.node_id;
     const safeId = escapeAttr(nodeId);
     const node = ensureNode(nodeId);
     const sensorConfig = Array.isArray(entry.sensor_config) ? entry.sensor_config : [];
-    const hasAccel = sensorConfig.includes("accel");
+    // sensor_config carries accel_x/accel_y/accel_z now (registry.py's
+    // SensorChannel), never a bare "accel" -- that name only survives as the
+    // display-only fused channel, which isn't a SensorChannel and never
+    // appears here.
+    const hasAccel = sensorConfig.some((c) => c.startsWith("accel"));
     const hasMic = sensorConfig.includes("mic");
     const presentChannels = ALL_CHANNELS.filter((c) => sensorConfig.includes(c));
 
@@ -908,7 +908,7 @@ const Charts = (() => {
       </div>`;
     }
 
-    if (hasAccel) {
+    if (hasAccel || hasMic) {
       html += `<details class="perf-tier" data-role="scalars-details" ${uiState.scalarsOpen ? "open" : ""}>
         <summary class="perf-tier__header"><span class="perf-tier__chip">Scalar values</span></summary>
         <div class="perf-tier__body">

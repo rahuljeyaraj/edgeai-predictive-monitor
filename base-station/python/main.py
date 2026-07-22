@@ -266,17 +266,14 @@ def main():
             "type": "spectrum",
             "node_id": frame.node_id,
             "timestamp": frame.timestamp,
-            # "channels" stays exactly frame.bins (mic/accel only) -- the
-            # CURRENT frontend (charts.js's handleSpectrum) fans out one
-            # waterfall row + one spectrum trace per key in "channels" with
-            # no filtering at all, so merging frame.display_bins in here
-            # would multiply the on-screen chart count the moment this
-            # broadcasts (exactly the clutter CHART_CLUTTER_PLAN.md exists to
-            # cut, and the opposite of its own point). The per-axis
-            # accel_x/y/z overlay is real data, just not under a key today's
-            # frontend reads yet -- it rides under "axis_channels" below,
-            # inert until the new multi-axis-in-one-chart UI (plan S1)
-            # is built to consume it deliberately instead of by accident.
+            # "channels" stays exactly frame.bins -- model-relevant channels
+            # (mic/accel_x/accel_y/accel_z), each fanning out one waterfall
+            # row + one spectrum trace in charts.js's handleSpectrum. The
+            # fused/combined `accel` channel is display-only now (superseded
+            # by the per-axis model channels) -- it rides under
+            # "axis_channels" below, which today's frontend deliberately
+            # doesn't consume (nothing renders the old single combined-axis
+            # spectrum anymore).
             "channels": {channel: list(bins) for channel, bins in frame.bins.items()},
             "axis_channels": {channel: list(bins) for channel, bins in
                               frame.display_bins.items()},

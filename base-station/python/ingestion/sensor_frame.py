@@ -14,14 +14,13 @@ as model-relevant without checking. A channel absent from a frame is simply
 absent from this dict, not present-with-None.
 
 `display_bins` holds spectrum channels that exist purely for dashboard
-display (docs/CHART_CLUTTER_PLAN.md S1's per-axis accel_x/y/z overlay
-chart) and deliberately do NOT correspond to any SensorChannel -- they ride
-alongside the fused `accel` channel (still in `bins`, still the model
-input) rather than replacing it. Kept in a separate dict rather than mixed
-into `bins` specifically so gate/manager/features never have to filter
-`bins` themselves; the ingestion layer (spi_reader.py/mqtt_subscriber.py)
-does that split once, resolving telemetry_schema's channel names against
-registry.SensorChannel.
+display and deliberately do NOT correspond to any SensorChannel -- today
+that's just the fused/combined `accel` channel, superseded by the per-axis
+accel_x/y/z channels (which DO feed the model, and live in `bins` instead).
+Kept in a separate dict rather than mixed into `bins` specifically so
+gate/manager/features never have to filter `bins` themselves; the ingestion
+layer (spi_reader.py/mqtt_subscriber.py) does that split once, resolving
+telemetry_schema's channel names against registry.SensorChannel.
 
 `scalars`/`time_series` are the same kind of display-only addition for
 docs/CHART_CLUTTER_PLAN.md S1 (scalar tiles, the collapsible "Raw signals"

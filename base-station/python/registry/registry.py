@@ -8,13 +8,16 @@ at a time (no cross-process locking) -- fine for now, matches every
 other single-process module planned through M9.
 """
 import json
+import logging
 import os
 import tempfile
 import threading
 import time
 from dataclasses import asdict, dataclass, field
 from enum import Enum
-from typing import Dict, FrozenSet, Optional
+from typing import Dict, FrozenSet, Optional, Tuple
+
+logger = logging.getLogger(__name__)
 
 from statemachine import StateMachine
 from statemachine.exceptions import TransitionNotAllowed
@@ -23,8 +26,16 @@ from statemachine.states import States
 
 class SensorChannel(Enum):
     MIC = "mic"
-    ACCEL = "accel"
-    # future channels are added here, one at a time
+    ACCEL_X = "accel_x"
+    ACCEL_Y = "accel_y"
+    ACCEL_Z = "accel_z"
+    # future channels are added here, one at a time. The combined "accel"
+    # channel (summed x/y/z) was replaced by the three per-axis channels
+    # above -- per-axis scalars need the directional signal a combined
+    # magnitude erases (see features.py's scalar suffix map); it's still on
+    # the wire (fuser.cpp) for whatever else may read it, just no longer a
+    # SensorChannel, so it falls through to SensorFrame.display_bins like
+    # any other non-model channel.
 
 
 class NodeStatus(Enum):
@@ -41,17 +52,28 @@ class NodeStatus(Enum):
 # per-channel input_dim (S4.2: "drives 512 vs 1024 model dim"). Adding a
 # new SensorChannel + an entry here automatically supports every
 # combination involving it -- no combination is named or enumerated by hand.
+# 128 spectral bins + 6 scalars (rms/kurtosis/std/peak/crest_factor/skewness)
+# per channel -- every current SensorChannel carries both (see
+# pipeline/features.py's _SCALAR_SUFFIX_BY_CHANNEL). The "+6" is deliberately
+# duplicated here rather than imported from features.py's scalar_dim_for():
+# registry.py is designed to be usable/testable standalone with only
+# python/registry/ on the path (registry_test.py's own PYTHONPATH doesn't
+# include python/pipeline/), so a cross-import here would break that. Keep
+# in sync if features.py's per-channel scalar count ever changes.
 _DIM_BY_CHANNEL = {
-    SensorChannel.MIC: 512,
-    SensorChannel.ACCEL: 512,
+    SensorChannel.MIC: 134,
+    SensorChannel.ACCEL_X: 134,
+    SensorChannel.ACCEL_Y: 134,
+    SensorChannel.ACCEL_Z: 134,
 }
 
 
 def input_dim_for(channels: FrozenSet[SensorChannel]) -> int:
     """Public accessor for the channel -> input_dim mapping (S4.2), so
     callers outside this module (e.g. pipeline/features.py) don't need
-    their own copy of this mapping. Sums the per-channel dim over an
-    arbitrary set of active channels."""
+    their own copy of this mapping. Sums the per-channel dim (spectral +
+    scalar tail, see _DIM_BY_CHANNEL's comment) over an arbitrary set of
+    active channels."""
     return sum(_DIM_BY_CHANNEL[c] for c in channels)
 
 
@@ -79,6 +101,14 @@ class RegistryEntry:
     # cross the line on the dashboard.
     warning_threshold: Optional[float] = None
     fault_threshold: Optional[float] = None
+    # Per-scalar z-score standardization stats (features.py's
+    # standardize_scalars()), fit once at commissioning time from this
+    # node's own healthy batch -- spectral bins are already peak-normalized
+    # to [0,1] and don't need this, but scalars like rms/kurtosis aren't
+    # naturally bounded. Column order matches whatever fixed order
+    # build_feature_vector()'s scalar tail uses. None until commissioned.
+    scalar_mu: Optional[Tuple[float, ...]] = None
+    scalar_sigma: Optional[Tuple[float, ...]] = None
 
     def to_dict(self) -> dict:
         d = asdict(self)
@@ -100,6 +130,14 @@ class RegistryEntry:
         if raw_status == "training":
             raw_status = "commissioning_collecting"
         d["status"] = NodeStatus(raw_status)
+        # JSON round-trips tuples as lists; restore tuple-ness for these two
+        # (mirrors the sensor_config special-case above) so callers doing
+        # positional/zip work against scalar_mu/sigma get the same type
+        # whether the entry was just built or reloaded from disk.
+        if d.get("scalar_mu") is not None:
+            d["scalar_mu"] = tuple(d["scalar_mu"])
+        if d.get("scalar_sigma") is not None:
+            d["scalar_sigma"] = tuple(d["scalar_sigma"])
         return RegistryEntry(**d)
 
 
@@ -235,8 +273,22 @@ class Registry:
             return
         with open(self._path, "r") as f:
             raw = json.load(f)
-        self._entries = {node_id: RegistryEntry.from_dict(entry)
-                          for node_id, entry in raw.items()}
+        # Isolate a single bad entry (e.g. a sensor_config channel name that
+        # no longer maps to a SensorChannel member after a schema change --
+        # see registry.py's SensorChannel docstring) rather than letting one
+        # stale node fail the whole Registry() construction, which main.py
+        # calls at startup with no try/except -- one incompatible node
+        # shouldn't take the entire fleet offline. That node just needs
+        # re-adding/re-commissioning.
+        entries = {}
+        for node_id, entry in raw.items():
+            try:
+                entries[node_id] = RegistryEntry.from_dict(entry)
+            except ValueError as e:
+                logger.warning(
+                    "skipping node %r: incompatible registry entry (%s) -- "
+                    "re-add/re-commission it", node_id, e)
+        self._entries = entries
 
     def _save(self) -> None:
         # Write to a temp file in the same directory then rename, so a
@@ -259,7 +311,8 @@ class Registry:
              # A frozenset literal default is safe here (unlike the usual
              # mutable-default-argument trap) since frozensets are immutable.
              sensor_config: FrozenSet[SensorChannel] = frozenset(
-                 {SensorChannel.MIC, SensorChannel.ACCEL}),
+                 {SensorChannel.MIC, SensorChannel.ACCEL_X,
+                  SensorChannel.ACCEL_Y, SensorChannel.ACCEL_Z}),
              input_dim: Optional[int] = None) -> RegistryEntry:
         """input_dim: the actual per-node vector length to commit to (e.g.
         derived from a real first frame's bin counts, PipelineManager's
@@ -402,7 +455,9 @@ class Registry:
     def complete_commissioning(self, node_id: str, model_path: str,
                                  timestamp: Optional[float] = None,
                                  warning_threshold: Optional[float] = None,
-                                 fault_threshold: Optional[float] = None) -> RegistryEntry:
+                                 fault_threshold: Optional[float] = None,
+                                 scalar_mu: Optional[Tuple[float, ...]] = None,
+                                 scalar_sigma: Optional[Tuple[float, ...]] = None) -> RegistryEntry:
         with self._lock_for(node_id):
             entry = self.get(node_id)
             try:
@@ -413,13 +468,18 @@ class Registry:
                     f"{entry.status.value!r}, must be commissioning_training")
             entry.model_path = model_path
             entry.last_commissioned = time.time() if timestamp is None else timestamp
-            # Thresholds are calibrated from this run's healthy scores
-            # (commissioning.py); on re-commissioning they're overwritten
-            # with the fresh values, matching model_path's overwrite behavior.
+            # Thresholds/scalar standardization stats are all calibrated from
+            # this run's healthy scores/batch (commissioning.py); on
+            # re-commissioning they're overwritten with the fresh values,
+            # matching model_path's overwrite behavior.
             if warning_threshold is not None:
                 entry.warning_threshold = warning_threshold
             if fault_threshold is not None:
                 entry.fault_threshold = fault_threshold
+            if scalar_mu is not None:
+                entry.scalar_mu = scalar_mu
+            if scalar_sigma is not None:
+                entry.scalar_sigma = scalar_sigma
             self._save()
             self._notify_status_change(node_id, entry.status)
             return entry

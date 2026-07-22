@@ -22,12 +22,20 @@ from commissioning import CommissioningError, CommissioningSession
 
 NODE_ID = "node-1"
 DOUBLE_START_NODE_ID = "node-double-start"  # owned only by test_double_start_raises
-DIM = 512
+DIM = 128  # SensorChannel.MIC's spectral bin count (registry._DIM_BY_CHANNEL)
+
+# Fixed, identical across every synthetic frame in this file -- these tests
+# are about the commissioning workflow (gating/collection/training/
+# re-commissioning), not the scalar tail's own signal, so the scalars stay
+# constant and every frame's anomaly-relevant signal comes from mic_bins
+# alone, same as before this file gained a scalar tail at all.
+MIC_SCALARS = {"rms_mic": 1.0, "kurtosis_mic": 1.0, "std_mic": 1.0,
+               "peak_mic": 1.0, "crest_factor_mic": 1.0, "skewness_mic": 1.0}
 
 
-def frame(accel_bins) -> SensorFrame:
+def frame(mic_bins) -> SensorFrame:
     return SensorFrame(node_id=NODE_ID, source=FrameSource.SPI, timestamp=0.0,
-                        bins={"accel": accel_bins})
+                        bins={"mic": mic_bins}, scalars=MIC_SCALARS)
 
 
 RUNNING = frame(tuple(3.0 + 0.001 * i for i in range(DIM)))   # RMS well over threshold
@@ -137,7 +145,7 @@ def test_frames_for_other_node_ignored(registry, models_dir):
     session = new_session(registry, models_dir)
     session.start()
     other = SensorFrame(node_id="node-2", source=FrameSource.SPI, timestamp=0.0,
-                         bins={"accel": RUNNING.bins["accel"]})
+                         bins={"mic": RUNNING.bins["mic"]}, scalars=MIC_SCALARS)
     for _ in range(5):
         session.feed_frame(other)
     assert session.collected_count == 0, session.collected_count
@@ -150,15 +158,15 @@ def main():
     models_dir = os.path.join(tmp_dir, "models")
 
     registry = Registry(registry_path)
-    registry.add(NODE_ID, sensor_config=frozenset({SensorChannel.ACCEL}))
-    registry.add(DOUBLE_START_NODE_ID, sensor_config=frozenset({SensorChannel.ACCEL}))
+    registry.add(NODE_ID, sensor_config=frozenset({SensorChannel.MIC}))
+    registry.add(DOUBLE_START_NODE_ID, sensor_config=frozenset({SensorChannel.MIC}))
 
     test_stopped_frames_are_not_collected(registry, models_dir)
 
     # Reset this node's state (previous test left it HEALTHY/collected)
     # by re-adding a fresh registry entry under a clean session.
     registry.decommission(NODE_ID)
-    registry.add(NODE_ID, sensor_config=frozenset({SensorChannel.ACCEL}))
+    registry.add(NODE_ID, sensor_config=frozenset({SensorChannel.MIC}))
 
     model_path = test_end_to_end_commissioning(registry, models_dir)
     test_recommissioning_overwrites_same_path(registry, models_dir, model_path)

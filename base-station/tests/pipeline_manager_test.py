@@ -26,6 +26,7 @@ import tempfile
 
 from sensor_frame import BASE_STATION_NODE_ID, FrameSource, SensorFrame
 from registry import NodeNotFoundError, Registry, SensorChannel
+from features import build_feature_vector
 from autoencoder import build_autoencoder, save_model, train_autoencoder
 from gate import MotorStateGate
 from store import HistoryStore
@@ -38,33 +39,40 @@ def default_gate_factory() -> MotorStateGate:
 
 def base_station_frame() -> SensorFrame:
     """A frame shaped exactly like ingestion/spi_reader.py's on_frame
-    output (mic+accel bins, node_id/source fixed) -- the SPI wire framing
-    itself (magic/CRC/chunking) is a hardware-transport detail already
-    covered by tests/spi_link_test.py on real hardware, not something this
-    pure-logic test needs to re-simulate.
+    output (mic + per-axis accel bins, node_id/source fixed) -- the SPI
+    wire framing itself (magic/CRC/chunking) is a hardware-transport
+    detail already covered by tests/spi_link_test.py on real hardware,
+    not something this pure-logic test needs to re-simulate.
 
-    512 bins each for mic/accel to match the registry's BOTH-channel
-    input_dim (1024) -- manager.py's ingest-time frame-length check
-    rejects any other count."""
+    128 bins per channel to match the registry's per-channel spectral dim
+    (registry._DIM_BY_CHANNEL) -- manager.py's ingest-time frame-length
+    check rejects any other count."""
     return SensorFrame(
         node_id=BASE_STATION_NODE_ID,
         source=FrameSource.SPI,
         timestamp=100.0,
         bins={
-            "mic": tuple(float(i % 5 + 1) for i in range(512)),
-            "accel": tuple(float(i % 7 + 1) for i in range(512)),
+            "mic": tuple(float(i % 5 + 1) for i in range(128)),
+            "accel_x": tuple(float(i % 7 + 1) for i in range(128)),
+            "accel_y": tuple(float(i % 6 + 1) for i in range(128)),
+            "accel_z": tuple(float(i % 4 + 1) for i in range(128)),
         },
     )
 
 
 def satellite_frame() -> SensorFrame:
     """Hand-built to stand in for "a second, distinct node_id" fed over
-    MQTT. 512 accel bins to match the registry's ACCEL-only input_dim."""
+    MQTT. mic-only: satellite firmware doesn't yet send per-axis accel
+    spectra or scalars (base-station-only for now, see
+    docs/SENSOR_TELEMETRY_FRAME_PLAN.md) and the old combined `accel`
+    channel it used to report is no longer a SensorChannel (superseded by
+    per-axis on the base station side) -- mic is the only channel a
+    satellite node can currently commit to the model with."""
     return SensorFrame(
         node_id="sat-1",
         source=FrameSource.MQTT,
         timestamp=200.0,
-        bins={"accel": tuple(float(i % 9 + 1) for i in range(512))},
+        bins={"mic": tuple(float(i % 9 + 1) for i in range(128))},
     )
 
 
@@ -92,13 +100,15 @@ def main():
     assert set(entries.keys()) == {BASE_STATION_NODE_ID, "sat-1"}, entries.keys()
 
     base_station_entry = entries[BASE_STATION_NODE_ID]
-    assert base_station_entry.sensor_config == frozenset({SensorChannel.MIC, SensorChannel.ACCEL}), base_station_entry.sensor_config
-    assert base_station_entry.input_dim == 1024, base_station_entry.input_dim
+    assert base_station_entry.sensor_config == frozenset(
+        {SensorChannel.MIC, SensorChannel.ACCEL_X, SensorChannel.ACCEL_Y, SensorChannel.ACCEL_Z}
+    ), base_station_entry.sensor_config
+    assert base_station_entry.input_dim == 536, base_station_entry.input_dim
     assert base_station_entry.last_seen == 100.0, base_station_entry.last_seen
 
     sat_entry = entries["sat-1"]
-    assert sat_entry.sensor_config == frozenset({SensorChannel.ACCEL}), sat_entry.sensor_config
-    assert sat_entry.input_dim == 512, sat_entry.input_dim
+    assert sat_entry.sensor_config == frozenset({SensorChannel.MIC}), sat_entry.sensor_config
+    assert sat_entry.input_dim == 134, sat_entry.input_dim
     assert sat_entry.last_seen == 200.0, sat_entry.last_seen
     print("registry auto-gained entries for both nodes with correct sensor_config: PASS")
 
@@ -106,28 +116,39 @@ def main():
 
 
 NODE_ID = "commissioned-node"
-DIM = 512
+DIM = 128  # SensorChannel.MIC's spectral bin count (registry._DIM_BY_CHANNEL)
+INPUT_DIM = 134  # + 6-value scalar tail
 HEALTHY_BINS = tuple(1.0 for _ in range(DIM))
 FAULT_BINS = tuple(4.0 if i % 2 == 0 else 1.0 for i in range(DIM))
+
+# Fixed, identical on every synthetic frame below -- these tests are about
+# manager.py's routing/inference/history wiring, not the scalar tail's own
+# signal, so every frame's anomaly-relevant signal comes from mic_bins alone.
+MIC_SCALARS = {"rms_mic": 1.0, "kurtosis_mic": 1.0, "std_mic": 1.0,
+               "peak_mic": 1.0, "crest_factor_mic": 1.0, "skewness_mic": 1.0}
 
 
 def scored_frame(bins, timestamp) -> SensorFrame:
     return SensorFrame(node_id=NODE_ID, source=FrameSource.SPI, timestamp=timestamp,
-                        bins={"accel": bins})
+                        bins={"mic": bins}, scalars=MIC_SCALARS)
 
 
 def test_commissioned_node_routes_through_inference_and_writes_history():
     tmp_dir = tempfile.mkdtemp(prefix="pipeline_manager_test_")
     registry = Registry(os.path.join(tmp_dir, "registry.json"))
-    registry.add(NODE_ID, sensor_config=frozenset({SensorChannel.ACCEL}))
+    registry.add(NODE_ID, sensor_config=frozenset({SensorChannel.MIC}))
     history = HistoryStore(os.path.join(tmp_dir, "history.db"))
 
     # Commission for real via the gate/features/autoencoder modules
     # directly (no HTTP layer needed here -- this test is about
     # manager.py's wiring, not the REST commissioning endpoints already
-    # covered by api_test.py).
-    model = build_autoencoder(DIM)
-    train_autoencoder(model, [HEALTHY_BINS] * 5, epochs=500)
+    # covered by api_test.py). Trained on the real build_feature_vector()
+    # output (spectral + scalar tail), matching what InferencePipeline
+    # will actually score frames with below.
+    model = build_autoencoder(INPUT_DIM)
+    healthy_vector, _ = build_feature_vector(
+        scored_frame(HEALTHY_BINS, 0.0), frozenset({SensorChannel.MIC}), INPUT_DIM)
+    train_autoencoder(model, [healthy_vector] * 5, epochs=500)
     model_path = os.path.join(tmp_dir, f"{NODE_ID}.pt")
     save_model(model, model_path)
     registry.start_commissioning(NODE_ID)
@@ -167,11 +188,13 @@ def test_paused_node_is_not_scored():
     so the dashboard's anomaly score kept moving on a "paused" node."""
     tmp_dir = tempfile.mkdtemp(prefix="pipeline_manager_test_")
     registry = Registry(os.path.join(tmp_dir, "registry.json"))
-    registry.add(NODE_ID, sensor_config=frozenset({SensorChannel.ACCEL}))
+    registry.add(NODE_ID, sensor_config=frozenset({SensorChannel.MIC}))
     history = HistoryStore(os.path.join(tmp_dir, "history.db"))
 
-    model = build_autoencoder(DIM)
-    train_autoencoder(model, [HEALTHY_BINS] * 5, epochs=500)
+    model = build_autoencoder(INPUT_DIM)
+    healthy_vector, _ = build_feature_vector(
+        scored_frame(HEALTHY_BINS, 0.0), frozenset({SensorChannel.MIC}), INPUT_DIM)
+    train_autoencoder(model, [healthy_vector] * 5, epochs=500)
     model_path = os.path.join(tmp_dir, f"{NODE_ID}.pt")
     save_model(model, model_path)
     registry.start_commissioning(NODE_ID)
@@ -209,17 +232,17 @@ def test_frame_bin_count_mismatch_raises():
     routing time, not silently corrupt training/inference data."""
     tmp_dir = tempfile.mkdtemp(prefix="pipeline_manager_test_")
     registry = Registry(os.path.join(tmp_dir, "registry.json"))
-    registry.add("mismatched-node", sensor_config=frozenset({SensorChannel.ACCEL}))
+    registry.add("mismatched-node", sensor_config=frozenset({SensorChannel.MIC}))
     manager = PipelineManager(registry, default_gate_factory)
 
     bad_frame = SensorFrame(node_id="mismatched-node", source=FrameSource.MQTT,
-                             timestamp=0.0, bins={"accel": (1.0, 2.0, 3.0)})
+                             timestamp=0.0, bins={"mic": (1.0, 2.0, 3.0)})
     try:
         manager.route(bad_frame)
         assert False, "expected ValueError for bin-count/sensor_config mismatch"
     except ValueError as e:
         assert "mismatched-node" in str(e), e
-        assert "expected 512 bins" in str(e), e
+        assert "expected 134 bins" in str(e), e
     print("frame bin count mismatch against registered sensor_config raises: PASS")
 
 
@@ -248,7 +271,7 @@ def test_decommission_removes_mid_commissioning_node():
     history = HistoryStore(os.path.join(tmp_dir, "history.db"))
     manager = PipelineManager(registry, default_gate_factory, history_store=history)
 
-    registry.add(NODE_ID, sensor_config=frozenset({SensorChannel.ACCEL}))
+    registry.add(NODE_ID, sensor_config=frozenset({SensorChannel.MIC}))
     registry.start_commissioning(NODE_ID)
     manager.route(scored_frame(HEALTHY_BINS, timestamp=0.0))
     history.record(NODE_ID, 0.0, 0.01, registry.get(NODE_ID).status)
@@ -276,9 +299,14 @@ def test_non_sensor_channel_bin_key_is_ignored_not_raised():
     """Regression test: a frame.bins key that isn't a SensorChannel (e.g. a
     hypothetical regression in the ingestion-layer bins/display_bins split,
     docs/CHART_CLUTTER_PLAN.md S1) must not crash sensor_config inference --
-    this exact shape (an "accel_x" key alongside "accel"/"mic") took down
-    the whole SPI ingestion thread the first time the per-axis accel
-    channels were tried against real hardware, before that split existed."""
+    this exact shape (an "accel" key alongside the per-axis accel_x/y/z
+    ones) is what a base station sends today: fuser.cpp keeps writing the
+    old combined `accel` channel at full resolution alongside the per-axis
+    ones (for whatever else might still read it), but it's no longer a
+    SensorChannel (superseded by per-axis for the model), the same
+    "some wire channels aren't model inputs" shape that took down the whole
+    SPI ingestion thread the first time the per-axis accel channels were
+    tried against real hardware, before the bins/display_bins split existed."""
     tmp_dir = tempfile.mkdtemp(prefix="pipeline_manager_test_")
     registry = Registry(os.path.join(tmp_dir, "registry.json"))
     manager = PipelineManager(registry, default_gate_factory)
@@ -288,50 +316,53 @@ def test_non_sensor_channel_bin_key_is_ignored_not_raised():
         source=FrameSource.SPI,
         timestamp=0.0,
         bins={
-            "mic": tuple(1.0 for _ in range(512)),
-            "accel": tuple(1.0 for _ in range(512)),
-            "accel_x": tuple(1.0 for _ in range(512)),  # not a SensorChannel
+            "mic": tuple(1.0 for _ in range(128)),
+            "accel_x": tuple(1.0 for _ in range(128)),
+            "accel_y": tuple(1.0 for _ in range(128)),
+            "accel_z": tuple(1.0 for _ in range(128)),
+            "accel": tuple(1.0 for _ in range(512)),  # not a SensorChannel anymore
         },
     )
     manager.route(frame)  # must not raise
 
     entry = registry.get("regression-node")
-    assert entry.sensor_config == frozenset({SensorChannel.MIC, SensorChannel.ACCEL}), \
-        entry.sensor_config
+    assert entry.sensor_config == frozenset(
+        {SensorChannel.MIC, SensorChannel.ACCEL_X, SensorChannel.ACCEL_Y, SensorChannel.ACCEL_Z}
+    ), entry.sensor_config
     print("non-SensorChannel bins key is skipped, not raised, during sensor_config inference: PASS")
 
 
 def test_dynamic_input_dim_from_first_frame():
     """A node's committed input_dim comes from whatever bin count its own
-    first frame actually sent, not a fixed 512-per-channel table -- not
-    every node uses the same FFT bin count (e.g. a satellite sim node
-    configured for a smaller/larger accel spectrum than the base station's
-    own 512). A later frame matching that same non-512 commitment must
-    route cleanly; one that doesn't must still raise."""
+    first frame actually sent, not a fixed per-channel table -- not every
+    node uses the same FFT bin count (e.g. a satellite sim node configured
+    for a smaller/larger accel spectrum than the base station's own 128).
+    A later frame matching that same non-standard commitment must route
+    cleanly; one that doesn't must still raise."""
     tmp_dir = tempfile.mkdtemp(prefix="pipeline_manager_test_")
     registry = Registry(os.path.join(tmp_dir, "registry.json"))
     manager = PipelineManager(registry, default_gate_factory)
 
     first = SensorFrame(node_id="odd-bins-node", source=FrameSource.MQTT, timestamp=0.0,
-                         bins={"accel": tuple(1.0 for _ in range(128))})
+                         bins={"accel_x": tuple(1.0 for _ in range(64))})
     manager.route(first)
 
     entry = registry.get("odd-bins-node")
-    assert entry.sensor_config == frozenset({SensorChannel.ACCEL}), entry.sensor_config
-    assert entry.input_dim == 128, entry.input_dim
+    assert entry.sensor_config == frozenset({SensorChannel.ACCEL_X}), entry.sensor_config
+    assert entry.input_dim == 70, entry.input_dim  # 64 spectral + 6-value scalar tail
 
     matching = SensorFrame(node_id="odd-bins-node", source=FrameSource.MQTT, timestamp=1.0,
-                            bins={"accel": tuple(2.0 for _ in range(128))})
-    manager.route(matching)  # must not raise -- matches the node's own committed 128
+                            bins={"accel_x": tuple(2.0 for _ in range(64))})
+    manager.route(matching)  # must not raise -- matches the node's own committed 64
 
     mismatched = SensorFrame(node_id="odd-bins-node", source=FrameSource.MQTT, timestamp=2.0,
-                              bins={"accel": tuple(3.0 for _ in range(512))})
+                              bins={"accel_x": tuple(3.0 for _ in range(128))})
     try:
         manager.route(mismatched)
-        assert False, "expected ValueError: 512 bins doesn't match this node's committed 128"
+        assert False, "expected ValueError: 128 bins doesn't match this node's committed 64"
     except ValueError as e:
-        assert "expected 128 bins" in str(e), e
-    print("node's own first-frame bin count (not a fixed 512 table) is what later frames are validated against: PASS")
+        assert "expected 70 bins" in str(e), e
+    print("node's own first-frame bin count (not a fixed table) is what later frames are validated against: PASS")
 
 
 if __name__ == "__main__":

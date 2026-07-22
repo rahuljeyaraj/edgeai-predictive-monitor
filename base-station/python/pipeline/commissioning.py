@@ -12,12 +12,13 @@ versions) -- versioning would be dead weight with no consumer.
 naturally lands on the same file.
 """
 import os
+import statistics
 from typing import Callable, List, Optional, Tuple
 
 from sensor_frame import SensorFrame
 from registry import NodeStatus, Registry
 from gate import MotorState, MotorStateGate
-from features import build_feature_vector
+from features import build_feature_vector, standardize_scalars
 from autoencoder import (build_autoencoder, reconstruction_error, save_model,
                           train_autoencoder)
 
@@ -43,7 +44,6 @@ def _thresholds_from_healthy(scores) -> Tuple[float, float]:
     healthy commissioning batch. Guards the degenerate near-zero-spread
     case (e.g. a node looping one file, so every collected window is nearly
     identical) so fault > warning > 0 always holds regardless."""
-    import statistics
     mu = statistics.fmean(scores)
     sigma = statistics.pstdev(scores)  # population: the batch IS the baseline
     warning = max(mu + _WARNING_SIGMA * sigma, mu * 1.5, 1e-4)
@@ -69,6 +69,12 @@ class CommissioningSession:
         self._epochs = epochs
         self._collected: List[Tuple[float, ...]] = []
         self._frozen: List[Tuple[float, ...]] = []
+        # Where each collected vector's scalar tail starts -- constant for
+        # the whole session (same node, same sensor_config throughout), set
+        # from build_feature_vector()'s own return each frame rather than
+        # recomputed independently, so it can never drift out of sync with
+        # what actually built self._collected's vectors.
+        self._spectral_dim: Optional[int] = None
 
     @property
     def collected_count(self) -> int:
@@ -82,6 +88,7 @@ class CommissioningSession:
         # session-local CommissioningError.
         self._registry.start_commissioning(self._node_id)
         self._collected = []
+        self._spectral_dim = None
 
     def feed_frame(self, frame: SensorFrame) -> None:
         """Call for every frame while a session is active; frames for other
@@ -98,7 +105,9 @@ class CommissioningSession:
         if self._gate.update(frame) != MotorState.RUNNING:
             return
 
-        self._collected.append(build_feature_vector(frame, entry.sensor_config, entry.input_dim))
+        vector, spectral_dim = build_feature_vector(frame, entry.sensor_config, entry.input_dim)
+        self._spectral_dim = spectral_dim
+        self._collected.append(vector)
 
     def stop_collecting(self) -> None:
         """Explicit stop trigger (S3.5, dashboard redesign S6: "Stop &
@@ -131,14 +140,34 @@ class CommissioningSession:
             raise CommissioningError(f"not ready to train for {self._node_id!r}: "
                                       "call stop_collecting() first")
 
+        # Fit the scalar tail's z-score standardization on THIS node's own
+        # healthy batch (features.py's standardize_scalars() -- spectral
+        # bins are already peak-normalized to [0,1] and skipped; a
+        # sensor_config with no scalar tail at all makes this a no-op,
+        # scalar_mu/scalar_sigma stay None). Population mean/stdev per
+        # column, mirroring tools/offline_experiment.py's run_config() (the
+        # config this exact standardization approach was validated with).
+        # The model must train on standardized data, not raw, since that's
+        # what inference.py will feed it too.
+        scalar_dim = entry.input_dim - self._spectral_dim
+        if scalar_dim > 0:
+            columns = list(zip(*(v[self._spectral_dim:] for v in self._frozen)))
+            scalar_mu = tuple(statistics.fmean(col) for col in columns)
+            scalar_sigma = tuple(statistics.pstdev(col) for col in columns)
+            standardized = [standardize_scalars(v, self._spectral_dim, scalar_mu, scalar_sigma)
+                             for v in self._frozen]
+        else:
+            scalar_mu = scalar_sigma = None
+            standardized = self._frozen
+
         model = build_autoencoder(entry.input_dim)
-        train_autoencoder(model, self._frozen, epochs=self._epochs, on_epoch=on_epoch)
+        train_autoencoder(model, standardized, epochs=self._epochs, on_epoch=on_epoch)
 
         # Calibrate this node's warning/fault thresholds from the trained
         # model's error on its own healthy batch, so inference (S3.6) uses
         # a baseline that fits this motor rather than a fixed global cutoff
         # that may sit entirely above or below its score range.
-        healthy_scores = [reconstruction_error(model, vector) for vector in self._frozen]
+        healthy_scores = [reconstruction_error(model, vector) for vector in standardized]
         warning_threshold, fault_threshold = _thresholds_from_healthy(healthy_scores)
 
         os.makedirs(self._models_dir, exist_ok=True)
@@ -146,6 +175,7 @@ class CommissioningSession:
         save_model(model, model_path)
         self._registry.complete_commissioning(
             self._node_id, model_path,
-            warning_threshold=warning_threshold, fault_threshold=fault_threshold)
+            warning_threshold=warning_threshold, fault_threshold=fault_threshold,
+            scalar_mu=scalar_mu, scalar_sigma=scalar_sigma)
 
         return model_path

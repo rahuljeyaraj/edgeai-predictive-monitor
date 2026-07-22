@@ -246,10 +246,10 @@ class SpiConsumer:
 
         # decoded.bins is schema-driven (every SPECTRUM channel the schema
         # knows about, model-facing or not) -- split off the channels that
-        # aren't a SensorChannel (the per-axis accel_x/y/z overlay,
-        # docs/CHART_CLUTTER_PLAN.md S1) into display_bins so gate/manager/
-        # features keep seeing exactly the model-relevant set in .bins, same
-        # as before this frame started carrying extra display channels.
+        # aren't a SensorChannel (today, just the fused/combined `accel`
+        # channel -- accel_x/y/z and mic ARE SensorChannel members and stay
+        # in model_bins) into display_bins so gate/manager/features keep
+        # seeing exactly the model-relevant set in .bins.
         model_bins, display_bins = {}, {}
         for name, bins in decoded.bins.items():
             try:

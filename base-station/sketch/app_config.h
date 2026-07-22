@@ -54,6 +54,18 @@
 #define MIC_SPECTRUM_BINS 32
 #define ACCEL_SPECTRUM_BINS 32
 
+/* Wire resolution for the fault-detection model's feature vector (mic +
+ * per-axis accel spectra fuser.cpp sends), distinct from ACCEL_SPECTRUM_BINS/
+ * MIC_SPECTRUM_BINS above (that pair is the legacy 32-bin Bridge-RPC view,
+ * unrelated). Chosen via tools/offline_experiment.py's sweep against real
+ * captures (axis=separate bins=128 mic_bins=128 +
+ * scalars=rms+kurtosis+std+peak+crest_factor+skewness -> input_dim=536,
+ * +38.5 sigma worst-case fault separation, docs/SENSOR_TELEMETRY_FRAME_PLAN.md).
+ * Pooling to this many buckets happens in fuser.cpp right before the wire
+ * write and leaves the native FFT window (and therefore compute_scalars()'s
+ * time-domain inputs) untouched - only the spectrum's wire bin depth shrinks. */
+#define FUSER_MODEL_SPECTRUM_BINS 128
+
 /* --- Thread priorities ---------------------------------------------------
  * Lower number = higher priority (Zephyr convention). Bridge's own update
  * thread runs at priority 5 (UPDATE_THREAD_PRIORITY in
@@ -143,7 +155,7 @@
  * for offline experimentation (docs/SENSOR_TELEMETRY_FRAME_PLAN.md) - not
  * meant to run permanently, flip back to 0 and reflash once a rig capture
  * session is done. See fuser.cpp's raw-mode block for the frame layout. */
-#define FUSER_RAW_CAPTURE_MODE 1
+#define FUSER_RAW_CAPTURE_MODE 0
 
 /* Raw-mode-only epoch. One accel raw window (1024 samples) takes
  * 1024/ACCEL_ODR_HZ to fill; a faster epoch than that would resend the same

@@ -33,8 +33,13 @@ from manager import PipelineManager
 from alert_store import AlertStore
 
 NODE_ID = "node-1"
-DIM = 512
+DIM = 128  # SensorChannel.MIC's spectral bin count (registry._DIM_BY_CHANNEL)
 HEALTHY_BINS = tuple(1.0 for _ in range(DIM))
+
+# Fixed -- these tests are about the REST/WebSocket/commissioning-workflow
+# layer, not the scalar tail's own signal.
+MIC_SCALARS = {"rms_mic": 1.0, "kurtosis_mic": 1.0, "std_mic": 1.0,
+               "peak_mic": 1.0, "crest_factor_mic": 1.0, "skewness_mic": 1.0}
 
 
 def gate_factory() -> MotorStateGate:
@@ -43,7 +48,7 @@ def gate_factory() -> MotorStateGate:
 
 def frame(node_id, timestamp=0.0) -> SensorFrame:
     return SensorFrame(node_id=node_id, source=FrameSource.SPI, timestamp=timestamp,
-                        bins={"accel": HEALTHY_BINS})
+                        bins={"mic": HEALTHY_BINS}, scalars=MIC_SCALARS)
 
 
 class FakeTelegramBot:
@@ -67,7 +72,7 @@ class ApiUnderTest:
     (S5: backend API layer). Each test gets its own instance so
     registry/history state never leaks between tests."""
 
-    def __init__(self, tmp_dir: str, node_id=NODE_ID, sensor_config=frozenset({SensorChannel.ACCEL}),
+    def __init__(self, tmp_dir: str, node_id=NODE_ID, sensor_config=frozenset({SensorChannel.MIC}),
                  min_frames=5, epochs=300, telegram_bot=None):
         registry_path = os.path.join(tmp_dir, "registry.json")
         self.registry = Registry(registry_path)
@@ -98,7 +103,7 @@ def test_get_nodes_lists_registry_entries(tmp_dir):
         status, body = api.request("GET", "/nodes")
         assert status == 200, (status, body)
         assert NODE_ID in body, body
-        assert body[NODE_ID]["sensor_config"] == ["accel"], body
+        assert body[NODE_ID]["sensor_config"] == ["mic"], body
         print("GET /nodes lists registry entries: PASS")
     finally:
         api.stop()

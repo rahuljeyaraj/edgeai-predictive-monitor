@@ -36,10 +36,14 @@ NODE_B = "node-b"
 
 
 def frame(node_id, timestamp=0.0, source=FrameSource.SPI) -> SensorFrame:
-    # 512 bins to match the registry's ACCEL-only input_dim (manager.py's
-    # ingest-time frame-length check rejects any other count).
+    # 128 bins to match the registry's MIC-only spectral input_dim
+    # (manager.py's ingest-time frame-length check rejects any other count
+    # -- it also expects a 6-value scalar tail on top, but that's computed
+    # from channel membership alone, not read from frame.scalars, so these
+    # StubPipeline-only frames -- no node here ever gets commissioned --
+    # don't need one).
     return SensorFrame(node_id=node_id, source=source, timestamp=timestamp,
-                        bins={"accel": tuple(float(i % 3 + 1) for i in range(512))})
+                        bins={"mic": tuple(float(i % 3 + 1) for i in range(128))})
 
 
 def test_disabled_monitor_reports_nothing():
@@ -183,7 +187,7 @@ def test_ingest_fps_by_transport_tracks_manager_routed_frames(tmp_dir):
 
 def test_rest_perf_endpoints_and_websocket_broadcast(tmp_dir):
     registry = Registry(os.path.join(tmp_dir, "registry.json"))
-    registry.add(NODE_A, sensor_config=frozenset({SensorChannel.ACCEL}))
+    registry.add(NODE_A, sensor_config=frozenset({SensorChannel.MIC}))
     monitor = PerformanceMonitor(enabled=True, window_size=10)
     manager = PipelineManager(registry, gate_factory, perf_monitor=monitor)
     manager.route(frame(NODE_A, timestamp=0.0))

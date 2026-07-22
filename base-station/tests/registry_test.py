@@ -25,8 +25,8 @@ def main():
 
     reg = Registry(path)
     reg.add("node-1", display_name="Motor 1",
-            sensor_config=frozenset({SensorChannel.MIC, SensorChannel.ACCEL}))
-    reg.add("node-2", display_name="Motor 2", sensor_config=frozenset({SensorChannel.ACCEL}))
+            sensor_config=frozenset({SensorChannel.MIC, SensorChannel.ACCEL_X}))
+    reg.add("node-2", display_name="Motor 2", sensor_config=frozenset({SensorChannel.MIC}))
     reg.rename("node-1", "Compressor A")
     reg.start_commissioning("node-2")
     reg.stop_collecting("node-2")
@@ -45,13 +45,13 @@ def main():
 
     node1 = reopened.get("node-1")
     assert node1.display_name == "Compressor A", node1.display_name
-    assert node1.sensor_config == frozenset({SensorChannel.MIC, SensorChannel.ACCEL})
-    assert node1.input_dim == 1024, node1.input_dim
+    assert node1.sensor_config == frozenset({SensorChannel.MIC, SensorChannel.ACCEL_X})
+    assert node1.input_dim == 268, node1.input_dim
     assert node1.status == NodeStatus.UNCOMMISSIONED
 
     node2 = reopened.get("node-2")
     assert node2.status == NodeStatus.PAUSED, node2.status
-    assert node2.input_dim == 512, node2.input_dim
+    assert node2.input_dim == 134, node2.input_dim
 
     node3 = reopened.get("node-3")
     assert node3.status == NodeStatus.UNCOMMISSIONED, node3.status
@@ -73,7 +73,7 @@ def main():
 
     changes = []
     reloaded_again.on_status_change(lambda node_id, status: changes.append((node_id, status)))
-    reloaded_again.add("node-4", sensor_config=frozenset({SensorChannel.ACCEL}))
+    reloaded_again.add("node-4", sensor_config=frozenset({SensorChannel.MIC}))
     reloaded_again.start_commissioning("node-4")
     reloaded_again.stop_collecting("node-4")
     reloaded_again.complete_commissioning("node-4", model_path="unused.pt")
