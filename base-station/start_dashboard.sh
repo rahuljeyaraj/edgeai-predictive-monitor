@@ -68,10 +68,25 @@ fi
 echo "Dashboard responding (HTTP 200)."
 
 step "Clearing any stale base_station node left over from raw-capture mode"
-node_code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "${VERIFY_BASE}/nodes/${BASE_STATION_NODE_ID}" 2>/dev/null || true)"
-if [ "${node_code}" = "200" ]; then
-    curl -s -X POST --max-time 5 "${VERIFY_BASE}/nodes/${BASE_STATION_NODE_ID}/decommission" >/dev/null
-    echo "Removed stale ${BASE_STATION_NODE_ID} registry entry -- it'll re-register fresh from the next real frame."
+# A raw-capture-mode leftover registers with sensor_config == [] (its first
+# frame carries no spectral channel bins at all -- manager.py's
+# _infer_sensor_config_and_dim commits sensor_config from whatever the very
+# first frame actually had, and never changes it after). A real normal-mode
+# base_station always has 4 (accel_x/y/z + mic). Only clear the former --
+# decommissioning deletes the node's registry entry (calibration/thresholds)
+# AND its entire history.db row set, so blindly clearing whatever's there
+# unconditionally, as this used to, wipes a real commissioned node's history
+# with no way to get it back.
+node_json="$(curl -s --max-time 5 "${VERIFY_BASE}/nodes/${BASE_STATION_NODE_ID}" 2>/dev/null || true)"
+if echo "${node_json}" | grep -q '"node_id"'; then
+    channel_count="$(echo "${node_json}" | python3 -c 'import json,sys
+print(len(json.load(sys.stdin).get("sensor_config") or []))' 2>/dev/null || echo -1)"
+    if [ "${channel_count}" = "0" ]; then
+        curl -s -X POST --max-time 5 "${VERIFY_BASE}/nodes/${BASE_STATION_NODE_ID}/decommission" >/dev/null
+        echo "Cleared a stale 0-channel ${BASE_STATION_NODE_ID} entry (raw-capture-mode leftover) -- it'll re-register fresh from the next real frame."
+    else
+        echo "Existing ${BASE_STATION_NODE_ID} entry has ${channel_count} sensor channel(s) -- that's a real commissioned node, leaving it alone."
+    fi
 else
     echo "No existing ${BASE_STATION_NODE_ID} entry -- nothing to clear."
 fi
