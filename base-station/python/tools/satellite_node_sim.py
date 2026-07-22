@@ -119,6 +119,7 @@ from raw_features import (  # noqa: E402
     downsample,
     fft_magnitude,
     kurtosis,
+    mic_useful_magnitude,
     peak,
     peak_normalize,
     rms,
@@ -298,7 +299,11 @@ def build_frame(windows: dict, *, accel_fused: bool, accel_per_axis: bool, mic: 
 
     if mic and MIC_CHANNEL in windows:
         window, fs = windows[MIC_CHANNEL]
-        mag = downsample(fft_magnitude(window), mic_bin_count)
+        # Trim to the first quarter-FFT before downsampling -- mic's own
+        # Fs/4 aliasing limit (mic_sampler.cpp), same as raw_capture_server.py
+        # and offline_experiment.py apply; otherwise this simulated node
+        # publishes an alias image as if it were real audio above 24kHz.
+        mag = downsample(mic_useful_magnitude(fft_magnitude(window)), mic_bin_count)
         mic_bins = tuple(float(v) for v in peak_normalize(mag))
     else:
         fs = NOMINAL_MIC_FS_HZ
@@ -920,8 +925,10 @@ def main():
                               "first published frame -- see module docstring's 'Bin count locking'")
     parser.add_argument("--mic-bin-count", type=int, default=None,
                          help="downsampled mic spectrum bins (default: same as --bin-count; "
-                              "must evenly divide 1024 FFT bins from the 2048-sample mic window). "
-                              "Locked the same way as --bin-count once this node publishes")
+                              "must evenly divide 512 -- of the 1024 unique FFT bins from the "
+                              "2048-sample mic window, only the first 512 (below Fs/4=24kHz) are "
+                              "real audio, see mic_useful_magnitude()). Locked the same way as "
+                              "--bin-count once this node publishes")
     parser.add_argument("--axis-bin-count", type=int, default=None,
                          help="downsampled per-axis accel_x/y/z spectrum bins (default: same as "
                               "--bin-count). Display-only -- never locked, changeable live")

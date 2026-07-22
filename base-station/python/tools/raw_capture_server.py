@@ -230,9 +230,15 @@ def create_app(recorder: RawCaptureRecorder, bin_count: int, mic_bin_count: int)
             if name not in RAW_CHANNEL_NAMES:
                 continue
             samples = np.array(ts.samples, dtype=np.float32)
+            mag = raw_features.fft_magnitude(samples)
+            if name == "mic_raw":
+                # Only the first quarter-FFT (half the unique bins, up to
+                # Fs/4=24kHz) is real audio -- see mic_useful_magnitude()'s
+                # docstring. Without this the live preview shows an aliasing
+                # image up to the full 48kHz Nyquist as if it were signal.
+                mag = raw_features.mic_useful_magnitude(mag)
             spectrum = raw_features.peak_normalize(
-                raw_features.downsample(raw_features.fft_magnitude(samples),
-                                         bin_count_for(name, bin_count, mic_bin_count)))
+                raw_features.downsample(mag, bin_count_for(name, bin_count, mic_bin_count)))
             if recorder.is_recording:
                 recorder.record(name, samples, ts.fs)
                 recorded_any = True

@@ -59,9 +59,17 @@
   // and the DC-drop offset, badly compressing/shifting the axis whenever
   // factor > 1 -- e.g. it showed accel's spectrum as 0-388Hz instead of the
   // real 0-6400Hz Nyquist range at the old bin-count=32 default).
-  function spectrumFreqAxis(spectrumLen, sampleLen, fs) {
+  // uniqueBinFraction: what fraction of sampleLen the spectrum's raw (pre-
+  // downsample) bins were drawn from. Accel uses the default 0.5 (all
+  // fft_magnitude() unique bins, full 0..Nyquist range). Mic passes 0.25 --
+  // raw_capture_server.py's mic_useful_magnitude() already trims to the
+  // first quarter-FFT (half the unique bins, up to Fs/4) before downsampling
+  // (mic_sampler.cpp's own MIC_FFT_BIN_COUNT=MIC_FFT_LEN/4 convention, an
+  // aliasing image fills everything above that with no external MCLK) --
+  // this must match or the x-axis mislabels 0..24kHz data as 0..48kHz.
+  function spectrumFreqAxis(spectrumLen, sampleLen, fs, uniqueBinFraction = 0.5) {
     if (!sampleLen || !spectrumLen) return [];
-    const rawLen = sampleLen / 2;
+    const rawLen = sampleLen * uniqueBinFraction;
     const factor = rawLen / spectrumLen;
     const freqPerRawBin = fs / sampleLen;
     return Array.from({ length: spectrumLen },
@@ -141,7 +149,7 @@
       const { spectrum, fs, samples } = latest.mic_raw;
       traces.push({
         type: "scatter", mode: "lines", name: "mic",
-        x: spectrumFreqAxis(spectrum.length, samples.length, fs), y: spectrum,
+        x: spectrumFreqAxis(spectrum.length, samples.length, fs, 0.25), y: spectrum,
         line: { color: AXIS_COLORS.mic_raw, width: 1.5 },
       });
     }

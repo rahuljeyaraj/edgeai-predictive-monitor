@@ -88,7 +88,7 @@ def load_captures(captures_dir):
 
 sys.path.insert(0, os.path.join(_HERE, "..", "common"))
 from raw_features import (  # noqa: E402
-    fft_magnitude, downsample, peak_normalize,
+    fft_magnitude, mic_useful_magnitude, downsample, peak_normalize,
     rms, kurtosis, std, peak, crest_factor, skewness,
 )
 
@@ -121,11 +121,16 @@ class FeatureConfig:
         return " ".join(bits)
 
 
-def _spectrum_block(raw: np.ndarray, bin_count: int) -> np.ndarray:
+def _spectrum_block(raw: np.ndarray, bin_count: int, is_mic: bool = False) -> np.ndarray:
     """raw: (num_windows, samples) -> (num_windows, bin_count) peak-normalized
-    per window."""
-    spectra = np.stack([downsample(fft_magnitude(raw[i]), bin_count)
-                         for i in range(raw.shape[0])])
+    per window. is_mic=True trims to mic_useful_magnitude() first -- mic's own
+    Fs/4 aliasing limit (mic_sampler.cpp), not applicable to accel."""
+    def spectrum_of(window):
+        mag = fft_magnitude(window)
+        if is_mic:
+            mag = mic_useful_magnitude(mag)
+        return downsample(mag, bin_count)
+    spectra = np.stack([spectrum_of(raw[i]) for i in range(raw.shape[0])])
     return np.stack([peak_normalize(spectra[i]) for i in range(spectra.shape[0])])
 
 
@@ -158,7 +163,7 @@ def build_run_vectors(run: dict, cfg: FeatureConfig):
                 [_spectrum_block(accel[axis], cfg.bin_count) for axis in ACCEL_AXES], axis=1)
         spectral_parts.append(accel_part)
     if cfg.include_mic:
-        spectral_parts.append(_spectrum_block(run[MIC_CHANNEL][:n], cfg.mic_bin_count))
+        spectral_parts.append(_spectrum_block(run[MIC_CHANNEL][:n], cfg.mic_bin_count, is_mic=True))
 
     scalar_parts = []
     if cfg.scalars:
@@ -418,7 +423,9 @@ def main():
                               "for the current 1024-sample accel window)")
     parser.add_argument("--mic-bin-count", type=int, default=None,
                          help="downsampled mic spectrum bins (default: same as --bin-count; "
-                              "must evenly divide 1024 for the current 2048-sample mic window)")
+                              "must evenly divide 512 for the current 2048-sample mic window -- "
+                              "of its 1024 unique FFT bins, only the first 512 (below Fs/4=24kHz) "
+                              "are real audio, see mic_useful_magnitude())")
     parser.add_argument("--exclude-mic", action="store_true",
                          help="accel-only feature vector")
     parser.add_argument("--scalars", nargs="*", choices=tuple(_SCALAR_FUNCS), default=(),

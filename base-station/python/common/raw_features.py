@@ -16,6 +16,17 @@ def fft_magnitude(window: np.ndarray) -> np.ndarray:
     return np.abs(np.fft.rfft(window))[1:]
 
 
+def mic_useful_magnitude(mag: np.ndarray) -> np.ndarray:
+    """Mic-only trim: keep just the first half of fft_magnitude()'s unique
+    bins (== the first quarter of the full FFT length). Without an external
+    MCLK the INMP441's own natural rate is Fs/2, upsampled 2x to Fs -- that
+    folds an aliasing image above Fs/4, so only the bins below it are real
+    audio (mic_sampler.cpp's MIC_FFT_BIN_COUNT = MIC_FFT_LEN/4, same
+    reasoning/numbers). Call this on mic_raw's fft_magnitude() output before
+    downsample() -- accel has no such restriction, don't apply this to it."""
+    return mag[: len(mag) // 2]
+
+
 def downsample(mag: np.ndarray, bin_count: int) -> np.ndarray:
     """Average-pool down to bin_count buckets, same scheme as the firmware's
     accel_spectrum_downsample()/get_mic_spectrum(). len(mag) must divide
