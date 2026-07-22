@@ -168,6 +168,22 @@ def create_app(registry: Registry, history_store: HistoryStore,
     app.state.connection_manager = ConnectionManager()
     app.state.loop = None
 
+    def _on_registry_status_change(node_id: str, status) -> None:
+        # Registry.on_status_change fires for every status transition
+        # regardless of source -- REST actions (pause/resume/commission
+        # start-stop) and PipelineManager's automatic inference-driven
+        # confirm alike. Before this, only the REST handlers below
+        # broadcast "registry" themselves, so a fault confirmed live by
+        # inference.py's set_status() (a plain motor running its normal
+        # course, no REST call involved) never reached a connected
+        # dashboard until the next 5s GET /nodes poll -- this one listener
+        # replaces every one-off broadcast_threadsafe call that used to
+        # follow a status-changing registry method below.
+        entry = registry.get(node_id)
+        broadcast_threadsafe(app, {"type": "registry", "node_id": node_id, "entry": entry.to_dict()})
+
+    registry.on_status_change(_on_registry_status_change)
+
     # Permissive CORS: the dashboard frontend is served from a different
     # origin/port than this REST API in the pre-consolidation deployment,
     # and there's no auth/TLS anywhere in this stack (see
@@ -317,7 +333,8 @@ def create_app(registry: Registry, history_store: HistoryStore,
             raise HTTPException(status_code=404, detail=f"unknown node_id {node_id!r}")
         except InvalidTransitionError as e:
             raise HTTPException(status_code=409, detail=str(e))
-        broadcast_threadsafe(app, {"type": "registry", "node_id": node_id, "entry": entry.to_dict()})
+        # No broadcast_threadsafe here -- registry.pause() already fired
+        # _on_registry_status_change above.
         return entry.to_dict()
 
     @app.post("/nodes/{node_id}/resume")
@@ -328,7 +345,8 @@ def create_app(registry: Registry, history_store: HistoryStore,
             raise HTTPException(status_code=404, detail=f"unknown node_id {node_id!r}")
         except InvalidTransitionError as e:
             raise HTTPException(status_code=409, detail=str(e))
-        broadcast_threadsafe(app, {"type": "registry", "node_id": node_id, "entry": entry.to_dict()})
+        # No broadcast_threadsafe here -- registry.resume() already fired
+        # _on_registry_status_change above.
         return entry.to_dict()
 
     @app.post("/nodes/{node_id}/decommission")
@@ -356,7 +374,8 @@ def create_app(registry: Registry, history_store: HistoryStore,
         except (CommissioningError, InvalidTransitionError) as e:
             raise HTTPException(status_code=409, detail=str(e))
         entry = app.state.registry.get(node_id)
-        broadcast_threadsafe(app, {"type": "registry", "node_id": node_id, "entry": entry.to_dict()})
+        # No broadcast_threadsafe here -- commissioning.start() already
+        # fired _on_registry_status_change above (via registry.start_commissioning()).
         return entry.to_dict()
 
     @app.post("/nodes/{node_id}/commission/stop")
@@ -374,7 +393,8 @@ def create_app(registry: Registry, history_store: HistoryStore,
         except (CommissioningError, InvalidTransitionError) as e:
             raise HTTPException(status_code=409, detail=str(e))
         entry = app.state.registry.get(node_id)
-        broadcast_threadsafe(app, {"type": "registry", "node_id": node_id, "entry": entry.to_dict()})
+        # No broadcast_threadsafe here -- stop_collecting() already fired
+        # _on_registry_status_change above (COMMISSIONING_TRAINING).
 
         def on_epoch(epoch: int, total_epochs: int) -> None:
             # Throttled to roughly 20 broadcasts regardless of epoch count
@@ -398,9 +418,8 @@ def create_app(registry: Registry, history_store: HistoryStore,
                 # or auto-recovering the node.
                 logger.exception("training failed for node %r", node_id)
                 return
-            trained_entry = app.state.registry.get(node_id)
-            broadcast_threadsafe(app, {"type": "registry", "node_id": node_id,
-                                        "entry": trained_entry.to_dict()})
+            # No broadcast_threadsafe here -- complete_commissioning()
+            # already fired _on_registry_status_change above (HEALTHY).
 
         threading.Thread(target=run_training, daemon=True).start()
         return entry.to_dict()
