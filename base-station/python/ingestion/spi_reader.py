@@ -37,6 +37,7 @@ here via decode_frame() -- so which/how many sensor channels a frame carries no
 longer lives in this file at all (it loops over sections and dispatches on
 data_kind), which was the whole point of the plan.
 """
+import fcntl
 import logging
 import socket
 import struct
@@ -97,6 +98,20 @@ FRAME_RETRIES = 3
 ARM_RETRIES = 30
 PULL_INTERVAL_S = 0.02
 
+# Cross-process mutual exclusion for who's allowed to actively pull the SPI
+# stream. BRIDGE_LOCK (bridge_lock.py) only serializes Bridge.call() within
+# ONE process -- it does nothing when a second process (tools/raw_capture.py,
+# tools/raw_capture_server.py) opens its own SpiConsumer against the same
+# physical Bridge/SPI link main.py's own SpiConsumer is already pulling. That
+# used to silently wedge/corrupt both sides' reads (2026-07-22: raw capture's
+# live plots showed no data at all while main.py logged nothing but frame-drop
+# exceptions -- two independent SpiConsumers racing the same auto-advancing
+# arm/stream handshake, invisible from either process alone). flock is used
+# instead of a marker file's mere presence because the kernel releases it
+# automatically on ANY process exit, including a crash or kill -9 -- no stale
+# lock can outlive its holder.
+SPI_EXCLUSIVE_LOCK_PATH = "/tmp/spi_consumer_exclusive.lock"
+
 
 class SpiConsumer:
     """Pulls fuser frames over SPI (chunked) on a background thread, normalizing
@@ -105,13 +120,21 @@ class SpiConsumer:
     same way. Keeps running stats for diagnostics (snapshot())."""
 
     def __init__(self, on_frame: Callable[[SensorFrame], None],
-                 on_decoded: Optional[Callable[[DecodedFrame], None]] = None):
+                 on_decoded: Optional[Callable[[DecodedFrame], None]] = None,
+                 exclusive: bool = False):
         self._on_frame = on_frame
         # Optional hook for whatever a decoded frame carried beyond .bins
         # (e.g. .time_series -- see tools/raw_capture.py). Not used by the
         # live pipeline (main.py); SensorFrame.bins is still the only thing
         # PipelineManager.route ever sees.
         self._on_decoded = on_decoded
+        # True for the offline raw-capture tools (tools/raw_capture.py,
+        # tools/raw_capture_server.py): they hold SPI_EXCLUSIVE_LOCK_PATH for
+        # their whole run so main.py's own (default, non-exclusive) SpiConsumer
+        # backs off instead of contending with them over the same physical
+        # link -- see SPI_EXCLUSIVE_LOCK_PATH's comment above.
+        self._exclusive = exclusive
+        self._exclusive_lock_fd = None
         self._lock = threading.Lock()
         self._thread = None
         self.last_seq = None
@@ -123,6 +146,7 @@ class SpiConsumer:
         self.crc_fail = 0
         self.arm_gap = 0               # empty/busy/done stalls
         self.on_frame_errors = 0       # on_frame (PipelineManager.route) raised
+        self.paused_for_exclusive = 0  # cycles skipped because another process holds the lock
 
     # -- transport ----------------------------------------------------------
     @staticmethod
@@ -277,8 +301,46 @@ class SpiConsumer:
             logger.exception("on_frame failed for node_id=%r -- frame dropped", BASE_STATION_NODE_ID)
         return True
 
+    def _acquire_exclusive_lock(self) -> None:
+        fd = open(SPI_EXCLUSIVE_LOCK_PATH, "a+")
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            fd.close()
+            raise RuntimeError(
+                f"another exclusive SPI consumer already holds {SPI_EXCLUSIVE_LOCK_PATH} "
+                "-- only one raw-capture tool (or main.py) can own the SPI link at a time; "
+                "stop the other one first")
+        # Held open (never explicitly unlocked/closed) for this object's whole
+        # lifetime -- the kernel drops the flock the moment this process exits,
+        # however it exits, so there's nothing to clean up on a crash/kill -9.
+        self._exclusive_lock_fd = fd
+
+    @staticmethod
+    def _exclusive_lock_held_elsewhere() -> bool:
+        # Runs every ~20ms while paused (PULL_INTERVAL_S) -- fd must be closed
+        # every call or this leaks a descriptor per cycle.
+        try:
+            fd = open(SPI_EXCLUSIVE_LOCK_PATH, "a+")
+        except OSError:
+            return False
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            return True
+        else:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+            return False
+        finally:
+            fd.close()
+
     def _run(self):
         while True:
+            if not self._exclusive and self._exclusive_lock_held_elsewhere():
+                with self._lock:
+                    self.paused_for_exclusive += 1
+                time.sleep(PULL_INTERVAL_S)
+                continue
             got = False
             for _ in range(FRAME_RETRIES):
                 res = self._pull_frame()
@@ -291,6 +353,8 @@ class SpiConsumer:
             time.sleep(PULL_INTERVAL_S)
 
     def start(self) -> None:
+        if self._exclusive:
+            self._acquire_exclusive_lock()
         self._thread = threading.Thread(target=self._run, name="spi-consumer", daemon=True)
         self._thread.start()
 
@@ -299,4 +363,5 @@ class SpiConsumer:
             return dict(seq=self.last_seq, bins=self.last_bins, meta=self.last_meta,
                         frames_ok=self.frames_ok, frames_dup=self.frames_dup,
                         frames_dropped=self.frames_dropped, crc_fail=self.crc_fail,
-                        arm_gap=self.arm_gap, on_frame_errors=self.on_frame_errors)
+                        arm_gap=self.arm_gap, on_frame_errors=self.on_frame_errors,
+                        paused_for_exclusive=self.paused_for_exclusive)

@@ -76,8 +76,12 @@ def main():
         # pipeline anyway, so there's nothing to do with it.
         pass
 
-    consumer = SpiConsumer(on_frame=ignore_sensor_frame, on_decoded=on_decoded)
-    consumer.start()
+    consumer = SpiConsumer(on_frame=ignore_sensor_frame, on_decoded=on_decoded, exclusive=True)
+    try:
+        consumer.start()
+    except RuntimeError as e:
+        print(f"{e}", file=sys.stderr)
+        sys.exit(1)
 
     start = time.time()
     print(f"Capturing label={args.label!r} for {args.duration:.0f}s -- "

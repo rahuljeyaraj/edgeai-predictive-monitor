@@ -8,9 +8,13 @@ rolling scalar trends (rms/kurtosis per accel axis) -- so a labeled run can
 be watched while it's in progress instead of only inspected afterward via
 offline_experiment.py's plots.
 
-Run this INSTEAD of raw_capture.py for an interactive session (and instead
-of main.py -- both want exclusive Bridge/SPI access, same as raw_capture.py
-already requires). The raw sensor stream only reaches Bridge/SPI from
+Run this INSTEAD of raw_capture.py for an interactive session -- both hold
+ingestion/spi_reader.py's cross-process exclusive lock (SPI_EXCLUSIVE_LOCK_PATH)
+for their whole run, so only one can be active at a time (the other fails
+fast with a clear error). main.py does NOT need to be stopped first: its own
+SpiConsumer isn't exclusive, so it automatically steps aside (no Bridge
+contention) while this holds the lock -- it just sees no new spectrum data.
+The raw sensor stream only reaches Bridge/SPI from
 inside the App Lab container, so this process runs there; "the host
 machine" is just where you open the browser tab, same as the normal Fleet
 dashboard (main.py) already works:
@@ -282,8 +286,16 @@ def create_app(recorder: RawCaptureRecorder, bin_count: int, mic_bin_count: int)
         # frames carry no spectrum bins for it to route anyway.
         pass
 
-    spi_consumer = SpiConsumer(on_frame=ignore_sensor_frame, on_decoded=on_decoded)
-    spi_consumer.start()
+    spi_consumer = SpiConsumer(on_frame=ignore_sensor_frame, on_decoded=on_decoded, exclusive=True)
+    try:
+        spi_consumer.start()
+    except RuntimeError as e:
+        # main.py (or tools/raw_capture.py) already holds the SPI link --
+        # starting anyway would silently show empty plots (2026-07-22: this
+        # is exactly what used to happen with no error at all). Fail loud
+        # instead so the operator knows to stop the other one first.
+        logger.error("%s", e)
+        raise SystemExit(1)
 
     return app
 

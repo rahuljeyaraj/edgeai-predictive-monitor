@@ -155,9 +155,16 @@ Leave this command running in its terminal window — it's a live server.
 Open a **second** terminal for anything else you need to do.
 
 - `--port 8081` (not 8080) — the normal dashboard already owns 8080 in the
-  same container. Using a different port means you do **not** need to stop
-  the main app first; it keeps running harmlessly during a raw capture
-  (verified — it just sees raw frames as empty, no crash).
+  same container. You do **not** need to stop the main app first: it keeps
+  running, its dashboard/Telegram features stay up, and its own SPI
+  ingestion automatically steps aside for the raw-capture tool (a
+  cross-process lock in `ingestion/spi_reader.py`, 2026-07-22) instead of
+  contending with it over the shared Bridge/SPI link — it just sees no new
+  spectrum data (dashboard charts go blank, as noted in step 1) rather than
+  erroring or corrupting the raw capture. Only one raw-capture tool
+  (`raw_capture.py` / `raw_capture_server.py`) can hold that lock at a
+  time — starting a second one fails fast with a clear error instead of
+  silently producing empty plots.
 - In a browser, go to:
   ```
   http://<device-ip>:8081/raw_capture.html
