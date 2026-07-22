@@ -1,0 +1,14 @@
+# Deps for running the dashboard app (../main.py) AND satellite_node_sim.py
+# together, directly on an ordinary dev machine instead of inside the App
+# Lab container -- see ../../start_desktop_dashboard.sh. On the target App
+# Lab container, fastapi/uvicorn/websockets ship with the base image and
+# paho-mqtt is installed via apt (satellite_node_sim.py's own docstring),
+# so none of these are pip-managed there -- ../requirements.txt (the
+# on-device app's own requirements) deliberately doesn't list them.
+#
+#   .venv/bin/pip install -r ../requirements.txt -r requirements-desktop.txt
+fastapi
+uvicorn
+websockets
+numpy
+paho-mqtt

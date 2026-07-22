@@ -113,7 +113,15 @@ def wire_local_status_led(registry: Registry) -> None:
     BASE_STATION_NODE_ID because Registry.on_status_change fires for every
     node, satellite nodes included, and those already get their LED over
     MQTT."""
-    from arduino.app_utils import Bridge
+    try:
+        from arduino.app_utils import Bridge
+    except ImportError:
+        # Desktop dev run (base-station/start_desktop_dashboard.sh) -- no
+        # App Lab container, so there's no local RGB ring to drive. Same
+        # convention as spi_reader.py's own guard: skip wiring instead of
+        # crashing main.py at startup.
+        logger.warning("arduino.app_utils unavailable -- local status LED disabled (desktop dev run?)")
+        return
 
     from bridge_lock import BRIDGE_LOCK
 

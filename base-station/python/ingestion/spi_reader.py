@@ -44,7 +44,20 @@ import time
 import zlib
 from typing import Callable, Optional
 
-from arduino.app_utils import Bridge
+try:
+    from arduino.app_utils import Bridge
+except ImportError:
+    # Desktop dev run (docs: base-station/start_desktop_dashboard.sh) --
+    # no App Lab container, so this device's own SPI-connected sensors
+    # can never produce a frame. Every Bridge.call() site below already
+    # wraps the call in a broad try/except, so a raising stub just means
+    # this device's own SPI ingestion silently never yields a frame
+    # (no base_station node registers) instead of crashing main.py's own
+    # import of this module.
+    class Bridge:
+        @staticmethod
+        def call(*args, **kwargs):
+            raise RuntimeError("arduino.app_utils unavailable (no App Lab container / MCU)")
 
 import telemetry_schema as schema
 from bridge_lock import BRIDGE_LOCK
