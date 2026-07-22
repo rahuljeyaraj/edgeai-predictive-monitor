@@ -126,6 +126,7 @@ class MotorPipeline:
         self._history_store = history_store
         self._on_score = on_score
         self._inference: Optional[InferencePipeline] = None
+        self._commissioned_at: Optional[float] = None
 
     def handle_frame(self, frame: SensorFrame, status: NodeStatus) -> None:
         self.frame_count += 1
@@ -140,10 +141,22 @@ class MotorPipeline:
             # while the node showed paused.
             return
 
-        if self._inference is None:
-            entry = self._registry.get(self.node_id)
-            if not entry.model_path:
-                return  # not commissioned yet -- nothing to score
+        entry = self._registry.get(self.node_id)
+        if not entry.model_path:
+            return  # not commissioned yet -- nothing to score
+
+        if self._inference is None or entry.last_commissioned != self._commissioned_at:
+            # Rebuild whenever this node has (re-)commissioned since the
+            # cached pipeline was built -- otherwise a node re-commissioned
+            # while this process keeps running silently keeps scoring
+            # against the pre-recommission model/thresholds/standardization
+            # forever (self._inference used to be built once and never
+            # invalidated), even though the registry -- and the dashboard,
+            # which reads thresholds straight from it -- already show the
+            # new calibration. That's what let a live score sit 50+x over
+            # the *displayed* fault_threshold while status stayed healthy:
+            # the number on screen wasn't the number actually driving
+            # set_status() underneath.
             try:
                 self._inference = InferencePipeline(
                     self._registry, self.node_id, self._gate_factory(),
@@ -154,6 +167,7 @@ class MotorPipeline:
                 # mid-write) -- try again on the next frame rather than
                 # wedging this pipeline permanently.
                 return
+            self._commissioned_at = entry.last_commissioned
 
         score = self._inference.handle_frame(frame)
         if score is not None:

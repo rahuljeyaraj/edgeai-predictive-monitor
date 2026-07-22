@@ -178,6 +178,67 @@ def test_commissioned_node_routes_through_inference_and_writes_history():
     print("confirmed status transitions are pushed back to the registry: PASS")
 
 
+def test_recommissioning_rebuilds_stale_inference_pipeline():
+    """Regression test: re-commissioning a node whose MotorPipeline already
+    has a cached InferencePipeline must rebuild it. Before this fix,
+    self._inference was built once (route()'s first commissioned frame)
+    and never invalidated -- a later registry.complete_commissioning() call
+    (an operator re-commissioning the same node while this process kept
+    running) updated the registry's model_path/thresholds, which the
+    dashboard reads straight from the registry and displays as current, but
+    live scoring kept silently running against the *old*
+    model/thresholds/standardization underneath. That's how a live score
+    could sit 50x+ over the fault_threshold shown on screen while status
+    stayed healthy: the displayed number wasn't the number set_status() was
+    actually comparing against.
+
+    Both commissionings keep the node's confirmed status at HEALTHY right
+    up to the probe frame at the end (loose-then-tight thresholds, rather
+    than tight-then-loose): the *cached* InferencePipeline's own private
+    status tracking never re-syncs from the registry either, so if the
+    first commissioning's thresholds ever confirmed a non-HEALTHY status,
+    that stale in-memory belief -- not just stale thresholds -- would
+    muddy which bug this test is actually pinning down."""
+    tmp_dir = tempfile.mkdtemp(prefix="pipeline_manager_test_")
+    registry = Registry(os.path.join(tmp_dir, "registry.json"))
+    registry.add(NODE_ID, sensor_config=frozenset({SensorChannel.MIC}))
+    history = HistoryStore(os.path.join(tmp_dir, "history.db"))
+
+    model = build_autoencoder(INPUT_DIM)
+    healthy_vector, _ = build_feature_vector(
+        scored_frame(HEALTHY_BINS, 0.0), frozenset({SensorChannel.MIC}), INPUT_DIM)
+    train_autoencoder(model, [healthy_vector] * 5, epochs=500)
+    model_path = os.path.join(tmp_dir, f"{NODE_ID}.pt")
+    save_model(model, model_path)
+    registry.start_commissioning(NODE_ID)
+    registry.stop_collecting(NODE_ID)
+    registry.complete_commissioning(NODE_ID, model_path, timestamp=1.0,
+                                     warning_threshold=1e8, fault_threshold=1e9)
+
+    manager = PipelineManager(
+        registry, lambda: MotorStateGate(threshold=0.5, debounce_frames=1),
+        history_store=history, status_debounce_frames=1)
+
+    # Builds and caches the pipeline against the first commissioning's
+    # absurdly loose thresholds -- everything reads healthy, so the cached
+    # pipeline's internal status tracking stays in lockstep with the
+    # registry's (both HEALTHY) going into the recommission below.
+    manager.route(scored_frame(FAULT_BINS, timestamp=0.0))
+    assert registry.get(NODE_ID).status.value == "healthy", registry.get(NODE_ID)
+
+    # Re-commission the same node with impossibly *tight* thresholds -- any
+    # real reconstruction error should now read fault.
+    registry.start_commissioning(NODE_ID)
+    registry.stop_collecting(NODE_ID)
+    registry.complete_commissioning(NODE_ID, model_path, timestamp=2.0,
+                                     warning_threshold=1e-7, fault_threshold=1e-6)
+
+    manager.route(scored_frame(FAULT_BINS, timestamp=2.0))
+    entry = registry.get(NODE_ID)
+    assert entry.status.value == "fault", entry.status
+    print("recommissioning rebuilds the cached inference pipeline: PASS")
+
+
 def test_paused_node_is_not_scored():
     """Regression test: pausing a node must stop inference from running at
     all, not just stop the confirmed status from changing. Before this fix,
@@ -369,6 +430,7 @@ if __name__ == "__main__":
     try:
         main()
         test_commissioned_node_routes_through_inference_and_writes_history()
+        test_recommissioning_rebuilds_stale_inference_pipeline()
         test_paused_node_is_not_scored()
         test_frame_bin_count_mismatch_raises()
         test_uncommissioned_node_only_counts_frames()
