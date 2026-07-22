@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING, Callable, Dict, FrozenSet, Optional
 
 from sensor_frame import SensorFrame
 from registry import (Registry, RegistryEntry, SensorChannel, NodeNotFoundError,
-                       NodeStatus, input_dim_for)
+                       NodeStatus)
 from gate import MotorStateGate
 from inference import InferenceError, InferencePipeline
 
@@ -43,15 +43,21 @@ _DEFAULT_STATUS_DEBOUNCE_FRAMES = 3
 _INGEST_TRANSPORT_LABEL = {"spi": "spi_link", "mqtt": "mqtt"}
 
 
-def _infer_sensor_config(frame: SensorFrame) -> FrozenSet[SensorChannel]:
+def _infer_sensor_config_and_dim(frame: SensorFrame) -> "tuple[FrozenSet[SensorChannel], int]":
     """Derived from which channel keys are present on this node's first
-    frame (S4.2: sensor_config drives 512 vs 1024 model dim).
+    frame, and each channel's actual bin count on that same frame (S4.2:
+    sensor_config + per-channel bin count drives the model's input dim).
+    Not every node necessarily uses the same FFT bin count per channel --
+    this commits to whatever the node's own first frame actually sent,
+    rather than a fixed global table (registry.input_dim_for()'s 512/channel
+    default is only a fallback for callers with no frame to derive from).
 
     A multi-channel MQTT node's first frame must already carry every
     channel it will ever report (mqtt_subscriber.py's fused "channels"
-    payload, Appendix B S3) -- sensor_config is committed once here and
-    every later frame is validated against it in full (_validate_frame_bins
-    below), so a node can't grow a second channel mid-stream.
+    payload, Appendix B S3) -- sensor_config AND input_dim are committed
+    once here and every later frame is validated against them in full
+    (_validate_frame_bins below), so a node can't grow a second channel or
+    change its bin count mid-stream.
 
     Display-only spectrum channels (e.g. the per-axis accel_x/y/z overlay,
     docs/CHART_CLUTTER_PLAN.md S1) are kept out of frame.bins entirely
@@ -63,24 +69,27 @@ def _infer_sensor_config(frame: SensorFrame) -> FrozenSet[SensorChannel]:
     comment on the NodeNotFoundError branch in route() below.
     """
     channels = set()
-    for key in frame.bins:
+    dim = 0
+    for key, bins in frame.bins.items():
         try:
-            channels.add(SensorChannel(key))
+            channel = SensorChannel(key)
         except ValueError:
             continue
-    return frozenset(channels)
+        channels.add(channel)
+        dim += len(bins)
+    return frozenset(channels), dim
 
 
 def _validate_frame_bins(frame: SensorFrame, entry: RegistryEntry) -> None:
     """Raise loudly if the frame's bin counts don't match the input dim
-    implied by the node's committed sensor_config. input_dim is a
-    training-time commitment declared once at commissioning, not
-    something to infer from whatever a frame happens to contain --
-    a mismatch here means firmware drift, a malformed frame, or a
-    protocol version skew, and should fail loudly rather than silently
-    corrupt training data or inference."""
+    the node committed to on its first frame (entry.input_dim -- see
+    _infer_sensor_config_and_dim). input_dim is a training-time commitment
+    declared once, not something to re-derive from a global table on every
+    call: a mismatch here means firmware drift, a malformed frame, a live
+    reconfiguration mid-session, or a protocol version skew, and should fail
+    loudly rather than silently corrupt training data or inference."""
     actual = sum(len(frame.bins.get(c.value, ())) for c in entry.sensor_config)
-    expected = input_dim_for(entry.sensor_config)
+    expected = entry.input_dim
     if actual != expected:
         raise ValueError(
             f"node {frame.node_id!r}: expected {expected} bins for sensor_config "
@@ -168,7 +177,8 @@ class PipelineManager:
                     self._status_debounce_frames, self._history_store,
                     on_score=self._on_score)
                 self._pipelines[frame.node_id] = pipeline
-                self._registry.add(frame.node_id, sensor_config=_infer_sensor_config(frame))
+                sensor_config, input_dim = _infer_sensor_config_and_dim(frame)
+                self._registry.add(frame.node_id, sensor_config=sensor_config, input_dim=input_dim)
 
             try:
                 entry = self._registry.get(frame.node_id)

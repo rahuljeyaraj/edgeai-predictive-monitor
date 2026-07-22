@@ -37,6 +37,7 @@ here via decode_frame() -- so which/how many sensor channels a frame carries no
 longer lives in this file at all (it loops over sections and dispatches on
 data_kind), which was the whole point of the plan.
 """
+import logging
 import socket
 import struct
 import threading
@@ -64,6 +65,8 @@ from bridge_lock import BRIDGE_LOCK
 from registry import SensorChannel
 from sensor_frame import BASE_STATION_NODE_ID, FrameSource, SensorFrame
 from telemetry_frame import DecodedFrame, MalformedFrameError, decode_frame
+
+logger = logging.getLogger(__name__)
 
 # --- SPI transport envelope (must match sketch/spi_link.cpp) -----------------
 SOCKET_PATH = "/dev/spi-link.sock"
@@ -119,6 +122,7 @@ class SpiConsumer:
         self.frames_dropped = 0        # exhausted retries
         self.crc_fail = 0
         self.arm_gap = 0               # empty/busy/done stalls
+        self.on_frame_errors = 0       # on_frame (PipelineManager.route) raised
 
     # -- transport ----------------------------------------------------------
     @staticmethod
@@ -249,16 +253,28 @@ class SpiConsumer:
         spectrum_meta = {name: (s.fs, s.fft_size) for name, s in decoded.spectra.items()
                           if name in decoded.bins}
 
-        self._on_frame(SensorFrame(
-            node_id=BASE_STATION_NODE_ID,
-            source=FrameSource.SPI,
-            timestamp=time.time(),
-            bins=model_bins,
-            display_bins=display_bins,
-            scalars=scalars,
-            time_series=time_series,
-            spectrum_meta=spectrum_meta,
-        ))
+        # on_frame (PipelineManager.route) can raise -- e.g. a bin-count
+        # mismatch against what this device already committed to
+        # (manager.py's _validate_frame_bins). This runs inside _run()'s own
+        # dedicated background thread with no other supervisor: an uncaught
+        # exception here has previously killed that thread outright,
+        # silently ending all SPI ingestion for the rest of the process.
+        # Log + drop this frame instead, same as a CRC/decode failure above.
+        try:
+            self._on_frame(SensorFrame(
+                node_id=BASE_STATION_NODE_ID,
+                source=FrameSource.SPI,
+                timestamp=time.time(),
+                bins=model_bins,
+                display_bins=display_bins,
+                scalars=scalars,
+                time_series=time_series,
+                spectrum_meta=spectrum_meta,
+            ))
+        except Exception:
+            with self._lock:
+                self.on_frame_errors += 1
+            logger.exception("on_frame failed for node_id=%r -- frame dropped", BASE_STATION_NODE_ID)
         return True
 
     def _run(self):
@@ -283,4 +299,4 @@ class SpiConsumer:
             return dict(seq=self.last_seq, bins=self.last_bins, meta=self.last_meta,
                         frames_ok=self.frames_ok, frames_dup=self.frames_dup,
                         frames_dropped=self.frames_dropped, crc_fail=self.crc_fail,
-                        arm_gap=self.arm_gap)
+                        arm_gap=self.arm_gap, on_frame_errors=self.on_frame_errors)

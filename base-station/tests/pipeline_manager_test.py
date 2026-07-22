@@ -255,6 +255,39 @@ def test_non_sensor_channel_bin_key_is_ignored_not_raised():
     print("non-SensorChannel bins key is skipped, not raised, during sensor_config inference: PASS")
 
 
+def test_dynamic_input_dim_from_first_frame():
+    """A node's committed input_dim comes from whatever bin count its own
+    first frame actually sent, not a fixed 512-per-channel table -- not
+    every node uses the same FFT bin count (e.g. a satellite sim node
+    configured for a smaller/larger accel spectrum than the base station's
+    own 512). A later frame matching that same non-512 commitment must
+    route cleanly; one that doesn't must still raise."""
+    tmp_dir = tempfile.mkdtemp(prefix="pipeline_manager_test_")
+    registry = Registry(os.path.join(tmp_dir, "registry.json"))
+    manager = PipelineManager(registry, default_gate_factory)
+
+    first = SensorFrame(node_id="odd-bins-node", source=FrameSource.MQTT, timestamp=0.0,
+                         bins={"accel": tuple(1.0 for _ in range(128))})
+    manager.route(first)
+
+    entry = registry.get("odd-bins-node")
+    assert entry.sensor_config == frozenset({SensorChannel.ACCEL}), entry.sensor_config
+    assert entry.input_dim == 128, entry.input_dim
+
+    matching = SensorFrame(node_id="odd-bins-node", source=FrameSource.MQTT, timestamp=1.0,
+                            bins={"accel": tuple(2.0 for _ in range(128))})
+    manager.route(matching)  # must not raise -- matches the node's own committed 128
+
+    mismatched = SensorFrame(node_id="odd-bins-node", source=FrameSource.MQTT, timestamp=2.0,
+                              bins={"accel": tuple(3.0 for _ in range(512))})
+    try:
+        manager.route(mismatched)
+        assert False, "expected ValueError: 512 bins doesn't match this node's committed 128"
+    except ValueError as e:
+        assert "expected 128 bins" in str(e), e
+    print("node's own first-frame bin count (not a fixed 512 table) is what later frames are validated against: PASS")
+
+
 if __name__ == "__main__":
     try:
         main()
@@ -263,6 +296,7 @@ if __name__ == "__main__":
         test_uncommissioned_node_only_counts_frames()
         test_non_sensor_channel_bin_key_is_ignored_not_raised()
         test_decommission_removes_mid_commissioning_node()
+        test_dynamic_input_dim_from_first_frame()
     except AssertionError as e:
         print(f"RESULT: FAIL - {e}")
         sys.exit(1)

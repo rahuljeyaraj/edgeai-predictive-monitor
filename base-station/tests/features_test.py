@@ -29,7 +29,7 @@ def test_dual_sensor_both():
     mic_bins = tuple(float(i) for i in range(1, 513))      # peak 512.0
     accel_bins = tuple(float(2 * i) for i in range(1, 513))  # peak 1024.0
     vector = build_feature_vector(frame(mic_bins, accel_bins),
-                                   frozenset({SensorChannel.MIC, SensorChannel.ACCEL}))
+                                   frozenset({SensorChannel.MIC, SensorChannel.ACCEL}), 1024)
 
     assert len(vector) == 1024, len(vector)
     # mic half normalized against its own peak (512.0)
@@ -43,7 +43,7 @@ def test_dual_sensor_both():
 
 def test_single_sensor_accel_only():
     accel_bins = tuple(float(i) for i in range(1, 513))
-    vector = build_feature_vector(frame(accel_bins=accel_bins), frozenset({SensorChannel.ACCEL}))
+    vector = build_feature_vector(frame(accel_bins=accel_bins), frozenset({SensorChannel.ACCEL}), 512)
 
     assert len(vector) == 512, len(vector)
     assert vector[0] == 1.0 / 512.0, vector[0]
@@ -53,7 +53,7 @@ def test_single_sensor_accel_only():
 
 def test_single_sensor_mic_only():
     mic_bins = tuple(float(i) for i in range(1, 513))
-    vector = build_feature_vector(frame(mic_bins=mic_bins), frozenset({SensorChannel.MIC}))
+    vector = build_feature_vector(frame(mic_bins=mic_bins), frozenset({SensorChannel.MIC}), 512)
 
     assert len(vector) == 512, len(vector)
     assert vector[0] == 1.0 / 512.0, vector[0]
@@ -66,7 +66,7 @@ def test_mic_only_and_accel_only_are_not_interchangeable():
     # each 512-dim variant has its own required bins, not just a length.
     bins = tuple(float(i) for i in range(1, 513))
     try:
-        build_feature_vector(frame(mic_bins=bins), frozenset({SensorChannel.ACCEL}))
+        build_feature_vector(frame(mic_bins=bins), frozenset({SensorChannel.ACCEL}), 512)
         assert False, "expected ValueError: mic bins present but ACCEL config requires accel_bins"
     except ValueError:
         pass
@@ -75,7 +75,7 @@ def test_mic_only_and_accel_only_are_not_interchangeable():
 
 def test_bin_count_mismatch_raises():
     try:
-        build_feature_vector(frame(accel_bins=(1.0, 2.0, 3.0)), frozenset({SensorChannel.ACCEL}))
+        build_feature_vector(frame(accel_bins=(1.0, 2.0, 3.0)), frozenset({SensorChannel.ACCEL}), 512)
         assert False, "expected ValueError for wrong bin count"
     except ValueError:
         pass
@@ -85,7 +85,7 @@ def test_bin_count_mismatch_raises():
 def test_all_zero_bins_normalize_to_zero_without_crash():
     zero_bins = tuple(0.0 for _ in range(512))
     assert normalize_bins(zero_bins) == zero_bins
-    vector = build_feature_vector(frame(accel_bins=zero_bins), frozenset({SensorChannel.ACCEL}))
+    vector = build_feature_vector(frame(accel_bins=zero_bins), frozenset({SensorChannel.ACCEL}), 512)
     assert vector == zero_bins
     print("test_all_zero_bins_normalize_to_zero_without_crash: PASS")
 

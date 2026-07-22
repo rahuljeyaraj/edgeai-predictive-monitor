@@ -259,7 +259,15 @@ class Registry:
              # A frozenset literal default is safe here (unlike the usual
              # mutable-default-argument trap) since frozensets are immutable.
              sensor_config: FrozenSet[SensorChannel] = frozenset(
-                 {SensorChannel.MIC, SensorChannel.ACCEL})) -> RegistryEntry:
+                 {SensorChannel.MIC, SensorChannel.ACCEL}),
+             input_dim: Optional[int] = None) -> RegistryEntry:
+        """input_dim: the actual per-node vector length to commit to (e.g.
+        derived from a real first frame's bin counts, PipelineManager's
+        _infer_sensor_config_and_dim) -- not every node necessarily uses the
+        same per-channel FFT bin count. Defaults to input_dim_for()'s fixed
+        512-per-channel table when the caller has no frame to derive it from
+        yet (a manually pre-added node, or any caller that just wants the
+        old fixed-dim behavior)."""
         with self._lock_for(node_id):
             if node_id in self._entries:
                 return self._entries[node_id]
@@ -267,7 +275,7 @@ class Registry:
                 node_id=node_id,
                 display_name=display_name or node_id,
                 sensor_config=sensor_config,
-                input_dim=input_dim_for(sensor_config),
+                input_dim=input_dim if input_dim is not None else input_dim_for(sensor_config),
             )
             self._entries[node_id] = entry
             self._save()

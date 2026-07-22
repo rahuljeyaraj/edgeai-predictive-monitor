@@ -60,6 +60,7 @@ class InferencePipeline:
         self._fault_threshold = entry.fault_threshold
         self._debounce_frames = debounce_frames
         self._sensor_config: FrozenSet[SensorChannel] = entry.sensor_config
+        self._expected_dim: int = entry.input_dim
         self._model: Autoencoder = load_model(entry.model_path)
 
         self._status = entry.status if entry.status in _CONFIRMABLE_STATUSES else NodeStatus.HEALTHY
@@ -93,7 +94,7 @@ class InferencePipeline:
         if self._gate.update(frame) != MotorState.RUNNING:
             return None
 
-        vector = build_feature_vector(frame, self._sensor_config)
+        vector = build_feature_vector(frame, self._sensor_config, self._expected_dim)
         score = reconstruction_error(self._model, vector)
         self._last_score = score
 

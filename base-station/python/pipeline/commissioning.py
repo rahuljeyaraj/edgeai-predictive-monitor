@@ -98,7 +98,7 @@ class CommissioningSession:
         if self._gate.update(frame) != MotorState.RUNNING:
             return
 
-        self._collected.append(build_feature_vector(frame, entry.sensor_config))
+        self._collected.append(build_feature_vector(frame, entry.sensor_config, entry.input_dim))
 
     def stop_collecting(self) -> None:
         """Explicit stop trigger (S3.5, dashboard redesign S6: "Stop &

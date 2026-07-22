@@ -38,6 +38,7 @@ tools/satellite_node_sim.py, or mosquitto_pub with raw bytes) against a
 running Mosquitto broker; confirm a new pipeline is created and routed
 exactly as SPI frames are.
 """
+import logging
 import time
 from typing import Callable, Optional
 
@@ -47,6 +48,8 @@ import telemetry_schema as schema
 from registry import SensorChannel
 from sensor_frame import FrameSource, SensorFrame
 from telemetry_frame import MalformedFrameError, decode_frame
+
+logger = logging.getLogger(__name__)
 
 DATA_TOPIC_FILTER = "epm/+/data"
 
@@ -147,6 +150,7 @@ class MqttSubscriber:
                  client_id: str = ""):
         self._on_frame = on_frame
         self._dropped = 0
+        self._routing_errors = 0
         self._client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=client_id)
         self._client.on_connect = self._handle_connect
         self._client.on_message = self._handle_message
@@ -155,6 +159,10 @@ class MqttSubscriber:
     @property
     def dropped_frames(self) -> int:
         return self._dropped
+
+    @property
+    def routing_errors(self) -> int:
+        return self._routing_errors
 
     def _handle_connect(self, client, userdata, flags, reason_code, properties=None):
         client.subscribe(DATA_TOPIC_FILTER, qos=0)
@@ -167,7 +175,20 @@ class MqttSubscriber:
             return
         if frame is None:
             return
-        self._on_frame(frame)
+        # on_frame (PipelineManager.route) can raise -- e.g. a frame whose
+        # bin count no longer matches what this node_id committed to on its
+        # first-ever frame (manager.py's _validate_frame_bins). This runs
+        # inside paho-mqtt's own background thread, shared by every node on
+        # this broker: an uncaught exception here has previously taken down
+        # message processing for the whole fleet, not just the one node that
+        # misbehaved, until the process was restarted. Log + drop instead,
+        # mirroring the MalformedMessageError handling just above.
+        try:
+            self._on_frame(frame)
+        except Exception:
+            self._routing_errors += 1
+            logger.exception("on_frame failed for node_id=%r topic=%r -- frame dropped",
+                              frame.node_id, msg.topic)
 
     def start(self) -> None:
         self._client.loop_start()
