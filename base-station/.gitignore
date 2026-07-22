@@ -1,2 +1,5 @@
 # ignore app cache folder
 .cache/
+
+# satellite_node_sim.py's persisted node id per --ui-port (generated, per-machine)
+python/tools/.satellite_node_*.json
