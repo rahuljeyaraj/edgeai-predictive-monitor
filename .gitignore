@@ -35,4 +35,4 @@ captures_*/
 
 # offline_experiment.py --plot-out diagnostic plots (docs/RAW_CAPTURE_WORKFLOW.md
 # step 7 examples write these to the repo root) -- generated, not source.
-/out*.png
+*.png
