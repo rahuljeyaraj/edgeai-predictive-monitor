@@ -50,7 +50,13 @@
 
 const Charts = (() => {
   const WATERFALL_MAX_COLS = 600;
-  const ANOMALY_MAX_POINTS = 600;
+  // Anomaly score buffer: retention is time-based (ANOMALY_RETENTION_SECONDS),
+  // not point-count-based, so scrollback depth doesn't depend on frame rate.
+  // ANOMALY_MAX_POINTS is just a memory backstop for an abnormally high rate.
+  const ANOMALY_WINDOW_SECONDS = 120; // default live-tail width shown on the chart
+  const ANOMALY_RETENTION_SECONDS = 30 * 60; // how far back the rangeslider can scrub
+  const ANOMALY_LIVE_SNAP_TOLERANCE_SECONDS = 3; // dragging the slider back within this of "now" resumes live-follow
+  const ANOMALY_MAX_POINTS = 20000;
   const RENDER_THROTTLE_MS = 300;
   const WS_RECONNECT_MS = 2000;
 
@@ -151,6 +157,19 @@ const Charts = (() => {
     if (arr.length > cap) arr.shift();
   }
 
+  // Evicts by age (ANOMALY_RETENTION_SECONDS) rather than a fixed point
+  // count, so scrollback depth is a stable duration regardless of frame
+  // rate; ANOMALY_MAX_POINTS only guards against runaway memory use.
+  // `arr` is assumed sorted ascending by `t` (true for both call sites:
+  // live pushes append newest-last, and the seed merge sorts before this
+  // runs).
+  function trimAnomalyByAge(arr, latestT) {
+    let i = 0;
+    while (i < arr.length && arr[i].t < latestT - ANOMALY_RETENTION_SECONDS) i++;
+    if (i > 0) arr.splice(0, i);
+    if (arr.length > ANOMALY_MAX_POINTS) arr.splice(0, arr.length - ANOMALY_MAX_POINTS);
+  }
+
   function clamp01(x) {
     return Math.max(0, Math.min(1, x));
   }
@@ -203,6 +222,8 @@ const Charts = (() => {
         waterfallMode: "2d",
         anomaly: [],
         anomalySeeded: false,
+        anomalyLive: true, // false once the user drags the rangeslider away from the live tail
+        anomalyPinnedRange: null, // [x0, x1] the user scrubbed to, while anomalyLive is false
 
         tilesEl: null,
         anomalyEl: null, anomalyMounted: false,
@@ -310,7 +331,8 @@ const Charts = (() => {
 
   function handleAnomalyScore(msg) {
     const node = ensureNode(msg.node_id);
-    pushCapped(node.anomaly, { t: msg.timestamp, score: msg.score, status: msg.status }, ANOMALY_MAX_POINTS);
+    node.anomaly.push({ t: msg.timestamp, score: msg.score, status: msg.status });
+    trimAnomalyByAge(node.anomaly, msg.timestamp);
     dirty.add(msg.node_id);
   }
 
@@ -321,7 +343,8 @@ const Charts = (() => {
       const rows = await res.json();
       const historical = rows.map((r) => ({ t: r.timestamp, score: r.anomaly_score, status: r.status_at_time }));
       const merged = historical.concat(node.anomaly).sort((a, b) => a.t - b.t);
-      node.anomaly = merged.slice(-ANOMALY_MAX_POINTS);
+      if (merged.length) trimAnomalyByAge(merged, merged[merged.length - 1].t);
+      node.anomaly = merged;
       dirty.add(nodeId);
     } catch (err) {
       console.error(`Failed to seed anomaly history for ${nodeId}`, err);
@@ -414,6 +437,46 @@ const Charts = (() => {
     };
   }
 
+  // [x0, x1] for the live tail: fixed ANOMALY_WINDOW_SECONDS width anchored
+  // to the newest point (or "now" pre-first-point), never to the buffer's
+  // actual min/max. That's what makes the window a constant size from the
+  // very first point instead of growing until ANOMALY_MAX_POINTS fills up
+  // (the old autorange-driven "compresses, then suddenly snaps into a
+  // moving window" behavior).
+  function anomalyLiveRange(node) {
+    const n = node.anomaly.length;
+    const latestT = n ? node.anomaly[n - 1].t : Date.now() / 1000;
+    return [new Date((latestT - ANOMALY_WINDOW_SECONDS) * 1000), new Date(latestT * 1000)];
+  }
+
+  // Fired on every rangeslider drag (registered once at mount, see
+  // attachExpanded). Dragging away from the live edge pins the view there
+  // (node.anomalyLive = false) so the next redraw doesn't yank it back to
+  // the live tail out from under the user; dragging back within
+  // ANOMALY_LIVE_SNAP_TOLERANCE_SECONDS of "now" resumes live-follow.
+  function onAnomalyRelayout(nodeId, node, ev) {
+    const x0 = ev["xaxis.range[0]"];
+    const x1 = ev["xaxis.range[1]"];
+    if (x0 === undefined || x1 === undefined) return;
+    const n = node.anomaly.length;
+    const latestMs = n ? node.anomaly[n - 1].t * 1000 : Date.now();
+    const rightEdgeMs = new Date(x1).getTime();
+    if (Math.abs(latestMs - rightEdgeMs) <= ANOMALY_LIVE_SNAP_TOLERANCE_SECONDS * 1000) {
+      node.anomalyLive = true;
+      node.anomalyPinnedRange = null;
+    } else {
+      node.anomalyLive = false;
+      node.anomalyPinnedRange = [x0, x1];
+    }
+    setAnomalyLivePillActive(nodeId, node.anomalyLive);
+  }
+
+  function setAnomalyLivePillActive(nodeId, active) {
+    for (const btn of document.querySelectorAll("button[data-anomaly-live-toggle]")) {
+      if (btn.dataset.nodeId === nodeId) btn.classList.toggle("is-active", active);
+    }
+  }
+
   // Full-size replacement for the old hero sparkline: a real Plotly chart
   // with an axis/gridlines/hover, matching the accel/mic spectrum charts'
   // idiom rather than a bespoke hand-rolled SVG. Per-point marker color by
@@ -433,9 +496,13 @@ const Charts = (() => {
     const shapes = [];
     if (typeof node.warningThreshold === "number") shapes.push(hLine(node.warningThreshold, STATUS_COLOR.warning, "y"));
     if (typeof node.faultThreshold === "number") shapes.push(hLine(node.faultThreshold, STATUS_COLOR.fault, "y"));
+    const range = node.anomalyLive ? anomalyLiveRange(node) : node.anomalyPinnedRange;
     const layout = {
-      ...darkLayoutBase(), uirevision: nodeId, shapes, height: 190,
-      xaxis: axisBase({ anchor: "y", fixedrange: true }),
+      ...darkLayoutBase(), uirevision: nodeId, shapes, height: 230,
+      xaxis: axisBase({
+        anchor: "y", fixedrange: true, range,
+        rangeslider: { visible: true, thickness: 0.12, bgcolor: PLOT_BG, bordercolor: AXIS_COLOR, borderwidth: 1 },
+      }),
       yaxis: axisBase({ anchor: "x", fixedrange: true }),
     };
     return [traces, layout];
@@ -762,6 +829,7 @@ const Charts = (() => {
         const [traces, layout] = buildAnomalyFigure(nodeId, node);
         Plotly.newPlot(node.anomalyEl, traces, layout, SPECTRUM_CONFIG);
         node.anomalyMounted = true;
+        node.anomalyEl.on("plotly_relayout", (ev) => onAnomalyRelayout(nodeId, node, ev));
       }
 
       const accelSlot = findSlot("chart-slot-accel-spectrum", nodeId);
@@ -891,7 +959,10 @@ const Charts = (() => {
     // idiom as Raw signals/Waterfall, rather than always-on real estate.
     let html = `<div class="motor-row__body">`;
     html += `<div class="chart-section">
-      <div class="chart-section__title">Anomaly score</div>
+      <div class="chart-section__title-row">
+        <div class="chart-section__title">Anomaly score</div>
+        <button type="button" class="waterfall-toggle__btn${node.anomalyLive ? " is-active" : ""}" data-anomaly-live-toggle data-node-id="${safeId}">LIVE</button>
+      </div>
       ${chartSlotHtml("chart-slot-anomaly", nodeId)}
     </div>`;
 
@@ -965,12 +1036,31 @@ const Charts = (() => {
     });
   }
 
+  // Jumps back to the live tail on click -- the counterpart to
+  // onAnomalyRelayout pinning the view when the user drags the rangeslider
+  // away from "now". Marks the node dirty so the next flush() picks up
+  // anomalyLive's new value and redraws with the live range immediately,
+  // rather than waiting on the next real data point.
+  function wireAnomalyLiveToggle() {
+    document.getElementById("fleet-list").addEventListener("click", (e) => {
+      const btn = e.target.closest("button[data-anomaly-live-toggle]");
+      if (!btn) return;
+      const nodeId = btn.dataset.nodeId;
+      const node = ensureNode(nodeId);
+      node.anomalyLive = true;
+      node.anomalyPinnedRange = null;
+      btn.classList.add("is-active");
+      dirty.add(nodeId);
+    });
+  }
+
   async function init(onRegistryPush, onPerfStats, onTelegramSubscribers) {
     registryHandler = onRegistryPush || null;
     perfHandler = onPerfStats || null;
     alertsHandler = onTelegramSubscribers || null;
     connectWs();
     wireWaterfallToggle();
+    wireAnomalyLiveToggle();
     setInterval(flush, RENDER_THROTTLE_MS);
   }
 

@@ -405,6 +405,13 @@ body {
   letter-spacing: 0.04em;
 }
 
+.chart-section__title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
 /* ---- Scalar tiles: stat tiles, not charts (doc §1.2) -- same dark-card
    idiom as .tile/.perf-card, neutral accent since these are raw physical
    stats, not health-status buckets. ---- */
