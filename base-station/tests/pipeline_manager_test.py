@@ -157,6 +157,52 @@ def test_commissioned_node_routes_through_inference_and_writes_history():
     print("confirmed status transitions are pushed back to the registry: PASS")
 
 
+def test_paused_node_is_not_scored():
+    """Regression test: pausing a node must stop inference from running at
+    all, not just stop the confirmed status from changing. Before this fix,
+    InferencePipeline kept computing/recording a fresh reconstruction error
+    every frame while paused -- registry.set_status() rejected the write
+    (InvalidTransitionError, swallowed in inference.py), but last_score,
+    registry.last_anomaly_score, and history.record() had already happened,
+    so the dashboard's anomaly score kept moving on a "paused" node."""
+    tmp_dir = tempfile.mkdtemp(prefix="pipeline_manager_test_")
+    registry = Registry(os.path.join(tmp_dir, "registry.json"))
+    registry.add(NODE_ID, sensor_config=frozenset({SensorChannel.ACCEL}))
+    history = HistoryStore(os.path.join(tmp_dir, "history.db"))
+
+    model = build_autoencoder(DIM)
+    train_autoencoder(model, [HEALTHY_BINS] * 5, epochs=500)
+    model_path = os.path.join(tmp_dir, f"{NODE_ID}.pt")
+    save_model(model, model_path)
+    registry.start_commissioning(NODE_ID)
+    registry.stop_collecting(NODE_ID)
+    registry.complete_commissioning(NODE_ID, model_path,
+                                     warning_threshold=0.05, fault_threshold=0.2)
+
+    manager = PipelineManager(
+        registry, lambda: MotorStateGate(threshold=0.5, debounce_frames=1),
+        history_store=history, status_debounce_frames=1)
+
+    # Score once while running so there's a baseline last_anomaly_score to
+    # confirm stays frozen after pause.
+    manager.route(scored_frame(HEALTHY_BINS, timestamp=0.0))
+    baseline_score = registry.get(NODE_ID).last_anomaly_score
+    assert baseline_score is not None
+    assert len(history.query(NODE_ID)) == 1
+
+    registry.pause(NODE_ID)
+
+    manager.route(scored_frame(FAULT_BINS, timestamp=1.0))
+    manager.route(scored_frame(FAULT_BINS, timestamp=2.0))
+
+    entry = registry.get(NODE_ID)
+    assert entry.status.value == "paused", entry.status
+    assert entry.last_anomaly_score == baseline_score, entry.last_anomaly_score
+    assert len(history.query(NODE_ID)) == 1, history.query(NODE_ID)
+    assert manager.pipelines()[NODE_ID].frame_count == 3
+    print("paused node's frames are counted but not scored/recorded: PASS")
+
+
 def test_frame_bin_count_mismatch_raises():
     """A frame whose bin count doesn't match the node's committed
     sensor_config (e.g. firmware fft_size drift) must raise loudly at
@@ -292,6 +338,7 @@ if __name__ == "__main__":
     try:
         main()
         test_commissioned_node_routes_through_inference_and_writes_history()
+        test_paused_node_is_not_scored()
         test_frame_bin_count_mismatch_raises()
         test_uncommissioned_node_only_counts_frames()
         test_non_sensor_channel_bin_key_is_ignored_not_raised()

@@ -115,8 +115,18 @@ class MotorPipeline:
         self._on_score = on_score
         self._inference: Optional[InferencePipeline] = None
 
-    def handle_frame(self, frame: SensorFrame) -> None:
+    def handle_frame(self, frame: SensorFrame, status: NodeStatus) -> None:
         self.frame_count += 1
+
+        if status == NodeStatus.PAUSED:
+            # An operator pause must freeze scoring itself, not just the
+            # confirmed status -- InferencePipeline already refuses to
+            # *write* PAUSED -> HEALTHY/WARNING/FAULT (InvalidTransitionError,
+            # inference.py), but it was still computing/recording/broadcasting
+            # a fresh reconstruction error every frame underneath that,
+            # which is what made the dashboard's anomaly score keep moving
+            # while the node showed paused.
+            return
 
         if self._inference is None:
             entry = self._registry.get(self.node_id)
@@ -202,10 +212,10 @@ class PipelineManager:
                 transport = _INGEST_TRANSPORT_LABEL.get(frame.source.value, frame.source.value)
                 self._perf_monitor.record_ingest(transport, now=frame.timestamp)
                 start = time.perf_counter()
-                pipeline.handle_frame(frame)
+                pipeline.handle_frame(frame, entry.status)
                 self._perf_monitor.record_frame(frame.node_id, time.perf_counter() - start)
             else:
-                pipeline.handle_frame(frame)
+                pipeline.handle_frame(frame, entry.status)
 
             return pipeline
 
