@@ -235,7 +235,7 @@ print(files[0] if files else "")
         continue
     fi
     curl -s -X POST --max-time 3 -H 'Content-Type: application/json' \
-        -d "{\"file\": \"${first_file}\", \"accel_fused\": true, \"accel_per_axis\": true, \"mic\": true, \"scalars\": [\"rms\", \"kurtosis\", \"crest_factor\", \"peak\", \"std\", \"skewness\"]}" \
+        -d "{\"file\": \"${first_file}\", \"accel\": true, \"accel_fused\": true, \"mic\": true, \"scalars\": [\"rms\", \"kurtosis\", \"crest_factor\", \"peak\", \"std\", \"skewness\"]}" \
         "http://127.0.0.1:${ui_port}/config" >/dev/null
     if [ "${AUTO_ONLINE}" -eq 1 ]; then
         curl -s -X POST --max-time 3 -H 'Content-Type: application/json' \
