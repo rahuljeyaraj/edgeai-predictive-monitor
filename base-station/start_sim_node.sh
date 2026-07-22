@@ -209,7 +209,7 @@ for i in $(seq 0 $((NUM_NODES - 1))); do
     SIM_UI_PORTS+=("${ui_port}")
 done
 
-step "Pre-configuring sim node(s) (first capture file found, fused+per-axis accel, mic, all scalars)"
+step "Pre-configuring sim node(s) (first capture file found, per-axis accel, mic, all scalars)"
 for ui_port in "${SIM_UI_PORTS[@]}"; do
     up=0
     state=""
@@ -235,7 +235,7 @@ print(files[0] if files else "")
         continue
     fi
     curl -s -X POST --max-time 3 -H 'Content-Type: application/json' \
-        -d "{\"file\": \"${first_file}\", \"accel\": true, \"accel_fused\": true, \"mic\": true, \"scalars\": [\"rms\", \"kurtosis\", \"crest_factor\", \"peak\", \"std\", \"skewness\"]}" \
+        -d "{\"file\": \"${first_file}\", \"accel\": true, \"accel_fused\": false, \"mic\": true, \"scalars\": [\"rms\", \"kurtosis\", \"crest_factor\", \"peak\", \"std\", \"skewness\"]}" \
         "http://127.0.0.1:${ui_port}/config" >/dev/null
     if [ "${AUTO_ONLINE}" -eq 1 ]; then
         curl -s -X POST --max-time 3 -H 'Content-Type: application/json' \

@@ -170,7 +170,7 @@ for i in $(seq 1 "${NUM_NODES}"); do
     SIM_UI_PORTS+=("${ui_port}")
 done
 
-step "Pre-configuring sim node(s) (fused+per-axis accel, mic, all scalars -- left OFFLINE for you to review)"
+step "Pre-configuring sim node(s) (per-axis accel, mic, all scalars -- left OFFLINE for you to review)"
 for ui_port in "${SIM_UI_PORTS[@]}"; do
     up=0
     state=""
@@ -196,7 +196,7 @@ print(next((f for f in files if f == "healthy.npz"), files[0] if files else ""))
         continue
     fi
     curl -s -X POST --max-time 3 -H 'Content-Type: application/json' \
-        -d "{\"file\": \"${first_file}\", \"accel\": true, \"accel_fused\": true, \"mic\": true, \"scalars\": [\"rms\", \"kurtosis\", \"crest_factor\", \"peak\", \"std\", \"skewness\"]}" \
+        -d "{\"file\": \"${first_file}\", \"accel\": true, \"accel_fused\": false, \"mic\": true, \"scalars\": [\"rms\", \"kurtosis\", \"crest_factor\", \"peak\", \"std\", \"skewness\"]}" \
         "http://127.0.0.1:${ui_port}/config" >/dev/null
     if [ "${AUTO_ONLINE}" -eq 1 ]; then
         curl -s -X POST --max-time 3 -H 'Content-Type: application/json' \

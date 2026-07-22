@@ -166,7 +166,7 @@ _SCALAR_FUNCS = {
 _KIND_SPECTRUM = schema.DATA_KIND["SPECTRUM"]
 _KIND_SCALAR_SET = schema.DATA_KIND["SCALAR_SET"]
 
-DEFAULT_BIN_COUNT = 512  # matches ACCEL_FFT_BIN_COUNT/MIC_FFT_BIN_COUNT in app_config.h
+DEFAULT_BIN_COUNT = 128
 DEFAULT_PUBLISH_INTERVAL_S = 0.2  # matches the old simulate.py's cadence
 
 # Metadata for a zero-filled accel/mic section when the currently selected
@@ -966,8 +966,8 @@ def main():
     parser.add_argument("--accel-bin-count", type=int, default=DEFAULT_BIN_COUNT,
                          help="downsampled accel spectrum bins: used as-is for the fused channel, "
                               "or per-axis (x3 total across accel_x/y/z) in per-axis mode -- see "
-                              "--accel-fused. Default matches firmware's ACCEL_FFT_BIN_COUNT; must "
-                              "evenly divide 512 FFT bins from the 1024-sample accel window. "
+                              "--accel-fused. Must evenly divide 512 FFT bins from the 1024-sample "
+                              "accel window (firmware's ACCEL_FFT_BIN_COUNT). "
                               "Freely adjustable at any time, never locked")
     parser.add_argument("--mic-bin-count", type=int, default=None,
                          help="downsampled mic spectrum bins (default: same as --accel-bin-count; "
@@ -977,7 +977,7 @@ def main():
                               "time, never locked")
     parser.add_argument("--accel", action=argparse.BooleanOptionalAction, default=True,
                          help="emit accel spectrum data at all (fused or per-axis, see --accel-fused)")
-    parser.add_argument("--accel-fused", action=argparse.BooleanOptionalAction, default=True,
+    parser.add_argument("--accel-fused", action=argparse.BooleanOptionalAction, default=False,
                          help="while --accel is on: fused (summed 3-axis) channel if set, "
                               "accel_x/y/z per-axis channels if not. Ignored while --accel is off")
     parser.add_argument("--mic", action=argparse.BooleanOptionalAction, default=True,
