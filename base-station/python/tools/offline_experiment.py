@@ -373,16 +373,14 @@ def print_report(cfg, input_dim, summary, healthy_labels):
 # CLI
 # ---------------------------------------------------------------------------
 
-_SWEEP_BIN_COUNTS = (8, 16, 32, 64, 128, 256, 512)
+_SWEEP_BIN_COUNTS = (64, 128, 256, 512)
 
-# Curated rather than the full 2^6=64-subset power set of _SCALAR_FUNCS: none,
-# each scalar alone (to see which one individually helps), and all six
-# together. Combined with axis_mode x bin_count x include_mic this already
-# multiplies out to hundreds of configs, each a fresh autoencoder training
-# run -- a full power set would blow that up another 8x for little extra
-# signal over "alone" vs "everything".
-_SWEEP_SCALAR_COMBOS = ((),) + tuple((name,) for name in _SCALAR_FUNCS) + \
-    (tuple(_SCALAR_FUNCS),)
+# Curated rather than the full 2^6=64-subset power set of _SCALAR_FUNCS: just
+# none vs. all six together. Combined with axis_mode x bin_count x include_mic
+# this already multiplies out to hundreds of configs, each a fresh autoencoder
+# training run -- individual scalars alone added little extra signal over
+# "none" vs. "everything".
+_SWEEP_SCALAR_COMBOS = ((), tuple(_SCALAR_FUNCS))
 
 
 def _sweep_configs():
