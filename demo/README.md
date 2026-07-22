@@ -10,7 +10,7 @@ Design rationale and the demo speed profile live in
 
 ## Contents
 - `stepper_rig/stepper_rig.ino` — Arduino Uno firmware (needs AccelStepper).
-- `dashboard.html` — browser control panel (sliders + presets) over Web Serial.
+- `dashboard.html` — browser control panel (per-motor slider + type-in speed, on/off, sync) over Web Serial.
 - `run_demo.py` — host-side helper to script baseline / sweep / fault runs.
 
 ## Hardware
@@ -69,10 +69,16 @@ in Firefox/Safari, or inside sandboxed iframes):
 python3 -m http.server -d demo 8000   # then visit http://localhost:8000/dashboard.html
 ```
 
-Click **Connect**, pick the Uno's port, then use the per-motor sliders,
-quick-set buttons, and demo presets (Baseline / Beat / Fault). A live serial
-console shows what's sent and the Uno's status replies. **Stop** disables the
-drivers instantly. Closing/disconnecting auto-sends `d` so motors coast down.
+Click **Connect** and pick the Uno's port, then for each motor set the speed by
+dragging the slider **or** typing an RPM in the readout (they stay in lockstep).
+Each motor has its own **On/Off** switch — a motor turned off holds still even
+with a speed dialed in. **Sync** makes Motor 2 (Y) follow Motor 1 (X); changing
+Y directly turns Sync back off. A live serial console shows what's sent and the
+Uno's status replies. **Stop** turns both motors off instantly. Closing or
+disconnecting auto-sends `d` so the motors coast down.
+
+> The CNC shield shares one `~ENABLE` line, so the drivers only fully
+> de-energize when **both** motors are off; a single off motor is held at 0 RPM.
 
 > The port opens with a ~2 s Uno reset; wait for the `=== stepper_rig ready ===`
 > line in the console before driving.
