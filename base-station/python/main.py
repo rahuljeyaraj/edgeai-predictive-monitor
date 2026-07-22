@@ -138,6 +138,51 @@ def wire_local_status_led(registry: Registry) -> None:
     registry.on_status_change(on_status_change)
 
 
+# Firmware defaults scroll_speed to 0 = static/no-scroll (matrix_display.cpp),
+# which clips any message past the 13-col matrix, so a non-zero speed is
+# required for the multi-word counts to scroll into view. 150ms/col is
+# display_matrix_test.py's proven-readable value.
+MATRIX_SCROLL_SPEED_MS = 150
+
+
+def wire_local_matrix_text(registry: Registry) -> None:
+    """Drives this board's own 8x13 LED matrix with a rolling fleet-health
+    summary (docs/LED_MATRIX_STATUS_PLAN.md) -- a glanceable, no-app-needed
+    readout physically on the base station. Sibling to wire_local_status_led:
+    same local-Bridge-RPC push (set_matrix_text instead of set_rgb), same
+    desktop-dev ImportError guard. Unlike the RGB ring (this board's OWN
+    status only), the matrix shows FLEET counts, so it rebuilds on *every*
+    node's status change, not just BASE_STATION_NODE_ID's."""
+    try:
+        from arduino.app_utils import Bridge
+    except ImportError:
+        # Desktop dev run -- no App Lab container, no local matrix to drive.
+        # Same convention as wire_local_status_led/spi_reader.py: skip wiring
+        # instead of crashing main.py at startup.
+        logger.warning("arduino.app_utils unavailable -- local matrix text disabled (desktop dev run?)")
+        return
+
+    from bridge_lock import BRIDGE_LOCK
+    from matrix_status import fleet_status_text
+
+    def on_status_change(node_id: str, status) -> None:
+        text = fleet_status_text(registry.list().values())
+        try:
+            with BRIDGE_LOCK:
+                # Scroll speed first, then text: set_matrix_text resets the
+                # scroll position (and any new text restarts the scroll), so
+                # the speed must already be in effect when the text lands --
+                # the same ordering display_matrix_test.py relies on. Both
+                # args go over the wire as strings; integer RPC params fail
+                # Arduino_RPClite's type-check (see matrix_display.cpp).
+                Bridge.call("set_matrix_scroll_speed", str(MATRIX_SCROLL_SPEED_MS))
+                Bridge.call("set_matrix_text", text)
+        except Exception:
+            logger.exception("failed to push fleet status to LED matrix")
+
+    registry.on_status_change(on_status_change)
+
+
 def build_telegram_alerts(registry: Registry, alert_store: AlertStore, on_subscriber_change):
     """Constructs the arduino:telegram_bot brick and wires it to `registry`
     + `alert_store` (docs/DASHBOARD_IDEAS_BACKLOG.md's Telegram alerts).
@@ -191,6 +236,8 @@ def main():
     # --mqtt-host) -- the local ring is reachable over Bridge regardless of
     # whether MQTT satellite ingestion is enabled for this run.
     wire_local_status_led(registry)
+    # Same story for the board's own LED matrix (fleet-health summary).
+    wire_local_matrix_text(registry)
 
     def on_score(node_id: str, timestamp: float, score: float, status) -> None:
         # Mirrors on_frame's "spectrum" broadcast below -- pushes every
