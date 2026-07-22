@@ -89,6 +89,23 @@ class InferencePipeline:
             return NodeStatus.WARNING
         return NodeStatus.HEALTHY
 
+    def reset_to_healthy(self) -> None:
+        """Re-sync this pipeline's own confirmed-status tracking to HEALTHY --
+        called by MotorPipeline right after an operator resume(), which
+        always forces the *registry's* status to HEALTHY (registry.py's
+        _NodeStateMachine.resume) without this pipeline instance ever
+        finding out. Without this, self._status is left holding whatever it
+        was before the pause (e.g. FAULT), and if the first post-resume
+        score also happens to land back in that same zone, handle_frame's
+        `raw_status == self._status` check reads it as "no change" and
+        never calls registry.set_status() -- the registry stays wrongly
+        stuck at the resume-forced HEALTHY forever, even though the score
+        (and the chart, which colors points from this pipeline's own
+        .status) is plainly back in fault range."""
+        self._status = NodeStatus.HEALTHY
+        self._candidate_status = None
+        self._candidate_count = 0
+
     def handle_frame(self, frame: SensorFrame) -> Optional[float]:
         """Returns the reconstruction error for this frame, or None if it
         was skipped (a different node_id, or the gate reports anything but

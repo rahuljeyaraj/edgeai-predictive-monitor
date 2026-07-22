@@ -127,6 +127,7 @@ class MotorPipeline:
         self._on_score = on_score
         self._inference: Optional[InferencePipeline] = None
         self._commissioned_at: Optional[float] = None
+        self._paused_since_last_frame = False
 
     def handle_frame(self, frame: SensorFrame, status: NodeStatus) -> None:
         self.frame_count += 1
@@ -139,6 +140,7 @@ class MotorPipeline:
             # a fresh reconstruction error every frame underneath that,
             # which is what made the dashboard's anomaly score keep moving
             # while the node showed paused.
+            self._paused_since_last_frame = True
             return
 
         entry = self._registry.get(self.node_id)
@@ -168,6 +170,18 @@ class MotorPipeline:
                 # wedging this pipeline permanently.
                 return
             self._commissioned_at = entry.last_commissioned
+        elif self._paused_since_last_frame:
+            # Resumed with no re-commission in between (the branch above
+            # already reads the registry's current, correct status fresh,
+            # so it doesn't need this) -- registry.resume() just forced
+            # entry.status to HEALTHY out from under this cached pipeline,
+            # but self._inference's own ._status is still whatever it was
+            # pre-pause. Re-sync it so a post-resume score landing back in
+            # that same pre-pause zone isn't mistaken for "no change" (see
+            # reset_to_healthy's docstring).
+            self._inference.reset_to_healthy()
+
+        self._paused_since_last_frame = False
 
         score = self._inference.handle_frame(frame)
         if score is not None:

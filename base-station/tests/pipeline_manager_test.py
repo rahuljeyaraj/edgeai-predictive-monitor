@@ -287,6 +287,63 @@ def test_paused_node_is_not_scored():
     print("paused node's frames are counted but not scored/recorded: PASS")
 
 
+def test_resume_resyncs_stale_confirmed_status():
+    """Regression test: resuming a paused node must re-sync the cached
+    InferencePipeline's own confirmed-status tracking, not just the
+    registry's. registry.resume() always forces entry.status to HEALTHY
+    (registry.py's _NodeStateMachine.resume), trusting inference to
+    re-diagnose within a few frames -- but before this fix, the cached
+    InferencePipeline's private ._status was left holding whatever it was
+    pre-pause (FAULT here, set up below). A post-resume frame that also
+    scores FAULT then looks like "no change" to handle_frame's
+    `raw_status == self._status` check, so registry.set_status() is never
+    called and the registry stays wrongly stuck at HEALTHY forever -- even
+    though the score (and the chart, which colors points from this same
+    pipeline's .status) is plainly back in fault range. This is the bug
+    behind a user-observed repro: pause on a confirmed fault, switch to a
+    different fault signal, unpause -- graph stays in the red zone but the
+    dashboard/sim status reports healthy."""
+    tmp_dir = tempfile.mkdtemp(prefix="pipeline_manager_test_")
+    registry = Registry(os.path.join(tmp_dir, "registry.json"))
+    registry.add(NODE_ID, sensor_config=frozenset({SensorChannel.MIC}))
+    history = HistoryStore(os.path.join(tmp_dir, "history.db"))
+
+    model = build_autoencoder(INPUT_DIM)
+    healthy_vector, _ = build_feature_vector(
+        scored_frame(HEALTHY_BINS, 0.0), frozenset({SensorChannel.MIC}), INPUT_DIM)
+    train_autoencoder(model, [healthy_vector] * 5, epochs=500)
+    model_path = os.path.join(tmp_dir, f"{NODE_ID}.pt")
+    save_model(model, model_path)
+    registry.start_commissioning(NODE_ID)
+    registry.stop_collecting(NODE_ID)
+    registry.complete_commissioning(NODE_ID, model_path,
+                                     warning_threshold=0.05, fault_threshold=0.2)
+
+    manager = PipelineManager(
+        registry, lambda: MotorStateGate(threshold=0.5, debounce_frames=1),
+        history_store=history, status_debounce_frames=1)
+
+    # Drive the node to a confirmed FAULT, caching an InferencePipeline
+    # whose own ._status is FAULT.
+    manager.route(scored_frame(FAULT_BINS, timestamp=0.0))
+    assert registry.get(NODE_ID).status.value == "fault", registry.get(NODE_ID)
+
+    registry.pause(NODE_ID)
+    manager.route(scored_frame(FAULT_BINS, timestamp=1.0))  # frozen, not scored
+
+    registry.resume(NODE_ID)
+    assert registry.get(NODE_ID).status.value == "healthy", registry.get(NODE_ID)
+
+    # Still fault-range data post-resume (standing in for the repro's
+    # "switch to a different fault, unpause") -- without the fix this reads
+    # as "no change from the stale cached FAULT" and never calls
+    # set_status(), leaving the registry wrongly stuck at HEALTHY.
+    manager.route(scored_frame(FAULT_BINS, timestamp=2.0))
+    entry = registry.get(NODE_ID)
+    assert entry.status.value == "fault", entry.status
+    print("resume re-syncs the cached inference pipeline's stale confirmed status: PASS")
+
+
 def test_frame_bin_count_mismatch_raises():
     """A frame whose bin count doesn't match the node's committed
     sensor_config (e.g. firmware fft_size drift) must raise loudly at
@@ -432,6 +489,7 @@ if __name__ == "__main__":
         test_commissioned_node_routes_through_inference_and_writes_history()
         test_recommissioning_rebuilds_stale_inference_pipeline()
         test_paused_node_is_not_scored()
+        test_resume_resyncs_stale_confirmed_status()
         test_frame_bin_count_mismatch_raises()
         test_uncommissioned_node_only_counts_frames()
         test_non_sensor_channel_bin_key_is_ignored_not_raised()
