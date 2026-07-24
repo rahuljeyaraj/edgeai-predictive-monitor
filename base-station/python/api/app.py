@@ -45,6 +45,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from commissioning import CommissioningError
+from capture import CaptureError
 from registry import InvalidTransitionError, NodeNotFoundError, Registry
 from store import HistoryStore
 from retention import DEFAULT_RETENTION_SECONDS, run_retention_loop
@@ -71,10 +72,30 @@ _PERF_BROADCAST_INTERVAL_S = 1.0
 
 class RenameBody(BaseModel):
     # Optional + defaulted rather than required: the old handler used
-    # body.get("display_name") and returned a 400 (not a 422) when it was
+    # body.get("device_name") and returned a 400 (not a 422) when it was
     # missing or empty, per the existing REST contract -- see the
-    # not-display_name check in rename_node() below.
-    display_name: Optional[str] = None
+    # not-device_name check in rename_node() below.
+    device_name: Optional[str] = None
+
+
+class DeviceTypeBody(BaseModel):
+    # Empty string means "clear it back to unassigned" -- normalized to
+    # None before hitting Registry.set_device_type() (see the route below),
+    # same "blank means unset" contract as the capture toolbar's frame-count
+    # field.
+    device_type: Optional[str] = None
+
+
+class CaptureStartBody(BaseModel):
+    # None = manual-stop-only, no cap (pipeline/capture.py's default).
+    # "we know how many frames a good batch needs" (2026-07-24) -- the
+    # frontend always sends a value (defaults its input to 50), but this
+    # stays optional so a bare POST with no body still works.
+    target_frames: Optional[int] = None
+
+
+class CaptureSaveBody(BaseModel):
+    label: str
 
 
 class TelegramPrefsBody(BaseModel):
@@ -102,6 +123,7 @@ def broadcast_threadsafe(app: FastAPI, message: dict) -> None:
 
 def create_app(registry: Registry, history_store: HistoryStore,
                 commissioning,
+                capture,
                 manager: PipelineManager,
                 perf_monitor: Optional[PerformanceMonitor] = None,
                 gpu_perf: Optional[GpuPerfPoller] = None,
@@ -159,6 +181,7 @@ def create_app(registry: Registry, history_store: HistoryStore,
     app.state.registry = registry
     app.state.history_store = history_store
     app.state.commissioning = commissioning
+    app.state.capture = capture
     app.state.manager = manager
     app.state.perf_monitor = perf_monitor if perf_monitor is not None else PerformanceMonitor()
     app.state.gpu_perf = gpu_perf
@@ -183,6 +206,23 @@ def create_app(registry: Registry, history_store: HistoryStore,
         broadcast_threadsafe(app, {"type": "registry", "node_id": node_id, "entry": entry.to_dict()})
 
     registry.on_status_change(_on_registry_status_change)
+
+    def _on_capture_state_change(node_id: str, state: str, collected: int,
+                                  target_frames: Optional[int]) -> None:
+        # Same shape of problem as _on_registry_status_change above, and
+        # the same fix: a capture's state can change from more than one
+        # trigger source -- a REST start/stop/save/cancel call, or the
+        # auto-stop-at-target_frames transition (CaptureController.
+        # feed_frame(), called from the ingestion thread, no REST request
+        # involved at all) -- so this one listener is the only broadcaster,
+        # not each route handler individually (that shape would silently
+        # miss the auto-stop case, which never goes through a route).
+        broadcast_threadsafe(app, {
+            "type": "capture", "node_id": node_id, "state": state,
+            "collected": collected, "target_frames": target_frames,
+        })
+
+    capture.on_state_change(_on_capture_state_change)
 
     # Permissive CORS: the dashboard frontend is served from a different
     # origin/port than this REST API in the pre-consolidation deployment,
@@ -230,6 +270,14 @@ def create_app(registry: Registry, history_store: HistoryStore,
         if progress is not None:
             collected, min_frames = progress
             d["commissioning_progress"] = {"collected": collected, "min_frames": min_frames}
+        # Only present once a node has captured at least once, and only
+        # while that session isn't idle -- same "absent means nothing to
+        # show" contract as commissioning_progress above.
+        capture_progress = app.state.capture.progress(node_id)
+        if capture_progress is not None and capture_progress[0] != "idle":
+            state, collected, target_frames = capture_progress
+            d["capture_progress"] = {"state": state, "collected": collected,
+                                      "target_frames": target_frames}
         return d
 
     @app.get("/nodes")
@@ -316,10 +364,20 @@ def create_app(registry: Registry, history_store: HistoryStore,
 
     @app.post("/nodes/{node_id}/rename")
     def rename_node(node_id: str, body: RenameBody = RenameBody()):
-        if not body.display_name:
-            raise HTTPException(status_code=400, detail="display_name is required")
+        if not body.device_name:
+            raise HTTPException(status_code=400, detail="device_name is required")
         try:
-            entry = app.state.registry.rename(node_id, body.display_name)
+            entry = app.state.registry.rename(node_id, body.device_name)
+        except NodeNotFoundError:
+            raise HTTPException(status_code=404, detail=f"unknown node_id {node_id!r}")
+        broadcast_threadsafe(app, {"type": "registry", "node_id": node_id, "entry": entry.to_dict()})
+        return entry.to_dict()
+
+    @app.post("/nodes/{node_id}/device_type")
+    def set_device_type(node_id: str, body: DeviceTypeBody = DeviceTypeBody()):
+        device_type = body.device_type.strip() if body.device_type else None
+        try:
+            entry = app.state.registry.set_device_type(node_id, device_type)
         except NodeNotFoundError:
             raise HTTPException(status_code=404, detail=f"unknown node_id {node_id!r}")
         broadcast_threadsafe(app, {"type": "registry", "node_id": node_id, "entry": entry.to_dict()})
@@ -356,6 +414,7 @@ def create_app(registry: Registry, history_store: HistoryStore,
         # leaves an orphaned session in CommissioningController forever
         # (see its discard()'s docstring).
         app.state.commissioning.discard(node_id)
+        app.state.capture.discard(node_id)
         try:
             app.state.manager.decommission(node_id)
         except NodeNotFoundError:
@@ -423,5 +482,58 @@ def create_app(registry: Registry, history_store: HistoryStore,
 
         threading.Thread(target=run_training, daemon=True).start()
         return entry.to_dict()
+
+    # Capture + label (docs/EDGE_IMPULSE_DASHBOARD_WORKFLOW_PLAN.md S2) --
+    # independent of commissioning/NodeStatus entirely, so unlike every
+    # route above there's no registry status to check or transition here.
+    # No broadcast_threadsafe calls in the handlers below -- unlike the
+    # commission routes, EVERY capture state change (including the
+    # auto-stop-at-target_frames one, which never goes through a route at
+    # all) already fires _on_capture_state_change above.
+    @app.post("/nodes/{node_id}/capture/start")
+    def start_capture(node_id: str, body: CaptureStartBody = CaptureStartBody()):
+        try:
+            app.state.capture.start(node_id, target_frames=body.target_frames)
+        except NodeNotFoundError:
+            raise HTTPException(status_code=404, detail=f"unknown node_id {node_id!r}")
+        except CaptureError as e:
+            raise HTTPException(status_code=409, detail=str(e))
+        return {"node_id": node_id, "state": "capturing"}
+
+    @app.post("/nodes/{node_id}/capture/stop")
+    def stop_capture(node_id: str):
+        try:
+            collected = app.state.capture.stop(node_id)
+        except CaptureError as e:
+            raise HTTPException(status_code=409, detail=str(e))
+        return {"node_id": node_id, "state": "stopped", "collected": collected}
+
+    @app.post("/nodes/{node_id}/capture/save")
+    def save_capture(node_id: str, body: CaptureSaveBody):
+        try:
+            app.state.capture.save(node_id, body.label)
+        except CaptureError as e:
+            raise HTTPException(status_code=409, detail=str(e))
+        return {"node_id": node_id, "state": "idle", "saved": True}
+
+    @app.post("/nodes/{node_id}/capture/cancel")
+    def cancel_capture(node_id: str):
+        app.state.capture.cancel(node_id)
+        return {"node_id": node_id, "state": "idle"}
+
+    @app.get("/captures/labels")
+    def get_capture_labels():
+        return {"labels": app.state.capture.list_labels()}
+
+    @app.get("/device_types")
+    def get_device_types():
+        # Distinct types already assigned across the fleet, for the same
+        # kind of suggestions dropdown /captures/labels backs -- so a second
+        # node of a machine kind that's already been typed once doesn't
+        # risk a near-duplicate ("Motor" vs "motor ") fragmenting the
+        # capture/label grouping this field exists for.
+        types = {entry.device_type for entry in app.state.registry.list().values()
+                 if entry.device_type}
+        return {"device_types": sorted(types)}
 
     return app

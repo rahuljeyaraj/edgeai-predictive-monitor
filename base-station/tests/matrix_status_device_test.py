@@ -46,7 +46,7 @@ _STALE = _NOW - 3600  # long past the 30s offline cutoff -> offline
 
 def entry(status: NodeStatus, last_seen=_FRESH) -> RegistryEntry:
     return RegistryEntry(
-        node_id="n", display_name="n",
+        node_id="n", device_name="n",
         sensor_config=frozenset({SensorChannel.MIC}), input_dim=134,
         status=status, last_seen=last_seen)
 

@@ -285,6 +285,13 @@ const Charts = (() => {
         if (registryHandler) registryHandler(msg);
       } else if (msg.type === "removed" && registryHandler) {
         registryHandler(msg);
+      } else if ((msg.type === "training_progress" || msg.type === "capture") && registryHandler) {
+        // Neither touches NodeStatus (capture never does; training_progress
+        // is an in-between tick, not a status change) so they ride the same
+        // fleet-state push handler as "registry"/"removed" rather than
+        // getting their own init() callback -- app.js's handler already
+        // branches on msg.type for this exact reason.
+        registryHandler(msg);
       } else if (msg.type === "perf_stats") {
         if (perfHandler) perfHandler(msg);
       } else if (msg.type === "telegram_subscribers") {

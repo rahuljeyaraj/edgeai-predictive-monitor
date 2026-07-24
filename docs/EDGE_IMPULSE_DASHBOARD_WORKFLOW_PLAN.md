@@ -28,22 +28,30 @@ project line (not the Kaggle dataset line — see the other doc for that history
 
 ---
 
-## 1. Node vs Device split (new registry concept)
+## 1. Device identity on the existing registry entry (no separate Device table)
 
-Today `registry.RegistryEntry` only models the **node** (the sensor hardware
-unit): `node_id`, `display_name`, `sensor_config`, `status`, etc. There is no
-concept of the **physical machine being monitored**.
+Originally drafted as a separate Node/Device split with its own table — revised
+after checking how `display_name` is actually used today. It's already a
+free-text, user-editable field (`registry.py:rename()`, double-click-to-rename
+in the Fleet row, defaults to `node_id` if unset) — in practice it already
+functions as "which device this node is monitoring" (e.g. rename it to
+`motor001`). No new field needed for that.
 
-New split:
-- **Node** — the sensor hardware, identity unchanged (`node_id` + name).
-- **Device** — the monitored machine. Has its own **individual name** (used
-  later to turn it on/off) and a **device type / machine family** (e.g.
-  `bearing-rig-v1`, `pump-A200`).
+So the actual change is smaller than first drafted:
+- **Rename `display_name` → `device_name`** — same field, same behavior,
+  clearer name for what it's actually used for. Mechanical rename, call sites
+  confirmed: `registry/registry.py` (`RegistryEntry.display_name`, `add()`,
+  `rename()`), `api/app.py` (rename endpoint body/handler), `frontend/app.js`
+  (row render + rename input + rename POST), `frontend/alerts.js` (name
+  lookup for alert display).
+- **Add a new `device_type: Optional[str]` field** — this is the only
+  genuinely new field. No separate Device dataclass/table; both fields live
+  directly on `RegistryEntry` since node:device is 1:1 in practice.
 
-A node maps to a device. **`device_type` is the scoping key for everything
-downstream**: data grouping, which Edge Impulse project data goes to, and
-which model gets auto-applied at runtime. Nodes monitoring devices with no
-assigned model just show the anomaly score — no classification attempted.
+**`device_type` is the scoping key for everything downstream**: data
+grouping, which Edge Impulse project data goes to, and which model gets
+auto-applied at runtime. Nodes with no `device_type` assigned (or whose type
+has no model) just show the anomaly score — no classification attempted.
 
 **Cleanup while adding this:** `RegistryEntry.control_circuit_id` and
 `auto_cutoff_enabled` are declared but have **zero references anywhere else in
@@ -69,9 +77,12 @@ change.
   for a label. A **save action** (floppy-disk icon) persists the labeled
   stream for later upload — distinct from any "recording in progress"
   indicator.
-- Still open: does capture require the node to already be commissioned (so
-  scoring/thresholds exist), or can fault samples be captured on an
-  uncommissioned node? Not decided.
+- **Decided 2026-07-24: capture does NOT require commissioning.** It has
+  nothing to do with the autoencoder/thresholds -- can be started on any
+  node in any registry status. Still gated on the motor-state gate
+  (`MotorState.RUNNING`, own `MotorStateGate` instance) the same way
+  commissioning is, since a captured sample while the motor is stopped
+  carries no signature worth labeling.
 
 ---
 

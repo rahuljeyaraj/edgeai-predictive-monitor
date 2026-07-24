@@ -106,7 +106,7 @@ document.getElementById("summary-row").addEventListener("click", (e) => {
   }
 
   renderSummary(state.lastNodes);
-  if (editingNodeId === null) renderFleetList(state.lastNodes);
+  if (editingNodeId === null && editingDeviceTypeNodeId === null) renderFleetList(state.lastNodes);
 });
 
 // ---------------------------------------------------------------------
@@ -133,54 +133,68 @@ function statusLabelFor(entry, bucket) {
     const { collected, min_frames } = entry.commissioning_progress;
     return `Collecting ${collected}/${min_frames}`;
   }
+  if (entry.status === "commissioning_training") {
+    // Progress lives here, not on the button (rowControls() below stays a
+    // plain "Training…") -- collecting's progress was already in the
+    // status text, so training's % belongs in the same place instead of
+    // a second, inconsistent location.
+    const tp = trainingProgress[entry.node_id];
+    if (tp) return `Training ${Math.round((100 * tp.epoch) / tp.total_epochs)}%`;
+  }
   return STATUS_LABEL[entry.status];
 }
 
-// Every row control is icon-only -- no spelled-out buttons in any state.
+// Commission/train collapsed into a single morphing labeled button --
+// previously two icon buttons that read as independent controls even
+// though pressing "train" only ever means "stop collecting AND train".
 // Mirrors the transition guards in registry/registry.py exactly:
-//   - Record (commission_start) is disabled while collecting/training
-//     (already running) and while paused (resume() first, matches
-//     PAUSED -> COMMISSIONING_COLLECTING being deliberately absent there).
-//   - Train (commission_stop) only unlocks once enough frames are in
-//     (entry.commissioning_progress); shows a spinner during
-//     commissioning_training and a checkmark once a model exists
-//     (healthy/warning/fault/paused) -- pressing Record again resets it.
-//   - Pause/Resume only enabled once a model exists (healthy/warning/
-//     fault/paused) -- matches pause()/resume()'s own guards.
-//   - Remove (decommission) is always enabled in every status (S3.9:
-//     registry.decommission() is now removable from any status).
+//   uncommissioned          -> "Commission"   (commission_start)
+//   commissioning_collecting (not enough frames yet) -> disabled, label
+//     mirrors the status pill's own "Collecting n/min" text
+//   commissioning_collecting (ready) -> "Train" (commission_stop)
+//   commissioning_training  -> disabled "Training…"
+//   healthy/warning/fault   -> "Recommission" (commission_start again)
+//   paused                  -> disabled "Recommission" (resume() first,
+//     matches PAUSED -> COMMISSIONING_COLLECTING being deliberately
+//     absent from the state machine)
+// Pause/Resume only enabled once a model exists (healthy/warning/
+// fault/paused) -- matches pause()/resume()'s own guards.
+// Remove (decommission) is always enabled in every status (S3.9:
+// registry.decommission() is now removable from any status).
 function rowControls(entry) {
   const status = entry.status;
   const progress = entry.commissioning_progress;
   const readyToTrain = status === "commissioning_collecting"
     && progress !== undefined && progress.collected >= progress.min_frames;
 
-  let recordEnabled, recordTooltip;
+  let commissionLabel, commissionAction, commissionEnabled, commissionTooltip, commissionVariant;
   if (status === "uncommissioned") {
-    recordEnabled = true; recordTooltip = "Start recording";
-  } else if (status === "healthy" || status === "warning" || status === "fault") {
-    recordEnabled = true; recordTooltip = "Re-record (retrain)";
+    commissionLabel = "Commission"; commissionAction = "commission_start";
+    commissionEnabled = true; commissionVariant = "action";
+    commissionTooltip = "Start collecting baseline data";
+  } else if (status === "commissioning_collecting" && readyToTrain) {
+    commissionLabel = "Train"; commissionAction = "commission_stop";
+    commissionEnabled = true; commissionVariant = "ready";
+    commissionTooltip = "Stop collecting and train";
   } else if (status === "commissioning_collecting") {
-    recordEnabled = false; recordTooltip = "Recording in progress";
+    commissionLabel = "Collecting…"; commissionAction = null;
+    commissionEnabled = false; commissionVariant = "pending";
+    commissionTooltip = `Collecting… (${progress ? progress.collected : 0}/${progress ? progress.min_frames : "?"})`;
   } else if (status === "commissioning_training") {
-    recordEnabled = false; recordTooltip = "Training in progress";
+    // Plain label -- the % lives in the status pill (statusLabelFor())
+    // instead, same place Collecting's progress already lives, so there's
+    // exactly one place to look for "how far along is this," not two.
+    commissionLabel = "Training…"; commissionAction = null;
+    commissionEnabled = false; commissionVariant = "pending";
+    commissionTooltip = "Training in progress";
+  } else if (status === "healthy" || status === "warning" || status === "fault") {
+    commissionLabel = "Recommission"; commissionAction = "commission_start";
+    commissionEnabled = true; commissionVariant = "action";
+    commissionTooltip = "Recollect baseline and retrain";
   } else {
-    recordEnabled = false; recordTooltip = "Resume first to re-record";
-  }
-
-  let trainIcon, trainEnabled, trainTooltip;
-  if (status === "commissioning_training") {
-    trainIcon = "spinner"; trainEnabled = false; trainTooltip = "Training…";
-  } else if (status === "commissioning_collecting") {
-    trainIcon = "retrain";
-    trainEnabled = readyToTrain;
-    trainTooltip = readyToTrain
-      ? "Start training"
-      : `Collecting… (${progress ? progress.collected : 0}/${progress ? progress.min_frames : "?"})`;
-  } else if (status === "uncommissioned") {
-    trainIcon = "retrain"; trainEnabled = false; trainTooltip = "No data collected yet";
-  } else {
-    trainIcon = "check"; trainEnabled = false; trainTooltip = "Model trained";
+    commissionLabel = "Recommission"; commissionAction = "commission_start";
+    commissionEnabled = false; commissionVariant = "pending";
+    commissionTooltip = "Resume first to recommission";
   }
 
   const pauseResumeEnabled = status === "healthy" || status === "warning"
@@ -189,11 +203,255 @@ function rowControls(entry) {
   const pauseResumeTooltip = status === "paused" ? "Resume" : "Pause";
 
   return {
-    recordEnabled, recordTooltip,
-    trainIcon, trainEnabled, trainTooltip,
+    commissionLabel, commissionAction, commissionEnabled, commissionTooltip, commissionVariant,
     pauseResumeAction, pauseResumeEnabled, pauseResumeTooltip,
   };
 }
+
+// Capture + label (docs/EDGE_IMPULSE_DASHBOARD_WORKFLOW_PLAN.md S2) --
+// deliberately independent of `status`/rowControls() above: capture never
+// touches NodeStatus. 2026-07-24 round 6 redesign: lives in its own
+// slide-over drawer now (recordDrawerBackdrop/recordDrawer below), not the
+// row's expanded detail panel -- the old design shared one toggle between
+// "expand row to see charts" and "record," so there was no way to dismiss
+// just the capture form ("we can never remove this once we pressed
+// record"). The drawer has its own close button and is a top-level
+// element outside #fleet-list, so closing it never touches the row's
+// expand state or the capture session itself (which lives server-side,
+// independent of any UI).
+//
+// Label is chosen BEFORE starting (not after stopping) -- Save reuses it
+// automatically the moment the capture stops, whether that's the operator
+// clicking Save or the server's own auto-stop at target_frames reaching
+// it (captureLabelByNode + the "capture" WS handler below), so there's no
+// separate post-stop "now type a label" step.
+
+// node_id -> the current label text, kept live from the FIRST keystroke
+// (or dropdown pick), not just captured at Start -- recordDrawerBodyHtml()
+// reads this as the input's value on every render, so a poll/WS tick
+// arriving mid-type redraws the same text instead of blanking the field
+// back to empty. Also doubles as "the label to auto-save with" once
+// state reaches "stopped" (server-independent, since CaptureSession has
+// no notion of a label until save()) -- see maybeAutoSaveCapture() and
+// the "capture" WS handler. Cleared on Start->stop->save completing, or
+// on Cancel.
+const captureLabelByNode = {};
+
+// Same live-draft idea as captureLabelByNode above, for the frame-count
+// field -- keeps a typed value from vanishing on a background re-render
+// before Start is clicked. Stored as the raw typed string (not a number)
+// so a partial/in-progress edit round-trips exactly as typed.
+const captureTargetDraftByNode = {};
+
+// Keeps captureLabelByNode and the Start button's disabled state in sync
+// with the label input's current value -- called on every keystroke AND
+// every dropdown-suggestion pick. A plain `input.value = x` assignment
+// (the suggestion click handler below) does NOT fire a native "input"
+// event, so without this being called explicitly from both places, Start
+// stayed disabled forever after picking a suggestion (2026-07-24 bug
+// report: "start button ... simply clears the dropdown value").
+function syncCaptureLabelState(input) {
+  const nodeId = openRecordNodeId;
+  const value = input.value.trim();
+  if (value) captureLabelByNode[nodeId] = value;
+  else delete captureLabelByNode[nodeId];
+  const entry = state.lastNodes[nodeId];
+  const startBtn = recordDrawer.querySelector('[data-action="capture_start"]');
+  if (startBtn) startBtn.disabled = !(value && entry && entry.device_type);
+}
+
+function maybeAutoSaveCapture(nodeId) {
+  const label = captureLabelByNode[nodeId];
+  if (!label) return;
+  delete captureLabelByNode[nodeId]; // before the await, so a near-simultaneous
+  // WS+poll detection can't both fire this. Frame count + device_type read
+  // here, while state.lastNodes still reflects the just-stopped batch --
+  // for the toast message only (save() itself doesn't need either).
+  const entry = state.lastNodes[nodeId];
+  const cp = entry && entry.capture_progress;
+  saveCapture(nodeId, label, cp ? cp.collected : null, entry ? entry.device_type : null);
+}
+
+// node_id of whichever node's Record drawer is open right now, or null --
+// a singleton (only one node can be actively recorded/viewed at a time),
+// unlike the old per-row toolbar this replaces.
+let openRecordNodeId = null;
+
+// The drawer is a top-level element, not part of #fleet-list's innerHTML,
+// so renderFleetList()'s 5s-poll/WS-driven rebuild can never wipe an
+// in-progress label/frame-count edit out from under the operator the way
+// the old in-row toolbar could (2026-07-24 round 6). Created once, eagerly
+// (not lazily like toastContainer()) since both the backdrop and the
+// drawer need their event listeners attached exactly once, further down.
+const recordDrawerBackdrop = document.createElement("div");
+recordDrawerBackdrop.id = "record-drawer-backdrop";
+recordDrawerBackdrop.className = "record-drawer-backdrop";
+recordDrawerBackdrop.hidden = true;
+document.body.appendChild(recordDrawerBackdrop);
+
+const recordDrawer = document.createElement("div");
+recordDrawer.id = "record-drawer";
+recordDrawer.className = "record-drawer";
+recordDrawer.hidden = true;
+document.body.appendChild(recordDrawer);
+
+// Renders the whole capture control into the singleton drawer below --
+// device type, Label/target inputs, Start (idle) or Save+Cancel
+// (capturing/stopped). No "Idle" status line/dot -- 2026-07-24 round 6:
+// "i dont know why we need a idle status," and the Start button already
+// says nothing's recording, so a second line repeating that was pure
+// noise. The dot+status line only appears once a capture is actually
+// active.
+function recordDrawerBodyHtml(entry) {
+  const cp = entry.capture_progress;
+  // "stopped" is a near-instant transient (auto-save fires the moment
+  // it's observed) -- rendered the same as "capturing", never its own
+  // visible state.
+  const active = !!cp && cp.state !== "idle";
+  const collected = cp ? (cp.collected || 0) : 0;
+  const targetFrames = cp ? cp.target_frames : null;
+  const label = captureLabelByNode[entry.node_id] || "";
+  // Blank by default (not a prefilled "50") so the "0 = indefinite"
+  // placeholder is actually visible -- 2026-07-24: a prefilled value
+  // hides its own placeholder text, which is why the hint never showed.
+  const targetDraft = targetFrames != null ? targetFrames
+    : active ? 0
+    : (captureTargetDraftByNode[entry.node_id] || "");
+
+  // Each recording belongs to a device type (2026-07-24) -- editing
+  // happens in the row's pill (single source of truth, see motorRowHtml()
+  // and startDeviceTypeEdit()); the drawer just shows the current value
+  // (or a prompt if unset) with a "Change" link that jumps back to that
+  // same editor, rather than a second, duplicate editor live at once.
+  const deviceTypeHtml = entry.device_type
+    ? `<span class="record-drawer__device-type">${escapeHtml(entry.device_type)}</span>
+       <button type="button" class="record-drawer__device-type-change" data-action="edit_device_type_from_drawer">Change</button>`
+    : `<button type="button" class="btn-label" data-action="edit_device_type_from_drawer">Set device type</button>`;
+
+  const canStart = !!label && !!entry.device_type;
+  const hintHtml = !entry.device_type
+    ? `<p class="record-drawer__hint">Set a device type above before recording.</p>` : "";
+
+  // .btn-label, not .btn-primary -- 2026-07-24: the borrowed
+  // tools/raw_capture_server.py button style ("doesn't follow the style
+  // of other buttons") didn't match Commission/Record/Pause's compact
+  // look. Same "only tint the one moment worth flagging" language as
+  // Commission/Train: Start/Cancel stay neutral, Save gets the green
+  // affirmative tint (analogous to Train's blue).
+  const buttonsHtml = active
+    ? `<button class="btn-label btn-label--save" data-action="capture_stop" title="Save this capture now" aria-label="Save this capture now">Save</button>
+       <button class="btn-label btn-label--cancel" data-action="capture_cancel" title="Discard without saving" aria-label="Discard without saving">Cancel</button>`
+    // Disabled until a label AND a device type both exist -- 2026-07-24:
+    // clicking Start with no label used to just refocus the field,
+    // confusing enough that it reads better as an unclickable button
+    // (kept in sync live by syncCaptureLabelState(), called on every
+    // keystroke AND every dropdown pick).
+    : `<button class="btn-label" data-action="capture_start" title="Start capturing" aria-label="Start capturing" ${canStart ? "" : "disabled"}>Start</button>`;
+
+  const statusHtml = active
+    ? `<div class="capture-toolbar__status">
+        <span class="capture-dot capture-dot--active"></span>
+        <span>Recording "${escapeHtml(label)}" — ${collected}${targetFrames ? ` / ${targetFrames}` : ""} frame${collected === 1 ? "" : "s"}</span>
+      </div>`
+    : "";
+
+  return `<div class="record-drawer__header">
+    <span class="record-drawer__title">Record — ${escapeHtml(entry.device_name)}</span>
+    <button type="button" class="record-drawer__close" data-action="record_drawer_close" aria-label="Close">&times;</button>
+  </div>
+  <div class="record-drawer__body">
+    <div class="record-drawer__device-type-row">
+      <label>Device type</label>
+      <div>${deviceTypeHtml}</div>
+    </div>
+    ${hintHtml}
+    <div class="capture-toolbar__label">
+      <label>Label</label>
+      <div class="motor-row__capture-label-wrap">
+        <input type="text" class="motor-row__capture-label-input" data-role="capture-label-input" placeholder="eg: healthy" autocomplete="off" value="${escapeHtml(label)}" ${active ? "disabled" : ""} />
+        <span class="motor-row__capture-label-arrow" aria-hidden="true">&#9662;</span>
+        <div class="motor-row__capture-suggestions" data-role="capture-suggestions" hidden></div>
+      </div>
+    </div>
+    <div class="capture-toolbar__label">
+      <label>Frame count</label>
+      <input type="number" min="0" step="1" data-role="capture-target-input" placeholder="0 = indefinite" value="${targetDraft}" title="0 = capture indefinitely, stop manually" ${active ? "disabled" : ""} />
+    </div>
+    <div class="record-drawer__actions">${buttonsHtml}</div>
+    ${statusHtml}
+  </div>`;
+}
+
+// Re-renders the drawer's content from current state -- called whenever
+// something the drawer displays changes (open/close, capture_progress,
+// device_type/device_name) via pollNodes()/the WS handler below.
+function renderRecordDrawer() {
+  if (!openRecordNodeId) {
+    recordDrawer.hidden = true;
+    recordDrawerBackdrop.hidden = true;
+    return;
+  }
+  const entry = state.lastNodes[openRecordNodeId];
+  if (!entry) {
+    openRecordNodeId = null;
+    recordDrawer.hidden = true;
+    recordDrawerBackdrop.hidden = true;
+    return;
+  }
+  // Don't wipe an in-progress label/frame-count edit out from under the
+  // operator on a background poll/WS tick -- same guard editingNodeId
+  // uses for the row list's own rebuild (app.js's long-standing pattern).
+  if (recordDrawer.contains(document.activeElement)
+      && document.activeElement.tagName === "INPUT") {
+    return;
+  }
+  recordDrawer.hidden = false;
+  recordDrawerBackdrop.hidden = false;
+  recordDrawer.innerHTML = recordDrawerBodyHtml(entry);
+}
+
+// "Record" button (motor-row__actions) -- opens the drawer for this node,
+// also expanding the row (if collapsed) so the live charts are visible
+// alongside it -- the two are independent now (2026-07-24 round 6): either
+// can be opened/closed without affecting the other, unlike the old design
+// where Record's whole job was just revealing the same panel charts lived
+// in.
+function openRecordDrawer(nodeId) {
+  openRecordNodeId = nodeId;
+  if (!expandedNodeIds.has(nodeId)) {
+    expandedNodeIds.add(nodeId);
+    renderFleetList(state.lastNodes);
+  }
+  renderRecordDrawer();
+  // Deliberately NOT auto-focusing the label input here (2026-07-24 round
+  // 7: "only when i press the label text box should the drop down
+  // appear") -- an earlier version auto-focused on open, which also
+  // auto-showed the suggestions dropdown as a side effect (see
+  // recordDrawer's focusin listener). The suggestions box should only
+  // ever appear from a deliberate click/tab into the field.
+}
+
+// Closing never touches the capture session -- it runs server-side,
+// independent of any UI (pipeline/capture.py), so a capture in progress
+// just keeps collecting in the background; the row's Record button itself
+// turns into a red, pulsing dot (motorRowHtml()'s isRecording) so the
+// operator can tell it's still going and reopen to Save/Cancel
+// (2026-07-24 round 6: "we can never remove this once we pressed record"
+// -- the fix is this close button existing at all, not blocking or
+// discarding on close).
+function closeRecordDrawer() {
+  openRecordNodeId = null;
+  renderRecordDrawer();
+}
+
+recordDrawerBackdrop.addEventListener("click", closeRecordDrawer);
+
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && openRecordNodeId
+      && !recordDrawer.contains(document.activeElement)) {
+    closeRecordDrawer();
+  }
+});
 
 const ACTION_ENDPOINT = {
   commission_start: (id) => ["POST", `/nodes/${id}/commission/start`],
@@ -201,6 +459,8 @@ const ACTION_ENDPOINT = {
   pause: (id) => ["POST", `/nodes/${id}/pause`],
   resume: (id) => ["POST", `/nodes/${id}/resume`],
   decommission: (id) => ["POST", `/nodes/${id}/decommission`],
+  capture_stop: (id) => ["POST", `/nodes/${id}/capture/stop`],
+  capture_cancel: (id) => ["POST", `/nodes/${id}/capture/cancel`],
 };
 
 async function api(method, path, body) {
@@ -214,6 +474,40 @@ async function api(method, path, body) {
   return data;
 }
 
+// Top-of-page confirmation banner (2026-07-24: "no need anything below
+// record button... a popup at top like the example of edge impulse
+// shows when we save an impulse") -- a transient, dismissible toast
+// instead of a persistent line under the button, so the confirmation is
+// unmissable in the moment but doesn't permanently take up row space.
+function toastContainer() {
+  let el = document.getElementById("toast-container");
+  if (!el) {
+    el = document.createElement("div");
+    el.id = "toast-container";
+    document.body.appendChild(el);
+  }
+  return el;
+}
+
+function showToast(message, kind = "success") {
+  const toast = document.createElement("div");
+  toast.className = `toast toast--${kind}`;
+  const icon = document.createElement("span");
+  icon.className = "toast__icon";
+  icon.textContent = kind === "success" ? "✓" : "!";
+  const text = document.createElement("span");
+  text.className = "toast__message";
+  text.textContent = message; // textContent, not innerHTML -- message can carry a user-typed label
+  const close = document.createElement("button");
+  close.className = "toast__close";
+  close.setAttribute("aria-label", "Dismiss");
+  close.textContent = "×";
+  close.addEventListener("click", () => toast.remove());
+  toast.append(icon, text, close);
+  toastContainer().appendChild(toast);
+  setTimeout(() => toast.remove(), 4000);
+}
+
 async function runAction(action, nodeId) {
   const [method, path] = ACTION_ENDPOINT[action](nodeId);
   try {
@@ -225,7 +519,39 @@ async function runAction(action, nodeId) {
   await pollNodes();
 }
 
-// display_name is user-editable (rename) and node_id can carry arbitrary
+// Save needs a body (the label) unlike every other action above, so it
+// doesn't fit ACTION_ENDPOINT/runAction's no-body POST shape -- called
+// from maybeAutoSaveCapture() once a capture reaches "stopped" (manual
+// Save click or the server's own auto-stop), not directly from a click
+// handler.
+async function saveCapture(nodeId, label, count, deviceType) {
+  try {
+    await api("POST", `/nodes/${nodeId}/capture/save`, { label });
+    await fetchCaptureLabels();
+    const frameText = count != null ? `${count} frame${count === 1 ? "" : "s"}` : "capture";
+    const deviceTypeText = deviceType ? `, device type "${deviceType}"` : "";
+    showToast(`Saved ${frameText} to "${label}"${deviceTypeText}`);
+  } catch (err) {
+    console.error(`Save capture on ${nodeId} failed`, err);
+    alert(`Save capture failed: ${err.message}`);
+  }
+  await pollNodes();
+}
+
+// Needs the typed target-frames value -- same reason saveCapture() above
+// doesn't fit runAction/ACTION_ENDPOINT's no-body POST shape.
+async function startCapture(nodeId, targetFrames) {
+  try {
+    await api("POST", `/nodes/${nodeId}/capture/start`,
+               { target_frames: targetFrames });
+  } catch (err) {
+    console.error(`Start capture on ${nodeId} failed`, err);
+    alert(`Start capture failed: ${err.message}`);
+  }
+  await pollNodes();
+}
+
+// device_name is user-editable (rename) and node_id can carry arbitrary
 // text from ingestion -- both land in innerHTML below, so escape before
 // interpolating rather than trusting them as safe markup.
 function escapeHtml(str) {
@@ -238,21 +564,169 @@ function escapeHtml(str) {
 }
 
 // Inline SVGs rather than an emoji/icon-font dependency -- consistent
-// rendering across platforms with no extra asset or build step.
-const ICON_RECORD = '<svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><circle cx="12" cy="12" r="7"/></svg>';
-const ICON_RETRAIN = '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/><path d="M3 21v-5h5"/></svg>';
-const ICON_SPINNER = '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 12a9 9 0 1 1-9-9"/></svg>';
-const ICON_CHECK = '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M8 12.5l2.5 2.5L16 9"/></svg>';
+// rendering across platforms with no extra asset or build step. Only
+// commission/train stays a labeled text button (see rowControls()/
+// motorRowHtml()) -- everything else, including Record as of 2026-07-24
+// Round 7, is icon-only for a consistent look across the action row
+// (teammate: "go with the complete button like pause and delete").
 const ICON_PAUSE = '<svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor"><path d="M6 5h4v14H6zM14 5h4v14h-4z"/></svg>';
 const ICON_PLAY = '<svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>';
 const ICON_TRASH = '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>';
-
-const TRAIN_ICON = { retrain: ICON_RETRAIN, spinner: ICON_SPINNER, check: ICON_CHECK };
+// Plain filled circle -- the universal "record" glyph across cameras,
+// voice memo apps, and screen/video recorders (a red dot, sometimes
+// becoming a square to mean "stop"). Kept as a dot rather than switching
+// to a square while active: this button always just opens the drawer
+// (Start/Save/Cancel live there), it never itself stops a capture, so a
+// "stop" glyph would misrepresent what clicking it does. Color (neutral
+// vs. red+pulsing) carries the idle/active distinction instead -- see
+// .btn-icon--recording in style.css.
+const ICON_RECORD = '<svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor"><circle cx="12" cy="12" r="7"/></svg>';
 
 // Suppresses re-render of the list while a rename input is open, so an
 // in-flight edit isn't wiped out by the next 5s poll (same guard the old
 // dashboard used for this exact race).
 let editingNodeId = null;
+
+// Same guard as editingNodeId above, for the device-type pill's edit mode
+// (motorRowHtml(), startDeviceTypeEdit()) -- each recording belongs to a
+// device type (2026-07-24), scoping which Edge Impulse project/model a
+// node's captures feed into (docs/EDGE_IMPULSE_DASHBOARD_WORKFLOW_PLAN.md
+// S1). Lives right next to the device name since it's the same kind of
+// identity field, edited the same click-to-edit way.
+let editingDeviceTypeNodeId = null;
+
+// Distinct device_type values already assigned across the fleet (GET
+// /device_types), backing the device-type pill's suggestions dropdown --
+// same reasoning as captureLabels below (avoid near-duplicate types
+// fragmenting the capture/label grouping this field exists for).
+let deviceTypes = [];
+
+async function fetchDeviceTypes() {
+  try {
+    const data = await api("GET", "/device_types");
+    deviceTypes = data.device_types || [];
+  } catch (err) {
+    console.error("Failed to fetch device types", err);
+  }
+}
+
+function renderDeviceTypeSuggestions(input) {
+  const box = input.parentElement.querySelector('[data-role="device-type-suggestions"]');
+  if (!box) return;
+  const query = input.value.trim().toLowerCase();
+  const matches = query
+    ? deviceTypes.filter((t) => t.toLowerCase().includes(query))
+    : deviceTypes;
+  if (!matches.length) {
+    box.hidden = true;
+    box.innerHTML = "";
+    return;
+  }
+  box.innerHTML = matches.map((t) =>
+    `<button type="button" class="device-type-suggestion" data-value="${escapeHtml(t)}">${escapeHtml(t)}</button>`
+  ).join("");
+  box.hidden = false;
+}
+
+function hideDeviceTypeSuggestions(input) {
+  const box = input.parentElement.querySelector('[data-role="device-type-suggestions"]');
+  if (box) box.hidden = true;
+}
+
+// Click-to-edit for the device-type pill (motorRowHtml()) -- mirrors
+// startRename()/commitRename() below exactly, the established pattern for
+// this kind of identity field. If the Record drawer is open for this same
+// node, its "Change"/"Set device type" control jumps here rather than
+// duplicating a second live editor (recordDrawerBodyHtml()'s comment).
+function startDeviceTypeEdit(nodeId) {
+  editingDeviceTypeNodeId = nodeId;
+  renderFleetList(state.lastNodes);
+  // Deferred past the triggering click's bubble phase -- same race as
+  // openRecordDrawer()'s comment above: renderFleetList() just replaced
+  // the clicked pill/"Change" button with a fresh input, detaching the
+  // original click target from the document, so a synchronous focus()
+  // here would show the suggestions box only for document's
+  // outside-click-closer to immediately hide it again (its `.contains()`
+  // check can never match a detached node).
+  setTimeout(() => {
+    const input = document.querySelector(
+      `.motor-row-group[data-node-id="${nodeId}"] [data-role="device-type-input"]`);
+    if (input) {
+      input.focus();
+      input.select();
+    }
+  }, 0);
+}
+
+// Unlike commitRename() (blank = keep the old name), a blank device_type
+// is a real, meaningful value here -- "clear it back to unassigned" -- so
+// this always calls the API, matching the backend's own contract
+// (api/app.py's DeviceTypeBody: empty string clears).
+async function commitDeviceType(nodeId, value) {
+  editingDeviceTypeNodeId = null;
+  const trimmed = value.trim();
+  try {
+    await api("POST", `/nodes/${nodeId}/device_type`, { device_type: trimmed });
+    await fetchDeviceTypes();
+  } catch (err) {
+    console.error("Set device type failed", err);
+    alert(`Set device type failed: ${err.message}`);
+  }
+  await pollNodes();
+}
+
+// node_id -> {epoch, total_epochs}, populated by the "training_progress"
+// WS broadcast (api/app.py's commission/stop, throttled to ~20 ticks) and
+// read by rowControls() to append a live "Training… 42%" label. Cleared
+// whenever a "registry" push shows the node has left commissioning_training
+// (completed, or a fresh commission started), so a stale percentage from
+// a previous run can never linger into the next one.
+const trainingProgress = {};
+
+// Previously-used capture labels (pipeline/capture.py's list_labels()),
+// backing the custom suggestions dropdown every capture-label <input>
+// filters against (S2). Fetched once at startup and again after every
+// successful save, since save() may have just introduced a brand new
+// label. Not a native <datalist> -- its browser-default popup styling
+// clashed with the rest of this dark UI, so the dropdown is hand-built
+// below (renderCaptureSuggestions()) instead.
+let captureLabels = [];
+
+async function fetchCaptureLabels() {
+  try {
+    const data = await api("GET", "/captures/labels");
+    captureLabels = data.labels || [];
+  } catch (err) {
+    console.error("Failed to fetch capture labels", err);
+  }
+}
+
+// Filters captureLabels against the input's current text (substring,
+// case-insensitive; empty shows everything) and (re)populates/toggles the
+// sibling suggestions box. Called on focus (show everything) and on every
+// keystroke (refilter) -- see the delegated listeners below.
+function renderCaptureSuggestions(input) {
+  const box = input.parentElement.querySelector('[data-role="capture-suggestions"]');
+  if (!box) return;
+  const query = input.value.trim().toLowerCase();
+  const matches = query
+    ? captureLabels.filter((l) => l.includes(query))
+    : captureLabels;
+  if (!matches.length) {
+    box.hidden = true;
+    box.innerHTML = "";
+    return;
+  }
+  box.innerHTML = matches.map((l) =>
+    `<button type="button" class="motor-row__capture-suggestion" data-label="${escapeHtml(l)}">${escapeHtml(l)}</button>`
+  ).join("");
+  box.hidden = false;
+}
+
+function hideCaptureSuggestions(input) {
+  const box = input.parentElement.querySelector('[data-role="capture-suggestions"]');
+  if (box) box.hidden = true;
+}
 
 // Node IDs currently showing their expanded detail panel (node ID +
 // anomaly score -- the two fields dropped from the compact row). Rebuilt
@@ -276,36 +750,60 @@ function motorRowHtml(entry) {
   const label = statusLabelFor(entry, bucket);
   const controls = rowControls(entry);
   const isEditing = editingNodeId === entry.node_id;
+  const isEditingDeviceType = editingDeviceTypeNodeId === entry.node_id;
   const isExpanded = expandedNodeIds.has(entry.node_id);
   const pauseIcon = controls.pauseResumeAction === "resume" ? ICON_PLAY : ICON_PAUSE;
+  // A capture keeps running server-side even with the drawer closed
+  // (recordDrawerBodyHtml()'s comment) -- this is how the Record button
+  // itself (now icon-only, 2026-07-24 Round 7) tells the operator a
+  // background recording is still active without reopening it: neutral
+  // icon color when idle, red + pulsing when active.
+  const isRecording = !!(entry.capture_progress && entry.capture_progress.state !== "idle");
 
   const nameHtml = isEditing
-    ? `<input class="motor-row__name-input" data-role="name-input" value="${escapeHtml(entry.display_name)}" />`
-    : `<span class="motor-row__name" data-role="name" title="Double-click to rename">${escapeHtml(entry.display_name)}</span>`;
+    ? `<input class="motor-row__name-input" data-role="name-input" value="${escapeHtml(entry.device_name)}" />`
+    : `<span class="motor-row__name" data-role="name" title="Double-click to rename">${escapeHtml(entry.device_name)}</span>`;
+
+  // Each recording belongs to a device type (2026-07-24) -- a pill right
+  // next to the device name, same click-to-edit idiom, so it's glanceable
+  // fleet-wide (not just at the moment of recording, where the drawer also
+  // shows it).
+  const deviceTypePillHtml = isEditingDeviceType
+    ? `<div class="device-type-edit-wrap">
+        <input type="text" class="device-type-edit-input" data-role="device-type-input" placeholder="e.g. conveyor motor" autocomplete="off" value="${escapeHtml(entry.device_type || "")}" />
+        <div class="device-type-suggestions" data-role="device-type-suggestions" hidden></div>
+      </div>`
+    : `<button type="button" class="device-type-pill${entry.device_type ? "" : " device-type-pill--unset"}" data-action="edit_device_type" title="Set device type" aria-label="Set device type">${entry.device_type ? escapeHtml(entry.device_type) : "+ device type"}</button>`;
 
   const rowHtml = `<div class="motor-row${isExpanded ? " motor-row--expanded" : ""}" title="Click to expand">
     <div class="motor-row__main">
       ${nameHtml}
+      ${deviceTypePillHtml}
       <span class="motor-row__status">${label}</span>
     </div>
     <div class="motor-row__actions">
-      <button class="btn-icon btn-icon--record" data-action="commission_start" title="${controls.recordTooltip}" aria-label="${controls.recordTooltip}" ${controls.recordEnabled ? "" : "disabled"}>${ICON_RECORD}</button>
-      <button class="btn-icon${controls.trainIcon === "spinner" ? " btn-icon--spin" : ""}${controls.trainIcon === "check" ? " btn-icon--done" : ""}" data-action="commission_stop" title="${controls.trainTooltip}" aria-label="${controls.trainTooltip}" ${controls.trainEnabled ? "" : "disabled"}>${TRAIN_ICON[controls.trainIcon]}</button>
+      <button class="btn-label btn-label--${controls.commissionVariant}" ${controls.commissionAction ? `data-action="${controls.commissionAction}"` : ""} title="${controls.commissionTooltip}" aria-label="${controls.commissionTooltip}" ${controls.commissionEnabled ? "" : "disabled"}>${controls.commissionLabel}</button>
+      <button class="btn-icon${isRecording ? " btn-icon--recording" : ""}" data-action="record" title="${isRecording ? "Recording in progress -- click to view" : "Record labeled training data"}" aria-label="${isRecording ? "Recording in progress" : "Record labeled training data"}">${ICON_RECORD}</button>
       <button class="btn-icon" data-action="${controls.pauseResumeAction}" title="${controls.pauseResumeTooltip}" aria-label="${controls.pauseResumeTooltip}" ${controls.pauseResumeEnabled ? "" : "disabled"}>${pauseIcon}</button>
       <button class="btn-icon btn-icon--danger" data-action="decommission" title="Remove" aria-label="Remove">${ICON_TRASH}</button>
     </div>
   </div>`;
 
+  // Capture no longer lives here (2026-07-24 round 6: see recordDrawer
+  // above) -- this is just Node ID + charts now, one column, no side
+  // panel.
   const detailHtml = isExpanded ? `<div class="motor-row__detail">
-    <div class="motor-row__detail-item">
-      <span class="motor-row__detail-label">Node ID</span>
-      <span class="motor-row__detail-value">${escapeHtml(entry.node_id)}</span>
+    <div class="motor-row__detail-main">
+      <div class="motor-row__detail-item">
+        <span class="motor-row__detail-label">Node ID</span>
+        <span class="motor-row__detail-value">${escapeHtml(entry.node_id)}</span>
+      </div>
+      ${Charts.detailBodyHtml(entry, {
+        rawOpen: openRawIds.has(entry.node_id),
+        waterfallOpen: openWaterfallIds.has(entry.node_id),
+        scalarsOpen: openScalarsIds.has(entry.node_id),
+      })}
     </div>
-    ${Charts.detailBodyHtml(entry, {
-      rawOpen: openRawIds.has(entry.node_id),
-      waterfallOpen: openWaterfallIds.has(entry.node_id),
-      scalarsOpen: openScalarsIds.has(entry.node_id),
-    })}
   </div>` : "";
 
   return `<div class="motor-row-group motor-row-group--${bucket}" data-node-id="${escapeHtml(entry.node_id)}">${rowHtml}${detailHtml}</div>`;
@@ -352,7 +850,7 @@ async function commitRename(nodeId, value) {
   const trimmed = value.trim();
   if (trimmed) {
     try {
-      await api("POST", `/nodes/${nodeId}/rename`, { display_name: trimmed });
+      await api("POST", `/nodes/${nodeId}/rename`, { device_name: trimmed });
     } catch (err) {
       console.error("Rename failed", err);
       alert(`Rename failed: ${err.message}`);
@@ -373,7 +871,22 @@ document.getElementById("fleet-list").addEventListener("dblclick", (e) => {
 // rename call when blur() also fires focusout synchronously.
 let skipNextBlurCommit = false;
 
+// Same idea, for the device-type pill's edit mode.
+let skipNextDeviceTypeBlurCommit = false;
+
 document.getElementById("fleet-list").addEventListener("keydown", (e) => {
+  const deviceTypeInput = e.target.closest('[data-role="device-type-input"]');
+  if (deviceTypeInput) {
+    if (e.key === "Enter") {
+      deviceTypeInput.blur();
+    } else if (e.key === "Escape") {
+      hideDeviceTypeSuggestions(deviceTypeInput);
+      skipNextDeviceTypeBlurCommit = true;
+      editingDeviceTypeNodeId = null;
+      renderFleetList(state.lastNodes);
+    }
+    return;
+  }
   const input = e.target.closest('[data-role="name-input"]');
   if (!input) return;
   if (e.key === "Enter") {
@@ -386,6 +899,16 @@ document.getElementById("fleet-list").addEventListener("keydown", (e) => {
 });
 
 document.getElementById("fleet-list").addEventListener("focusout", (e) => {
+  const deviceTypeInput = e.target.closest('[data-role="device-type-input"]');
+  if (deviceTypeInput) {
+    if (skipNextDeviceTypeBlurCommit) {
+      skipNextDeviceTypeBlurCommit = false;
+      return;
+    }
+    const nodeId = deviceTypeInput.closest(".motor-row-group").dataset.nodeId;
+    commitDeviceType(nodeId, deviceTypeInput.value);
+    return;
+  }
   const input = e.target.closest('[data-role="name-input"]');
   if (!input) return;
   if (skipNextBlurCommit) {
@@ -394,6 +917,31 @@ document.getElementById("fleet-list").addEventListener("focusout", (e) => {
   }
   const nodeId = input.closest(".motor-row-group").dataset.nodeId;
   commitRename(nodeId, input.value);
+});
+
+document.getElementById("fleet-list").addEventListener("focusin", (e) => {
+  const input = e.target.closest('[data-role="device-type-input"]');
+  if (!input) return;
+  renderDeviceTypeSuggestions(input);
+});
+
+document.getElementById("fleet-list").addEventListener("input", (e) => {
+  const input = e.target.closest('[data-role="device-type-input"]');
+  if (!input) return;
+  renderDeviceTypeSuggestions(input);
+});
+
+// Closes any open suggestions box (device-type pill's, or the Record
+// drawer's label field) on a genuine outside click -- covers clicking
+// elsewhere in the row/drawer, a different row, or off both entirely, all
+// in one place (document-level, so it works regardless of which of the
+// two containers the box lives in).
+document.addEventListener("click", (e) => {
+  document.querySelectorAll(
+    '[data-role="capture-suggestions"]:not([hidden]), [data-role="device-type-suggestions"]:not([hidden])'
+  ).forEach((box) => {
+    if (!box.parentElement.contains(e.target)) box.hidden = true;
+  });
 });
 
 // A single delegated click handler covers both action icons and the
@@ -406,13 +954,36 @@ document.getElementById("fleet-list").addEventListener("click", (e) => {
     const nodeId = button.closest(".motor-row-group").dataset.nodeId;
     if (action === "decommission") {
       const entry = state.lastNodes[nodeId];
-      const name = entry ? entry.display_name : nodeId;
+      const name = entry ? entry.device_name : nodeId;
       if (!confirm(`Remove "${name}"? This cannot be undone.`)) return;
+    }
+    if (action === "record") {
+      openRecordDrawer(nodeId);
+      return;
+    }
+    if (action === "edit_device_type") {
+      startDeviceTypeEdit(nodeId);
+      return;
     }
     runAction(action, nodeId);
     return;
   }
   if (e.target.closest('[data-role="name"]')) return;
+  const suggestion = e.target.closest(".device-type-suggestion");
+  if (suggestion) {
+    const input = suggestion.closest(".device-type-edit-wrap")
+      .querySelector('[data-role="device-type-input"]');
+    input.value = suggestion.dataset.value;
+    hideDeviceTypeSuggestions(input);
+    input.focus();
+    return;
+  }
+  // The device-type pill's edit form (input + suggestions) -- same "don't
+  // let a click land on the click-anywhere-to-expand handler" guard as
+  // .motor-row__body below. Without this, clicking into the input (a
+  // plain <input>, not a button[data-action]) would fall all the way
+  // through to toggleExpand() instead of focusing it.
+  if (e.target.closest(".device-type-edit-wrap")) return;
   // Plotly's modebar (zoom/pan/autoscale/...), the plots themselves, the
   // waterfall 2D/3D toggle pills, and the three <details> collapsibles all
   // live inside .motor-row__body, still part of this same
@@ -447,6 +1018,109 @@ document.getElementById("fleet-list").addEventListener("toggle", (e) => {
 }, true);
 
 // ---------------------------------------------------------------------
+// Record drawer -- own listener set, since it's a top-level element
+// outside #fleet-list (recordDrawer/recordDrawerBackdrop, defined above
+// alongside recordDrawerBodyHtml()).
+// ---------------------------------------------------------------------
+
+recordDrawer.addEventListener("click", (e) => {
+  const button = e.target.closest("button[data-action]");
+  if (button) {
+    const action = button.dataset.action;
+    if (action === "record_drawer_close") {
+      closeRecordDrawer();
+      return;
+    }
+    if (action === "edit_device_type_from_drawer") {
+      // No second editor inside the drawer -- jump to the row's pill,
+      // the single source of truth (recordDrawerBodyHtml()'s comment).
+      startDeviceTypeEdit(openRecordNodeId);
+      return;
+    }
+    if (!openRecordNodeId) return;
+    if (action === "capture_start") {
+      // Needs the typed label + target-frames values -- doesn't fit
+      // runAction/ACTION_ENDPOINT's no-body POST shape, so it's handled
+      // here instead (see startCapture()). Label is required up front
+      // (2026-07-24: Save auto-reuses it, no post-stop labeling step) --
+      // blank just focuses the field rather than starting blind.
+      const labelInput = recordDrawer.querySelector('[data-role="capture-label-input"]');
+      const label = labelInput.value.trim();
+      if (!label) {
+        labelInput.focus();
+        return;
+      }
+      const targetInput = recordDrawer.querySelector('[data-role="capture-target-input"]');
+      const raw = targetInput.value.trim();
+      // 0 (or blank) -> null: capture indefinitely, manual Save/Cancel only.
+      const targetFrames = raw && Number(raw) > 0 ? Math.floor(Number(raw)) : null;
+      captureLabelByNode[openRecordNodeId] = label;
+      delete captureTargetDraftByNode[openRecordNodeId];
+      startCapture(openRecordNodeId, targetFrames);
+      return;
+    }
+    if (action === "capture_cancel") {
+      delete captureLabelByNode[openRecordNodeId];
+      delete captureTargetDraftByNode[openRecordNodeId];
+    }
+    if (action === "capture_stop" || action === "capture_cancel") {
+      runAction(action, openRecordNodeId);
+    }
+    return;
+  }
+  const suggestion = e.target.closest(".motor-row__capture-suggestion");
+  if (suggestion) {
+    const input = suggestion.closest(".motor-row__capture-label-wrap")
+      .querySelector('[data-role="capture-label-input"]');
+    input.value = suggestion.dataset.label;
+    // Setting .value programmatically does NOT fire a native "input"
+    // event, so the Start-button-disabled sync (normally driven by the
+    // "input" listener below) has to be called explicitly here too --
+    // without this, Start stayed disabled forever after picking a
+    // suggestion (2026-07-24 bug report).
+    syncCaptureLabelState(input);
+    hideCaptureSuggestions(input);
+    input.focus();
+  }
+});
+
+recordDrawer.addEventListener("keydown", (e) => {
+  const captureInput = e.target.closest('[data-role="capture-label-input"]');
+  if (!captureInput) return;
+  if (e.key === "Enter") {
+    const label = captureInput.value.trim();
+    if (label && openRecordNodeId) saveCapture(openRecordNodeId, label);
+  } else if (e.key === "Escape") {
+    hideCaptureSuggestions(captureInput);
+    captureInput.blur();
+  }
+});
+
+// Refilters the suggestions box on every keystroke -- doesn't hide on
+// focusout (see the click handler's suggestion-pick branch above instead)
+// since a mousedown on a suggestion button fires before the input's blur,
+// and hiding here first would make the suggestion disappear before its
+// own click ever lands.
+recordDrawer.addEventListener("input", (e) => {
+  const labelInput = e.target.closest('[data-role="capture-label-input"]');
+  if (labelInput) {
+    renderCaptureSuggestions(labelInput);
+    syncCaptureLabelState(labelInput);
+    return;
+  }
+  const targetInput = e.target.closest('[data-role="capture-target-input"]');
+  if (targetInput && openRecordNodeId) {
+    captureTargetDraftByNode[openRecordNodeId] = targetInput.value;
+  }
+});
+
+recordDrawer.addEventListener("focusin", (e) => {
+  const input = e.target.closest('[data-role="capture-label-input"]');
+  if (!input) return;
+  renderCaptureSuggestions(input);
+});
+
+// ---------------------------------------------------------------------
 // Topbar tabs -- Fleet, Performance (perf.js), and Alerts (alerts.js) are
 // real sections; Network is still a placeholder (docs/DASHBOARD_NAV_PLAN.md).
 // ---------------------------------------------------------------------
@@ -470,32 +1144,71 @@ document.querySelector(".topbar__nav").addEventListener("click", (e) => {
 
 const state = { lastNodes: {} };
 
+// node_id -> Date.now() of the last WS-driven change ("registry" or
+// "removed") -- see pollNodes()'s own comment for the race this guards
+// against.
+const lastWsTouchAt = {};
+
 async function pollNodes() {
+  const dispatchedAt = Date.now();
   try {
     const res = await fetch("/nodes");
     const nodes = await res.json();
-    state.lastNodes = nodes;
+    // Merge, not blind-replace: a REST request that was in flight before a
+    // WS "registry"/"removed" push landed for some node can resolve AFTER
+    // it (real race under CPU load, e.g. a training run pegging a core --
+    // the poll starves behind it and comes back stale). Applying it
+    // verbatim would stomp the fresher WS-delivered status back to the old
+    // one, then a later poll/WS message flips it forward again -- this is
+    // the "flaps back and forth by itself" bug that guard fixes. See
+    // lastWsTouchAt's own comment.
+    for (const [nodeId, entry] of Object.entries(nodes)) {
+      if ((lastWsTouchAt[nodeId] || 0) > dispatchedAt) continue;
+      state.lastNodes[nodeId] = entry;
+    }
+    for (const nodeId of Object.keys(state.lastNodes)) {
+      if (!(nodeId in nodes) && (lastWsTouchAt[nodeId] || 0) <= dispatchedAt) {
+        delete state.lastNodes[nodeId];
+      }
+    }
+    // Poll fallback for the WS "capture" handler's auto-save trigger --
+    // covers a missed/dropped WS message the same way this poll is
+    // already the documented fallback for "registry" pushes.
+    for (const [nodeId, entry] of Object.entries(state.lastNodes)) {
+      if (entry.capture_progress && entry.capture_progress.state === "stopped") {
+        maybeAutoSaveCapture(nodeId);
+      }
+    }
     Charts.onNodesPolled(nodes);
     // A decommissioned node never appears in another motorRowHtml() call,
     // so it'd otherwise sit in expandedNodeIds forever (harmless on its
     // own, but see charts.js's attachExpanded()).
     for (const nodeId of expandedNodeIds) {
-      if (!(nodeId in nodes)) expandedNodeIds.delete(nodeId);
+      if (!(nodeId in state.lastNodes)) expandedNodeIds.delete(nodeId);
     }
     for (const nodeId of openRawIds) {
-      if (!(nodeId in nodes)) openRawIds.delete(nodeId);
+      if (!(nodeId in state.lastNodes)) openRawIds.delete(nodeId);
     }
     for (const nodeId of openWaterfallIds) {
-      if (!(nodeId in nodes)) openWaterfallIds.delete(nodeId);
+      if (!(nodeId in state.lastNodes)) openWaterfallIds.delete(nodeId);
     }
     for (const nodeId of openScalarsIds) {
-      if (!(nodeId in nodes)) openScalarsIds.delete(nodeId);
+      if (!(nodeId in state.lastNodes)) openScalarsIds.delete(nodeId);
     }
-    renderSummary(nodes);
-    // Skip the list re-render while a rename is open -- startRename()/
-    // Escape re-render explicitly on their own, this only guards the
-    // automatic 5s poll from wiping out an in-flight edit.
-    if (editingNodeId === null) renderFleetList(nodes);
+    renderSummary(state.lastNodes);
+    // Skip the list re-render while a rename or device-type edit is open
+    // -- startRename()/startDeviceTypeEdit()/Escape re-render explicitly
+    // on their own, this only guards the automatic 5s poll from wiping
+    // out an in-flight edit.
+    if (editingNodeId === null && editingDeviceTypeNodeId === null) renderFleetList(state.lastNodes);
+    // The drawer lives outside #fleet-list now, so it needs its own
+    // refresh call -- this is also what keeps its live frame count
+    // updating while capturing (capture_progress.collected only changes
+    // via this poll; the WS "capture" broadcast only fires on state
+    // transitions, not per frame -- see api/capture_controller.py).
+    // renderRecordDrawer() itself no-ops while one of its own inputs is
+    // focused, so this can't wipe an in-progress edit either.
+    if (openRecordNodeId) renderRecordDrawer();
   } catch (err) {
     console.error("Failed to fetch /nodes", err);
   }
@@ -507,30 +1220,59 @@ async function pollNodes() {
 // discovered in the first place (nothing broadcasts on first auto-add).
 Charts.init((msg) => {
   if (msg.type === "removed") {
+    lastWsTouchAt[msg.node_id] = Date.now();
     delete state.lastNodes[msg.node_id];
     expandedNodeIds.delete(msg.node_id);
     openRawIds.delete(msg.node_id);
     openWaterfallIds.delete(msg.node_id);
     openScalarsIds.delete(msg.node_id);
+    if (openRecordNodeId === msg.node_id) closeRecordDrawer();
   } else if (msg.type === "registry") {
+    lastWsTouchAt[msg.node_id] = Date.now();
     // The WS broadcast's entry is registry.py's plain to_dict() -- unlike
-    // GET /nodes, it has no commissioning_progress (that's REST-only, added
-    // in app.py's _node_dict). Carry the last-known progress forward so the
-    // "Collecting X/Y" label doesn't flicker back to bare "Collecting" for
-    // the few seconds until the next REST poll restores it.
+    // GET /nodes, it has no commissioning_progress/capture_progress
+    // (both REST-only, added in app.py's _node_dict). Carry the
+    // last-known progress forward so neither label flickers back to its
+    // bare/idle form for the few seconds until the next REST poll
+    // restores it.
     const prev = state.lastNodes[msg.node_id];
     const entry = msg.entry;
     if (prev && prev.commissioning_progress
         && entry.status === "commissioning_collecting" && !entry.commissioning_progress) {
       entry.commissioning_progress = prev.commissioning_progress;
     }
+    if (prev && prev.capture_progress) {
+      entry.capture_progress = prev.capture_progress;
+    }
     state.lastNodes[msg.node_id] = entry;
+    // Stale % from a previous run must never linger into the next one --
+    // clear the moment the node leaves commissioning_training for any
+    // reason (completed, or a fresh commission started elsewhere).
+    if (entry.status !== "commissioning_training") delete trainingProgress[msg.node_id];
+  } else if (msg.type === "training_progress") {
+    trainingProgress[msg.node_id] = { epoch: msg.epoch, total_epochs: msg.total_epochs };
+  } else if (msg.type === "capture") {
+    const entry = state.lastNodes[msg.node_id];
+    if (entry) {
+      if (msg.state === "idle") {
+        delete entry.capture_progress;
+        delete captureLabelByNode[msg.node_id]; // covers cancel, which never passes through "stopped"
+        delete captureTargetDraftByNode[msg.node_id];
+      } else {
+        entry.capture_progress = { state: msg.state, collected: msg.collected,
+                                    target_frames: msg.target_frames };
+      }
+    }
+    if (msg.state === "stopped") maybeAutoSaveCapture(msg.node_id);
   }
   renderSummary(state.lastNodes);
-  if (editingNodeId === null) renderFleetList(state.lastNodes);
+  if (editingNodeId === null && editingDeviceTypeNodeId === null) renderFleetList(state.lastNodes);
+  if (openRecordNodeId) renderRecordDrawer();
 }, (msg) => Perf.handleMessage(msg), (msg) => Alerts.handleMessage(msg));
 
 Perf.init();
 Alerts.init();
 pollNodes();
+fetchCaptureLabels();
+fetchDeviceTypes();
 setInterval(pollNodes, NODES_POLL_MS);

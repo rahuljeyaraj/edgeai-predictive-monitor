@@ -56,6 +56,7 @@ from perf import PerformanceMonitor
 from gpu_perf import GpuPerfPoller
 from app import create_app, broadcast_threadsafe
 from commissioning_controller import CommissioningController
+from capture_controller import CaptureController
 from alert_store import AlertStore
 
 logger = logging.getLogger("main")
@@ -279,10 +280,13 @@ def main():
 
     commissioning = CommissioningController(
         registry, models_dir, gate_factory, min_frames=args.min_commission_frames)
+    capture = CaptureController(
+        registry, os.path.join(args.data_dir, "captures"), gate_factory)
 
     def on_frame(frame: SensorFrame) -> None:
         manager.route(frame)
         commissioning.feed_frame(frame)
+        capture.feed_frame(frame)
         broadcast_threadsafe(app, {
             "type": "spectrum",
             "node_id": frame.node_id,
@@ -356,8 +360,8 @@ def main():
         if telegram_bot is not None:
             telegram_bot.start()
 
-    app = create_app(registry, history, commissioning, manager=manager, perf_monitor=perf_monitor,
-                      gpu_perf=gpu_perf, spi_consumer=spi_consumer,
+    app = create_app(registry, history, commissioning, capture=capture, manager=manager,
+                      perf_monitor=perf_monitor, gpu_perf=gpu_perf, spi_consumer=spi_consumer,
                       alert_store=alert_store, telegram_bot=telegram_bot,
                       on_startup=start_ingestion)
 

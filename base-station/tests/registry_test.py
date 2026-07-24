@@ -24,10 +24,11 @@ def main():
     path = os.path.join(tmp_dir, "registry.json")
 
     reg = Registry(path)
-    reg.add("node-1", display_name="Motor 1",
+    reg.add("node-1", device_name="Motor 1",
             sensor_config=frozenset({SensorChannel.MIC, SensorChannel.ACCEL_X}))
-    reg.add("node-2", display_name="Motor 2", sensor_config=frozenset({SensorChannel.MIC}))
+    reg.add("node-2", device_name="Motor 2", sensor_config=frozenset({SensorChannel.MIC}))
     reg.rename("node-1", "Compressor A")
+    reg.set_device_type("node-1", "conveyor_motor")
     reg.start_commissioning("node-2")
     reg.stop_collecting("node-2")
     reg.complete_commissioning("node-2", model_path="unused.pt")
@@ -44,7 +45,8 @@ def main():
     assert set(entries.keys()) == {"node-1", "node-2", "node-3"}, entries.keys()
 
     node1 = reopened.get("node-1")
-    assert node1.display_name == "Compressor A", node1.display_name
+    assert node1.device_name == "Compressor A", node1.device_name
+    assert node1.device_type == "conveyor_motor", node1.device_type
     assert node1.sensor_config == frozenset({SensorChannel.MIC, SensorChannel.ACCEL_X})
     assert node1.input_dim == 268, node1.input_dim
     assert node1.status == NodeStatus.UNCOMMISSIONED
@@ -52,6 +54,7 @@ def main():
     node2 = reopened.get("node-2")
     assert node2.status == NodeStatus.PAUSED, node2.status
     assert node2.input_dim == 134, node2.input_dim
+    assert node2.device_type is None, node2.device_type
 
     node3 = reopened.get("node-3")
     assert node3.status == NodeStatus.UNCOMMISSIONED, node3.status

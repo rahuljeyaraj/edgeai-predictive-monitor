@@ -29,6 +29,7 @@ from manager import PipelineManager
 from perf import PerformanceMonitor
 from app import create_app
 from commissioning_controller import CommissioningController
+from capture_controller import CaptureController
 from gate import MotorStateGate
 
 NODE_A = "node-a"
@@ -197,7 +198,8 @@ def test_rest_perf_endpoints_and_websocket_broadcast(tmp_dir):
     history = HistoryStore(os.path.join(tmp_dir, "history.db"))
     commissioning = CommissioningController(registry, os.path.join(tmp_dir, "models"),
                                              gate_factory, min_frames=5)
-    app = create_app(registry, history, commissioning, manager=manager, perf_monitor=monitor)
+    capture = CaptureController(registry, os.path.join(tmp_dir, "captures"), gate_factory)
+    app = create_app(registry, history, commissioning, capture, manager=manager, perf_monitor=monitor)
 
     with TestClient(app) as client:
         with client.websocket_connect("/ws") as ws:

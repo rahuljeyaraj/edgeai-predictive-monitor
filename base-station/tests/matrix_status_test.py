@@ -31,7 +31,7 @@ def entry(status: NodeStatus, last_seen=_FRESH) -> RegistryEntry:
     (status/last_seen) that matter; the rest are filler."""
     return RegistryEntry(
         node_id="n",
-        display_name="n",
+        device_name="n",
         sensor_config=frozenset({SensorChannel.MIC}),
         input_dim=134,
         status=status,

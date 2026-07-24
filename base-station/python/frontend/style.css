@@ -49,7 +49,7 @@ body {
   align-items: center;
   font: inherit;
   font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
-  font-size: 15px;
+  font-size: 17px;
   font-weight: 600;
   color: #94a3b8;
   background: none;
@@ -81,7 +81,7 @@ body {
 
 .placeholder-panel__title {
   font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
-  font-size: 14px;
+  font-size: 16px;
   font-weight: 700;
   color: #cbd5e1;
   text-transform: uppercase;
@@ -91,7 +91,7 @@ body {
 
 .placeholder-panel__text {
   font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
-  font-size: 13px;
+  font-size: 15px;
   color: #64748b;
 }
 
@@ -142,14 +142,14 @@ body {
 .tile__count {
   font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   font-variant-numeric: tabular-nums;
-  font-size: 34px;
+  font-size: 38px;
   font-weight: 700;
   line-height: 1;
   color: var(--accent);
 }
 
 .tile__label {
-  font-size: clamp(10px, 3vw, 12px);
+  font-size: clamp(12px, 3vw, 14px);
   font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
   color: #94a3b8;
   white-space: nowrap;
@@ -185,7 +185,7 @@ body {
   }
 
   .tile__count {
-    font-size: 28px;
+    font-size: 32px;
   }
 }
 
@@ -207,7 +207,7 @@ body {
 
 .fleet__title {
   font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
-  font-size: 14px;
+  font-size: 16px;
   font-weight: 700;
   color: #cbd5e1;
   text-transform: uppercase;
@@ -223,7 +223,7 @@ body {
 .fleet__empty {
   color: #64748b;
   font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
-  font-size: 13px;
+  font-size: 15px;
   padding: 16px 0;
 }
 
@@ -256,7 +256,11 @@ body {
 
 .motor-row__main {
   display: grid;
-  grid-template-columns: minmax(0, 180px) 150px;
+  /* Third column added 2026-07-24 for the device-type pill, next to the
+     name -- each recording belongs to a device type (docs/
+     EDGE_IMPULSE_DASHBOARD_WORKFLOW_PLAN.md S1), so it needs to be
+     glanceable fleet-wide, not just inside the Record drawer. */
+  grid-template-columns: minmax(0, 160px) minmax(0, 130px) 150px;
   align-items: center;
   gap: 8px 18px;
   min-width: 0;
@@ -269,7 +273,7 @@ body {
   text-overflow: ellipsis;
   white-space: nowrap;
   font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
-  font-size: 15px;
+  font-size: 17px;
   font-weight: 600;
   color: #f1f5f9;
   cursor: pointer;
@@ -291,10 +295,109 @@ body {
   max-width: 180px;
 }
 
+/* Device-type pill (motorRowHtml(), 2026-07-24) -- same click-to-edit
+   idiom as the name above, but visually a pill/tag rather than plain text
+   since it's a classification label, not an identity name. */
+.device-type-pill {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font: inherit;
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 13px;
+  font-weight: 600;
+  color: #cbd5e1;
+  background-color: #334155;
+  border: none;
+  border-radius: 999px;
+  padding: 3px 10px;
+  cursor: pointer;
+}
+
+.device-type-pill:hover {
+  background-color: #475569;
+}
+
+/* Unset state ("+ device type") -- a dashed ghost pill, same "invites a
+   click" affordance as an empty tag-input elsewhere, so it reads as
+   "nothing set yet" rather than a real assigned value. */
+.device-type-pill--unset {
+  background-color: transparent;
+  border: 1px dashed #475569;
+  color: #64748b;
+}
+
+.device-type-pill--unset:hover {
+  border-color: #64748b;
+  color: #94a3b8;
+}
+
+.device-type-edit-wrap {
+  position: relative;
+  min-width: 0;
+}
+
+.device-type-edit-input {
+  font: inherit;
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 13px;
+  color: #f1f5f9;
+  background-color: #0f172a;
+  border: 1px solid #334155;
+  border-radius: 4px;
+  padding: 3px 8px;
+  width: 100%;
+}
+
+/* Same "author display:flex beats the [hidden] UA rule" fix as
+   .motor-row__capture-suggestions below -- without this override the box
+   sits there as a bare padding+border rectangle even with zero matches. */
+.device-type-suggestions {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  z-index: 10;
+  max-height: 180px;
+  overflow-y: auto;
+  background-color: #1e293b;
+  border: 1px solid #334155;
+  border-radius: 8px;
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.45);
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.device-type-suggestions[hidden] {
+  display: none;
+}
+
+.device-type-suggestion {
+  font: inherit;
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 14px;
+  text-align: left;
+  color: #e2e8f0;
+  background: none;
+  border: none;
+  border-radius: 5px;
+  padding: 7px 10px;
+  cursor: pointer;
+}
+
+.device-type-suggestion:hover {
+  background-color: #334155;
+}
+
 .motor-row__status {
   font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   font-variant-numeric: tabular-nums;
-  font-size: 12px;
+  font-size: 14px;
   font-weight: 700;
   color: var(--accent);
   text-transform: uppercase;
@@ -311,15 +414,27 @@ body {
   flex: 0 0 auto;
 }
 
+/* Node ID + charts -- capture moved out to its own drawer (2026-07-24
+   round 6, recordDrawer in app.js), so this is a single column again, no
+   side panel. */
 .motor-row__detail {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px 28px;
+  align-items: flex-start;
+  gap: 16px;
   padding: 12px 18px;
   background-color: #0f172a;
   border: 2px solid var(--accent);
   border-top: none;
   border-radius: 0 0 10px 10px;
+}
+
+.motor-row__detail-main {
+  flex: 1 1 480px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 28px;
+  min-width: 0;
 }
 
 .motor-row__detail-item {
@@ -330,7 +445,7 @@ body {
 
 .motor-row__detail-label {
   font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
-  font-size: 10px;
+  font-size: 12px;
   font-weight: 600;
   color: #64748b;
   text-transform: uppercase;
@@ -340,7 +455,7 @@ body {
 .motor-row__detail-value {
   font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   font-variant-numeric: tabular-nums;
-  font-size: 13px;
+  font-size: 15px;
   color: #e2e8f0;
 }
 
@@ -386,7 +501,7 @@ body {
   justify-content: center;
   min-height: 160px;
   font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
-  font-size: 13px;
+  font-size: 15px;
   color: #64748b;
 }
 
@@ -398,7 +513,7 @@ body {
 
 .chart-section__title {
   font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
-  font-size: 11px;
+  font-size: 13px;
   font-weight: 600;
   color: #94a3b8;
   text-transform: uppercase;
@@ -435,14 +550,14 @@ body {
 .scalar-tile__value {
   font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   font-variant-numeric: tabular-nums;
-  font-size: 18px;
+  font-size: 20px;
   font-weight: 700;
   color: #e2e8f0;
 }
 
 .scalar-tile__label {
   font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
-  font-size: 11px;
+  font-size: 13px;
   color: #94a3b8;
 }
 
@@ -460,7 +575,7 @@ body {
 .waterfall-toggle__btn {
   font: inherit;
   font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
-  font-size: 12px;
+  font-size: 14px;
   font-weight: 600;
   color: #94a3b8;
   background-color: #1e293b;
@@ -508,34 +623,168 @@ body {
   color: #fecaca;
 }
 
-/* Record: tinted red (only while enabled) to read as "start capturing
-   data" at a glance, matching the record-dot convention. */
-.btn-icon--record:not(:disabled) {
-  color: #ef4444;
+/* Commission/train morphing button -- labeled text instead of icons so
+   the action is spelled out (Commission -> Train -> Recommission). Base
+   look matches .btn-icon (same height/colors); "ready" (Train) is the
+   only variant that gets a tint, since it's the one moment worth
+   flagging -- everything else stays neutral. */
+.btn-label {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 12px;
+  background-color: #334155;
+  color: #e2e8f0;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  flex: 0 0 auto;
+  font: inherit;
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 14px;
+  font-weight: 600;
+  white-space: nowrap;
 }
 
-.btn-icon--record:not(:disabled):hover {
+.btn-label:hover:not(:disabled) {
+  background-color: #475569;
+}
+
+.btn-label:disabled {
+  color: #64748b;
+  cursor: not-allowed;
+}
+
+/* "Commission" / "Recommission" -- plain neutral look, same as the base
+   .btn-label (and matches Pause). Deliberately NOT red: #ef4444 is
+   --color-fault elsewhere in this app (status text, decommission
+   hover) -- tinting a routine, expected action that color falsely
+   reads as "something's wrong" on an otherwise-healthy/new device. */
+
+/* "Train" -- ready to fire, accent tint so it stands out once unlocked
+   (same color language as .waterfall-toggle__btn.is-active). */
+.btn-label--ready:not(:disabled) {
+  color: #e2e8f0;
+  background-color: color-mix(in srgb, #3987e5 22%, #1e293b);
+  border: 1px solid #3987e5;
+}
+
+.btn-label--ready:not(:disabled):hover {
+  background-color: color-mix(in srgb, #3987e5 32%, #1e293b);
+}
+
+/* Capture's Save/Cancel (captureToolbarHtml()) -- same .btn-label base as
+   Commission/Record/Pause (2026-07-24: replaces the borrowed .btn-primary
+   from tools/raw_capture_server.py, which "doesn't follow the style of
+   other buttons"), same "tint only the one moment worth flagging"
+   language as Train's blue above: Save is the affirmative action here,
+   so it gets the tint; Cancel stays neutral by default like Pause, red
+   only on hover like decommission's trash icon. */
+.btn-label--save:not(:disabled) {
+  color: #e2e8f0;
+  background-color: color-mix(in srgb, var(--color-healthy) 22%, #1e293b);
+  border: 1px solid var(--color-healthy);
+}
+
+.btn-label--save:not(:disabled):hover {
+  background-color: color-mix(in srgb, var(--color-healthy) 32%, #1e293b);
+}
+
+.btn-label--cancel:hover:not(:disabled) {
   background-color: #7f1d1d;
   color: #fecaca;
 }
 
-.btn-icon--done {
-  color: var(--color-healthy);
+/* Capture label input, inside .capture-toolbar (motorRowHtml()'s
+   captureToolbarHtml()) -- font/color/border/disabled styling all comes
+   from the shared .capture-toolbar__label input rule further down (same
+   look as the auto-stop number input and tools/raw_capture_server.py's
+   own label field); only the positioning wrapper and width fill are
+   specific to this one. */
+.motor-row__capture-label-wrap {
+  position: relative;
+  min-width: 160px;
 }
 
-@keyframes spin {
-  from { transform: rotate(0deg); }
-  to { transform: rotate(360deg); }
+.motor-row__capture-label-input {
+  width: 100%;
 }
 
-.btn-icon--spin svg {
-  animation: spin 1s linear infinite;
-  transform-origin: 50% 50%;
+/* Scoped under the wrap (specificity 0,2,0) to beat .capture-toolbar__label
+   input's 0,1,1 -- room on the right for the dropdown arrow below, which
+   a plain .motor-row__capture-label-input rule can't win against (same
+   specificity gotcha noted above for width). */
+.motor-row__capture-label-wrap .motor-row__capture-label-input {
+  padding-right: 26px;
+}
+
+/* Down-arrow affordance, like a native <select> -- the ONLY always-visible
+   sign this is a dropdown-backed field now; see the [hidden] fix below for
+   why the suggestions panel itself used to look like a bare rectangle. */
+.motor-row__capture-label-arrow {
+  position: absolute;
+  top: 50%;
+  right: 10px;
+  transform: translateY(-50%);
+  color: #64748b;
+  font-size: 11px;
+  pointer-events: none;
+}
+
+/* Custom label-suggestions dropdown (2026-07-24) -- replaces a native
+   <datalist>, whose browser-default popup didn't match this dark UI at
+   all. Styled like the rest of the app's dark panels (.perf-card/
+   .motor-row__detail), positioned to hang directly under the input. */
+.motor-row__capture-suggestions {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  z-index: 10;
+  max-height: 180px;
+  overflow-y: auto;
+  background-color: #1e293b;
+  border: 1px solid #334155;
+  border-radius: 8px;
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.45);
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/* This class's own `display: flex` above (author stylesheet) otherwise
+   beats the browser's default `[hidden] { display: none }` UA rule at
+   equal specificity -- so box.hidden = true in app.js was leaving the
+   panel visible as a bare padding+border rectangle even with zero
+   suggestions. This is what "the rectangle artifact below the input"
+   (2026-07-24 report) actually was. */
+.motor-row__capture-suggestions[hidden] {
+  display: none;
+}
+
+.motor-row__capture-suggestion {
+  font: inherit;
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 14px;
+  text-align: left;
+  color: #e2e8f0;
+  background: none;
+  border: none;
+  border-radius: 5px;
+  padding: 7px 10px;
+  cursor: pointer;
+}
+
+.motor-row__capture-suggestion:hover {
+  background-color: #334155;
 }
 
 @media (max-width: 640px) {
   .motor-row__main {
-    grid-template-columns: minmax(0, 120px) 130px;
+    grid-template-columns: minmax(0, 110px) minmax(0, 90px) 130px;
   }
 
   .motor-row__actions {
@@ -601,7 +850,7 @@ body {
 
 .perf-tier__chip {
   font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-  font-size: 15px;
+  font-size: 17px;
   font-weight: 700;
   letter-spacing: 0.02em;
   color: #f1f5f9;
@@ -616,7 +865,7 @@ body {
 
 .perf-empty {
   font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
-  font-size: 13px;
+  font-size: 15px;
   color: #64748b;
 }
 
@@ -651,13 +900,13 @@ body {
 
 .perf-chart__label {
   font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
-  font-size: 12px;
+  font-size: 14px;
   color: #94a3b8;
 }
 
 .perf-chart__value {
   font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
-  font-size: 26px;
+  font-size: 28px;
   font-weight: 700;
   color: #e2e8f0;
 }
@@ -670,7 +919,7 @@ body {
 
 .perf-chart__caption {
   font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
-  font-size: 11px;
+  font-size: 13px;
   color: #64748b;
 }
 
@@ -693,7 +942,7 @@ body {
 
 .perf-pipeline__title {
   font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-  font-size: 13px;
+  font-size: 15px;
   font-weight: 700;
   color: #cbd5e1;
   margin-bottom: 12px;
@@ -731,7 +980,7 @@ body {
 
 .alerts-connect__title {
   font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
-  font-size: 14px;
+  font-size: 16px;
   font-weight: 700;
   color: #f1f5f9;
 }
@@ -739,7 +988,7 @@ body {
 .btn-primary {
   font: inherit;
   font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
-  font-size: 13px;
+  font-size: 15px;
   font-weight: 600;
   color: #0f172a;
   background-color: var(--color-healthy);
@@ -765,7 +1014,7 @@ body {
 .btn-text {
   font: inherit;
   font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
-  font-size: 13px;
+  font-size: 15px;
   color: #94a3b8;
   background: none;
   border: none;
@@ -803,7 +1052,7 @@ body {
 
 .alert-sub__name {
   font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
-  font-size: 14px;
+  font-size: 16px;
   font-weight: 700;
   color: #f1f5f9;
 }
@@ -839,7 +1088,7 @@ body {
   align-items: center;
   gap: 6px;
   font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
-  font-size: 12px;
+  font-size: 14px;
   color: #cbd5e1;
   cursor: pointer;
 }
@@ -848,7 +1097,15 @@ body {
    not a tab in index.html's switcher (only makes sense while the firmware
    is in FUSER_RAW_CAPTURE_MODE, an exclusive alternative to the normal
    live dashboard). Reuses .perf-card/.perf-charts/.chart-plotly from the
-   Performance page for the same card+grid layout. ---- */
+   Performance page for the same card+grid layout.
+
+   .capture-toolbar/.capture-toolbar__*/.capture-dot below are ALSO reused
+   by the main dashboard's Record drawer (app.js's recordDrawerBodyHtml(),
+   2026-07-24 round 6) -- same Label/Frame-count field styling and
+   dot+status shape, just embedded in the drawer instead of this
+   standalone page (the drawer has its own container styling, see
+   .record-drawer below, so it doesn't use .capture-toolbar's own row
+   layout). ---- */
 
 .capture-page {
   padding: 24px;
@@ -872,14 +1129,14 @@ body {
 
 .capture-toolbar__label label {
   font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
-  font-size: 11px;
+  font-size: 13px;
   color: #94a3b8;
 }
 
 .capture-toolbar__label input {
   font: inherit;
   font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-  font-size: 13px;
+  font-size: 15px;
   color: #e2e8f0;
   background-color: #0f172a;
   border: 1px solid #334155;
@@ -897,7 +1154,7 @@ body {
   align-items: center;
   gap: 8px;
   font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
-  font-size: 13px;
+  font-size: 15px;
   color: #e2e8f0;
 }
 
@@ -916,8 +1173,267 @@ body {
 
 .capture-counts {
   font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-  font-size: 12px;
+  font-size: 14px;
   color: #64748b;
   white-space: nowrap;
   overflow-x: auto;
+}
+
+/* Chrome/autofill paints its own white/yellow input background that plain
+   `background-color` can't override, no matter what autocomplete="off"
+   says -- this is the actual cause of the recurring "white input box"
+   report (2026-07-24 round 6), not a caching issue. Covers every dark
+   text input in this app (name/device-type/capture label+frame-count). */
+.motor-row__name-input:-webkit-autofill,
+.device-type-edit-input:-webkit-autofill,
+.capture-toolbar__label input:-webkit-autofill {
+  -webkit-box-shadow: 0 0 0 1000px #0f172a inset;
+  -webkit-text-fill-color: #e2e8f0;
+  caret-color: #e2e8f0;
+}
+
+/* Record drawer (app.js's recordDrawer/recordDrawerBodyHtml(), 2026-07-24
+   round 6) -- a slide-over from the right, fully separate from the row's
+   expand/collapse ("we can never remove this once we pressed record": the
+   old design had no close button because Record and "expand row for
+   charts" shared one toggle). Own close (x) always available; closing
+   never stops an in-progress capture, which runs server-side regardless
+   (pipeline/capture.py) -- see motorRowHtml()'s recording badge for how
+   that's surfaced once the drawer is closed. */
+.record-drawer-backdrop {
+  position: fixed;
+  inset: 0;
+  background-color: rgba(2, 6, 23, 0.6);
+  z-index: 40;
+}
+
+.record-drawer {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 340px;
+  max-width: 90vw;
+  z-index: 41;
+  background-color: #1e293b;
+  border-left: 1px solid #334155;
+  box-shadow: -8px 0 24px rgba(0, 0, 0, 0.45);
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Same "author display:flex beats the [hidden] UA rule at equal
+   specificity" bug as .motor-row__capture-suggestions above (2026-07-24
+   round 4) -- without this, `recordDrawer.hidden = true` in app.js left
+   this 340px-wide fixed panel laid out and intercepting clicks over the
+   whole right edge of the screen even while "closed." Caught this time by
+   an actual Playwright click failing on it, not another code-read. */
+.record-drawer[hidden] {
+  display: none;
+}
+
+.record-drawer__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 18px;
+  border-bottom: 1px solid #334155;
+}
+
+.record-drawer__title {
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 16px;
+  font-weight: 700;
+  color: #f1f5f9;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.record-drawer__close {
+  flex: 0 0 auto;
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 20px;
+  line-height: 1;
+  color: #94a3b8;
+  background: none;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.record-drawer__close:hover {
+  background-color: #334155;
+  color: #e2e8f0;
+}
+
+.record-drawer__body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 18px;
+}
+
+.record-drawer__device-type-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.record-drawer__device-type-row > label {
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 13px;
+  color: #94a3b8;
+}
+
+.record-drawer__device-type-row > div {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.record-drawer__device-type {
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 14px;
+  font-weight: 600;
+  color: #e2e8f0;
+}
+
+.record-drawer__device-type-change {
+  font: inherit;
+  font-size: 13px;
+  color: var(--color-warning);
+  background: none;
+  border: none;
+  cursor: pointer;
+  text-decoration: underline;
+  padding: 0;
+}
+
+.record-drawer__hint {
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 13px;
+  color: var(--color-warning);
+}
+
+.record-drawer__actions {
+  display: flex;
+  gap: 8px;
+}
+
+.record-drawer__actions .btn-label {
+  flex: 1 1 0;
+}
+
+/* Record button (motorRowHtml()) -- icon-only as of 2026-07-24 Round 7
+   (teammate: "go with the complete button like pause and delete"),
+   matching Pause/Trash's .btn-icon shape instead of standing out as the
+   one labeled button in the row. ICON_RECORD (app.js) is a plain filled
+   circle, the industry-standard record glyph -- neutral color while
+   idle (inherits .btn-icon's default), red + pulsing while a capture is
+   running in the background, same "tint only the one moment worth
+   flagging" language as Train/Save elsewhere in this app. */
+.btn-icon--recording {
+  color: var(--color-fault);
+  background-color: color-mix(in srgb, var(--color-fault) 22%, #1e293b);
+}
+
+.btn-icon--recording:hover:not(:disabled) {
+  background-color: color-mix(in srgb, var(--color-fault) 32%, #1e293b);
+}
+
+.btn-icon--recording svg {
+  animation: record-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes record-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .btn-icon--recording svg {
+    animation: none;
+  }
+}
+
+/* Top-of-page save confirmation (2026-07-24) -- same slot/shape as Edge
+   Impulse's own "Successfully stored impulse" banner (the reference the
+   teammate pointed at), adapted to this app's dark theme. Fixed to the
+   viewport, not the fleet list, so it reads the same regardless of scroll
+   position or which row triggered it. */
+#toast-container {
+  position: fixed;
+  top: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: center;
+  pointer-events: none;
+}
+
+.toast {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 16px;
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 15px;
+  pointer-events: auto;
+  animation: toast-in 0.15s ease-out;
+}
+
+@keyframes toast-in {
+  from { opacity: 0; transform: translateY(-8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.toast--success {
+  background-color: color-mix(in srgb, var(--color-healthy) 25%, #0f172a);
+  border: 1px solid var(--color-healthy);
+  color: #e2e8f0;
+}
+
+.toast__icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background-color: var(--color-healthy);
+  color: #0f172a;
+  font-size: 13px;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+
+.toast__message {
+  white-space: nowrap;
+}
+
+.toast__close {
+  background: none;
+  border: none;
+  color: inherit;
+  opacity: 0.7;
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 0 0 4px;
+}
+
+.toast__close:hover {
+  opacity: 1;
 }

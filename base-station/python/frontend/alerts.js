@@ -71,7 +71,7 @@ const Alerts = (() => {
     }
     const selected = new Set(sub.node_ids || []);
     return nodeIds.map((nodeId) => {
-      const name = (state.nodes[nodeId] && state.nodes[nodeId].display_name) || nodeId;
+      const name = (state.nodes[nodeId] && state.nodes[nodeId].device_name) || nodeId;
       return `<label class="alert-sub__node">
         <input type="checkbox" data-action="node" value="${escapeAttr(nodeId)}"
                ${selected.has(nodeId) ? "checked" : ""}>

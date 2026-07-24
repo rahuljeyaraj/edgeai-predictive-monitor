@@ -28,6 +28,7 @@ from registry import NodeNotFoundError, NodeStatus, Registry, SensorChannel
 from store import HistoryStore
 from app import create_app
 from commissioning_controller import CommissioningController
+from capture_controller import CaptureController
 from gate import MotorStateGate
 from manager import PipelineManager
 from alert_store import AlertStore
@@ -83,8 +84,11 @@ class ApiUnderTest:
 
         self.commissioning = CommissioningController(
             self.registry, self.models_dir, gate_factory, min_frames=min_frames, epochs=epochs)
+        self.captures_dir = os.path.join(tmp_dir, "captures")
+        self.capture = CaptureController(self.registry, self.captures_dir, gate_factory)
         self.manager = PipelineManager(self.registry, gate_factory, history_store=self.history)
-        self.app = create_app(self.registry, self.history, self.commissioning, manager=self.manager,
+        self.app = create_app(self.registry, self.history, self.commissioning, self.capture,
+                               manager=self.manager,
                                alert_store=self.alert_store, telegram_bot=telegram_bot)
         self._client_cm = TestClient(self.app)
         self.client = self._client_cm.__enter__()  # runs lifespan, so broadcast_threadsafe works
@@ -124,18 +128,45 @@ def test_rename_updates_registry_and_broadcasts(tmp_dir):
     try:
         with api.client.websocket_connect("/ws") as ws:
             status, body = api.request("POST", f"/nodes/{NODE_ID}/rename",
-                                        {"display_name": "Front Left Motor"})
+                                        {"device_name": "Front Left Motor"})
             assert status == 200, (status, body)
-            assert body["display_name"] == "Front Left Motor", body
+            assert body["device_name"] == "Front Left Motor", body
 
             status, body = api.request("GET", f"/nodes/{NODE_ID}")
-            assert body["display_name"] == "Front Left Motor", body
+            assert body["device_name"] == "Front Left Motor", body
 
             message = ws.receive_json()
             assert message["type"] == "registry", message
             assert message["node_id"] == NODE_ID, message
-            assert message["entry"]["display_name"] == "Front Left Motor", message
+            assert message["entry"]["device_name"] == "Front Left Motor", message
         print("POST rename updates the registry and broadcasts over WebSocket: PASS")
+    finally:
+        api.stop()
+
+
+def test_device_type_updates_registry_and_broadcasts(tmp_dir):
+    api = ApiUnderTest(tmp_dir)
+    try:
+        with api.client.websocket_connect("/ws") as ws:
+            status, body = api.request("POST", f"/nodes/{NODE_ID}/device_type",
+                                        {"device_type": "Conveyor Motor"})
+            assert status == 200, (status, body)
+            assert body["device_type"] == "Conveyor Motor", body
+
+            message = ws.receive_json()
+            assert message["type"] == "registry", message
+            assert message["entry"]["device_type"] == "Conveyor Motor", message
+
+            status, body = api.request("GET", "/device_types")
+            assert status == 200, (status, body)
+            assert body["device_types"] == ["Conveyor Motor"], body
+
+            # Blank clears it back to unassigned.
+            status, body = api.request("POST", f"/nodes/{NODE_ID}/device_type",
+                                        {"device_type": ""})
+            assert status == 200, (status, body)
+            assert body["device_type"] is None, body
+        print("POST device_type updates the registry, broadcasts, and blank clears it: PASS")
     finally:
         api.stop()
 
@@ -298,6 +329,160 @@ def test_commissioning_double_start_is_409(tmp_dir):
         api.stop()
 
 
+def test_capture_start_feed_stop_save_persists_labeled_batch(tmp_dir):
+    # Capture is independent of commissioning end to end (S2, 2026-07-24
+    # decision) -- this node is never commissioned at all. target_frames=20
+    # (well above the 5 fed) so this test exercises the manual-stop path,
+    # not auto-stop -- see test_capture_auto_stops_at_target_frames below
+    # for that one.
+    api = ApiUnderTest(tmp_dir)
+    try:
+        with api.client.websocket_connect("/ws") as ws:
+            status, body = api.request("POST", f"/nodes/{NODE_ID}/capture/start",
+                                        {"target_frames": 20})
+            assert status == 200 and body["state"] == "capturing", (status, body)
+            message = ws.receive_json()
+            assert message == {"type": "capture", "node_id": NODE_ID, "state": "capturing",
+                                "collected": 0, "target_frames": 20}, message
+
+            for i in range(5):
+                api.capture.feed_frame(frame(NODE_ID, timestamp=float(i)))
+
+            status, body = api.request("GET", f"/nodes/{NODE_ID}")
+            assert body["capture_progress"] == {"state": "capturing", "collected": 5,
+                                                 "target_frames": 20}, body
+            assert body["status"] == "uncommissioned", body
+
+            status, body = api.request("POST", f"/nodes/{NODE_ID}/capture/stop")
+            assert status == 200 and body["collected"] == 5, (status, body)
+            message = ws.receive_json()
+            assert message == {"type": "capture", "node_id": NODE_ID, "state": "stopped",
+                                "collected": 5, "target_frames": 20}, message
+
+            status, body = api.request("GET", f"/nodes/{NODE_ID}")
+            assert body["capture_progress"] == {"state": "stopped", "collected": 5,
+                                                 "target_frames": 20}, body
+
+            status, body = api.request("POST", f"/nodes/{NODE_ID}/capture/save",
+                                        {"label": "Bearing Fault"})
+            assert status == 200 and body["saved"] is True, (status, body)
+            message = ws.receive_json()
+            assert message == {"type": "capture", "node_id": NODE_ID, "state": "idle",
+                                "collected": 0, "target_frames": None}, message
+
+            # Absent once idle again, same "nothing to show" contract as
+            # commissioning_progress.
+            status, body = api.request("GET", f"/nodes/{NODE_ID}")
+            assert "capture_progress" not in body, body
+            assert body["status"] == "uncommissioned", body
+
+            status, body = api.request("GET", "/captures/labels")
+            assert status == 200 and body["labels"] == ["bearing_fault"], (status, body)
+        print("capture start -> feed -> stop -> save persists a labeled batch, broadcasts "
+              "over WS, never touches NodeStatus: PASS")
+    finally:
+        api.stop()
+
+
+def test_capture_auto_stops_at_target_frames(tmp_dir):
+    # The auto-stop transition happens inside CaptureController.feed_frame
+    # (ingestion thread), not any REST handler -- this confirms it still
+    # broadcasts over WS and is visible via GET /nodes without an explicit
+    # capture/stop call ("we know how many frames a good batch needs, let
+    # the count drive it," 2026-07-24).
+    api = ApiUnderTest(tmp_dir)
+    try:
+        with api.client.websocket_connect("/ws") as ws:
+            status, body = api.request("POST", f"/nodes/{NODE_ID}/capture/start",
+                                        {"target_frames": 3})
+            assert status == 200, (status, body)
+            ws.receive_json()  # start's own broadcast
+
+            for i in range(3):
+                api.capture.feed_frame(frame(NODE_ID, timestamp=float(i)))
+
+            message = ws.receive_json()
+            assert message == {"type": "capture", "node_id": NODE_ID, "state": "stopped",
+                                "collected": 3, "target_frames": 3}, message
+
+            status, body = api.request("GET", f"/nodes/{NODE_ID}")
+            assert body["capture_progress"] == {"state": "stopped", "collected": 3,
+                                                 "target_frames": 3}, body
+
+            # capture/stop is no longer valid -- already auto-stopped.
+            status, body = api.request("POST", f"/nodes/{NODE_ID}/capture/stop")
+            assert status == 409, (status, body)
+        print("capture auto-stops at target_frames and broadcasts over WS with no "
+              "explicit capture/stop call: PASS")
+    finally:
+        api.stop()
+
+
+def test_capture_stop_without_start_is_409(tmp_dir):
+    api = ApiUnderTest(tmp_dir)
+    try:
+        status, body = api.request("POST", f"/nodes/{NODE_ID}/capture/stop")
+        assert status == 409, (status, body)
+        print("capture/stop without an active session returns 409: PASS")
+    finally:
+        api.stop()
+
+
+def test_capture_save_before_stop_is_409(tmp_dir):
+    api = ApiUnderTest(tmp_dir)
+    try:
+        status, _ = api.request("POST", f"/nodes/{NODE_ID}/capture/start")
+        assert status == 200
+        status, body = api.request("POST", f"/nodes/{NODE_ID}/capture/save", {"label": "healthy"})
+        assert status == 409, (status, body)
+        print("capture/save before capture/stop returns 409: PASS")
+    finally:
+        api.stop()
+
+
+def test_capture_cancel_discards_batch(tmp_dir):
+    api = ApiUnderTest(tmp_dir)
+    try:
+        status, _ = api.request("POST", f"/nodes/{NODE_ID}/capture/start")
+        assert status == 200
+        api.capture.feed_frame(frame(NODE_ID))
+        status, body = api.request("POST", f"/nodes/{NODE_ID}/capture/cancel")
+        assert status == 200 and body["state"] == "idle", (status, body)
+
+        status, body = api.request("GET", f"/nodes/{NODE_ID}")
+        assert "capture_progress" not in body, body
+
+        # Session is reusable immediately after a cancel.
+        status, _ = api.request("POST", f"/nodes/{NODE_ID}/capture/start")
+        assert status == 200
+        print("capture/cancel discards the batch and the session is reusable after: PASS")
+    finally:
+        api.stop()
+
+
+def test_capture_start_unknown_node_is_404(tmp_dir):
+    api = ApiUnderTest(tmp_dir)
+    try:
+        status, body = api.request("POST", "/nodes/no-such-node/capture/start")
+        assert status == 404, (status, body)
+        print("capture/start for an unknown node returns 404: PASS")
+    finally:
+        api.stop()
+
+
+def test_decommission_discards_capture_session(tmp_dir):
+    api = ApiUnderTest(tmp_dir)
+    try:
+        status, _ = api.request("POST", f"/nodes/{NODE_ID}/capture/start")
+        assert status == 200
+        status, body = api.request("POST", f"/nodes/{NODE_ID}/decommission")
+        assert status == 200, (status, body)
+        assert api.capture.progress(NODE_ID) is None, "capture session should be discarded"
+        print("decommission discards any in-flight capture session: PASS")
+    finally:
+        api.stop()
+
+
 def test_history_endpoint_returns_recorded_scores(tmp_dir):
     api = ApiUnderTest(tmp_dir)
     try:
@@ -412,6 +597,7 @@ def main():
     test_get_nodes_lists_registry_entries(tempfile.mkdtemp(dir=tmp_dir))
     test_get_node_404_for_unknown(tempfile.mkdtemp(dir=tmp_dir))
     test_rename_updates_registry_and_broadcasts(tempfile.mkdtemp(dir=tmp_dir))
+    test_device_type_updates_registry_and_broadcasts(tempfile.mkdtemp(dir=tmp_dir))
     test_pause_updates_registry_status(tempfile.mkdtemp(dir=tmp_dir))
     test_pause_uncommissioned_node_is_409(tempfile.mkdtemp(dir=tmp_dir))
     test_resume_updates_registry_status(tempfile.mkdtemp(dir=tmp_dir))
@@ -420,6 +606,13 @@ def main():
     test_commissioning_start_feed_stop_trains_model(tempfile.mkdtemp(dir=tmp_dir))
     test_commissioning_stop_without_start_is_409(tempfile.mkdtemp(dir=tmp_dir))
     test_commissioning_double_start_is_409(tempfile.mkdtemp(dir=tmp_dir))
+    test_capture_start_feed_stop_save_persists_labeled_batch(tempfile.mkdtemp(dir=tmp_dir))
+    test_capture_auto_stops_at_target_frames(tempfile.mkdtemp(dir=tmp_dir))
+    test_capture_stop_without_start_is_409(tempfile.mkdtemp(dir=tmp_dir))
+    test_capture_save_before_stop_is_409(tempfile.mkdtemp(dir=tmp_dir))
+    test_capture_cancel_discards_batch(tempfile.mkdtemp(dir=tmp_dir))
+    test_capture_start_unknown_node_is_404(tempfile.mkdtemp(dir=tmp_dir))
+    test_decommission_discards_capture_session(tempfile.mkdtemp(dir=tmp_dir))
     test_history_endpoint_returns_recorded_scores(tempfile.mkdtemp(dir=tmp_dir))
     test_websocket_broadcast_reaches_connected_client(tempfile.mkdtemp(dir=tmp_dir))
     test_telegram_status_reports_not_configured_by_default(tempfile.mkdtemp(dir=tmp_dir))

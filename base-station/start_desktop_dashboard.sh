@@ -32,7 +32,13 @@
 #   6. Prints both URLs. Ctrl+C stops both processes.
 #
 # Usage:
-#   ./start_desktop_dashboard.sh [--nodes N] [--captures-dir DIR] [--auto-online]
+#   ./start_desktop_dashboard.sh [--nodes N] [--captures-dir DIR] [--auto-online] [--host HOST]
+#
+#   --host 0.0.0.0   binds on every interface instead of just localhost, so
+#                     the dashboard is reachable from another device (e.g. a
+#                     phone, to check mobile view) on the same LAN/Wi-Fi --
+#                     the script prints the LAN URL to open once it's up.
+#                     Default (127.0.0.1) stays loopback-only/safe.
 
 set -uo pipefail
 
@@ -43,6 +49,7 @@ DATA_DIR="${LOCAL_DIR}/.cache/data-desktop"
 SIM_DATA_DIR="${LOCAL_DIR}/.cache/sim-data"
 CAPTURES_DIR=""  # empty = use SIM_DATA_DIR (synthetic), set via --captures-dir to replay real captures
 AUTO_ONLINE=0    # 0 = leave the sim node offline for you to review/click "Go Online"; --auto-online flips it for you
+DASHBOARD_HOST=127.0.0.1  # --host 0.0.0.0 to expose on the LAN (e.g. for checking mobile view)
 # Deliberately NOT 8080 -- that's app.yaml's real on-device dashboard port,
 # routinely reachable here too via `adb forward tcp:8080 tcp:8080` during
 # device testing. Using a different port means this script can never bind
@@ -60,6 +67,7 @@ while [ $# -gt 0 ]; do
         --port) DASHBOARD_PORT="$2"; shift 2 ;;
         --captures-dir) CAPTURES_DIR="$2"; shift 2 ;;
         --auto-online) AUTO_ONLINE=1; shift ;;
+        --host) DASHBOARD_HOST="$2"; shift 2 ;;
         *) echo "Unknown argument: $1" >&2; exit 1 ;;
     esac
 done
@@ -127,11 +135,11 @@ else
     fi
 fi
 
-step "Starting dashboard (python/main.py) on port ${DASHBOARD_PORT}"
+step "Starting dashboard (python/main.py) on ${DASHBOARD_HOST}:${DASHBOARD_PORT}"
 mkdir -p "${DATA_DIR}"
 (
     cd "${PY_DIR}" && exec "${VENV}/bin/python3" main.py \
-        --host 127.0.0.1 --port "${DASHBOARD_PORT}" \
+        --host "${DASHBOARD_HOST}" --port "${DASHBOARD_PORT}" \
         --data-dir "${DATA_DIR}" \
         --mqtt-host "${MQTT_HOST}" --mqtt-port "${MQTT_PORT}"
 ) &
@@ -207,6 +215,14 @@ done
 echo
 echo "============================================================"
 echo " Dashboard:  http://127.0.0.1:${DASHBOARD_PORT}/index.html"
+if [ "${DASHBOARD_HOST}" = "0.0.0.0" ]; then
+    lan_ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
+    if [ -n "${lan_ip}" ]; then
+        echo " From your phone (same Wi-Fi): http://${lan_ip}:${DASHBOARD_PORT}/index.html"
+    else
+        echo " Bound on 0.0.0.0 but couldn't detect a LAN IP -- run \`hostname -I\` or \`ip addr\` to find yours."
+    fi
+fi
 for ui_port in "${SIM_UI_PORTS[@]}"; do
 echo " Sim node UI: http://127.0.0.1:${ui_port}/  (toggle online/capture file/spectrum+scalar channels here)"
 done

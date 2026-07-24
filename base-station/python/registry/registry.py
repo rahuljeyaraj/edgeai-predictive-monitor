@@ -80,15 +80,18 @@ def input_dim_for(channels: FrozenSet[SensorChannel]) -> int:
 @dataclass
 class RegistryEntry:
     node_id: str
-    display_name: str
+    device_name: str
     sensor_config: FrozenSet[SensorChannel]
     input_dim: int
+    # Scoping key for capture/label grouping and (later) which Edge Impulse
+    # project/model applies to this node -- docs/EDGE_IMPULSE_DASHBOARD_WORKFLOW_PLAN.md
+    # S1. None until an operator sets it; a node with no device_type just
+    # shows the anomaly score, no classification attempted.
+    device_type: Optional[str] = None
     model_path: Optional[str] = None
     status: NodeStatus = NodeStatus.UNCOMMISSIONED
     last_seen: Optional[float] = None
     last_commissioned: Optional[float] = None
-    control_circuit_id: Optional[str] = None
-    auto_cutoff_enabled: bool = False
     last_anomaly_score: Optional[float] = None
     # Per-node anomaly-score thresholds, calibrated from this node's own
     # healthy baseline at commissioning (pipeline/commissioning.py). None
@@ -119,6 +122,13 @@ class RegistryEntry:
     @staticmethod
     def from_dict(d: dict) -> "RegistryEntry":
         d = dict(d)
+        # Legacy compat: entries persisted before the device_name/device_type
+        # rename (2026-07-24, docs/EDGE_IMPULSE_DASHBOARD_WORKFLOW_PLAN.md S1)
+        # have "display_name" and two now-dead fields instead.
+        if "display_name" in d:
+            d["device_name"] = d.pop("display_name")
+        d.pop("control_circuit_id", None)
+        d.pop("auto_cutoff_enabled", None)
         d["sensor_config"] = frozenset(SensorChannel(v) for v in d["sensor_config"])
         # Legacy compat: entries persisted before the commissioning split
         # (S6 dashboard redesign) have status "training". Map to
@@ -307,7 +317,7 @@ class Registry:
                 os.remove(tmp_path)
             raise
 
-    def add(self, node_id: str, display_name: Optional[str] = None,
+    def add(self, node_id: str, device_name: Optional[str] = None,
              # A frozenset literal default is safe here (unlike the usual
              # mutable-default-argument trap) since frozensets are immutable.
              sensor_config: FrozenSet[SensorChannel] = frozenset(
@@ -326,7 +336,7 @@ class Registry:
                 return self._entries[node_id]
             entry = RegistryEntry(
                 node_id=node_id,
-                display_name=display_name or node_id,
+                device_name=device_name or node_id,
                 sensor_config=sensor_config,
                 input_dim=input_dim if input_dim is not None else input_dim_for(sensor_config),
             )
@@ -345,10 +355,21 @@ class Registry:
     def list(self) -> Dict[str, RegistryEntry]:
         return dict(self._entries)
 
-    def rename(self, node_id: str, display_name: str) -> RegistryEntry:
+    def rename(self, node_id: str, device_name: str) -> RegistryEntry:
         with self._lock_for(node_id):
             entry = self.get(node_id)
-            entry.display_name = display_name
+            entry.device_name = device_name
+            self._save()
+            return entry
+
+    def set_device_type(self, node_id: str, device_type: Optional[str]) -> RegistryEntry:
+        """device_type is the scoping key for capture/label grouping (docs/
+        EDGE_IMPULSE_DASHBOARD_WORKFLOW_PLAN.md S1) -- set independently of
+        rename() since a device can be renamed without changing what kind of
+        machine it is, and vice versa. None clears it back to unassigned."""
+        with self._lock_for(node_id):
+            entry = self.get(node_id)
+            entry.device_type = device_type
             self._save()
             return entry
 
