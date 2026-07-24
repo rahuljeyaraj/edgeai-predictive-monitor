@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
 EIController verification (api/ei_controller.py, docs/
-EDGE_IMPULSE_DASHBOARD_WORKFLOW_PLAN.md S4): connect() idempotency,
-upload()'s device_type/connection-state rejection rules, the
+EDGE_IMPULSE_DASHBOARD_WORKFLOW_PLAN.md S4): link() idempotency,
+upload()'s device_type/link-state rejection rules, the
 standardize-with-node-baseline-vs-raw-fallback branch (the train/serve
 skew this round exists to close -- see EIController._standardize's
 docstring), and the contiguous-tail train/test split -- all against a
@@ -109,53 +109,53 @@ def new_env():
     return registry, projects_path, captures_dir
 
 
-def test_connect_creates_project_on_first_call():
+def test_link_creates_project_on_first_call():
     registry, projects_path, captures_dir = new_env()
     registry.add(NODE_A, sensor_config=frozenset({SensorChannel.MIC}))
     registry.set_device_type(NODE_A, "motor001")
     client = FakeEiClient()
     controller = EIController(registry, projects_path, captures_dir, client=client)
 
-    result = controller.connect("motor001", "me@example.com", "hunter2")
+    result = controller.link("motor001", "me@example.com", "hunter2")
 
-    assert result["connected"] is True
+    assert result["linked"] is True
     assert [c[0] for c in client.calls] == \
         ["login", "create_project", "create_impulse", "set_nn_config"]
     stored = get_project(projects_path, "motor001")
     assert stored["project_id"] == result["project_id"]
-    print("connect() creates project+impulse+NN-config on first call: PASS")
+    print("link() creates project+impulse+NN-config on first call: PASS")
 
 
-def test_connect_is_idempotent():
+def test_link_is_idempotent():
     registry, projects_path, captures_dir = new_env()
     registry.add(NODE_A, sensor_config=frozenset({SensorChannel.MIC}))
     registry.set_device_type(NODE_A, "motor001")
     client = FakeEiClient()
     controller = EIController(registry, projects_path, captures_dir, client=client)
 
-    first = controller.connect("motor001", "me@example.com", "hunter2")
-    second = controller.connect("motor001", "someone-else@example.com", "different")
+    first = controller.link("motor001", "me@example.com", "hunter2")
+    second = controller.link("motor001", "someone-else@example.com", "different")
 
-    assert second == {"connected": True, "project_id": first["project_id"]}
-    assert len(client.calls) == 4, "second connect() must not touch the client at all"
-    print("connect() is a no-op for an already-connected device_type: PASS")
+    assert second == {"linked": True, "project_id": first["project_id"]}
+    assert len(client.calls) == 4, "second link() must not touch the client at all"
+    print("link() is a no-op for an already-linked device_type: PASS")
 
 
-def test_connect_raises_for_device_type_with_no_node():
+def test_link_raises_for_device_type_with_no_node():
     registry, projects_path, captures_dir = new_env()
     client = FakeEiClient()
     controller = EIController(registry, projects_path, captures_dir, client=client)
 
     try:
-        controller.connect("ghost_type", "me@example.com", "hunter2")
+        controller.link("ghost_type", "me@example.com", "hunter2")
         raise AssertionError("expected EIControllerError")
     except EIControllerError:
         pass
     assert client.calls == [], "must fail before making any EI call"
-    print("connect() rejects a device_type with no current node: PASS")
+    print("link() rejects a device_type with no current node: PASS")
 
 
-def test_connect_propagates_totp_required():
+def test_link_propagates_totp_required():
     registry, projects_path, captures_dir = new_env()
     registry.add(NODE_A, sensor_config=frozenset({SensorChannel.MIC}))
     registry.set_device_type(NODE_A, "motor001")
@@ -163,16 +163,40 @@ def test_connect_propagates_totp_required():
     controller = EIController(registry, projects_path, captures_dir, client=client)
 
     try:
-        controller.connect("motor001", "me@example.com", "hunter2")
+        controller.link("motor001", "me@example.com", "hunter2")
         raise AssertionError("expected EITotpRequiredError")
     except EITotpRequiredError:
         pass
     assert get_project(projects_path, "motor001") is None, \
-        "a failed connect() must not leave a half-created project behind"
-    print("connect() surfaces EITotpRequiredError without saving a project: PASS")
+        "a failed link() must not leave a half-created project behind"
+    print("link() surfaces EITotpRequiredError without saving a project: PASS")
 
 
-def test_status_reflects_connected_device_types():
+def test_unlink_clears_project_and_allows_relink():
+    registry, projects_path, captures_dir = new_env()
+    registry.add(NODE_A, sensor_config=frozenset({SensorChannel.MIC}))
+    registry.set_device_type(NODE_A, "motor001")
+    client = FakeEiClient()
+    controller = EIController(registry, projects_path, captures_dir, client=client)
+    first = controller.link("motor001", "me@example.com", "hunter2")
+
+    result = controller.unlink("motor001")
+
+    assert result == {"removed": True}
+    assert get_project(projects_path, "motor001") is None
+    assert controller.unlink("motor001") == {"removed": False}, \
+        "unlinking an already-unlinked device_type is a no-op, not an error"
+
+    second = controller.link("motor001", "me@example.com", "hunter2")
+    assert second["project_id"] != first["project_id"], \
+        "relinking after unlink() must create a brand new project (the " \
+        "old one may already be gone from EI Studio's side, e.g. deleted " \
+        "by hand), not silently reuse the stale project_id"
+    print("unlink() drops the saved project so a later link() creates a "
+          "fresh one instead of treating it as still-linked: PASS")
+
+
+def test_status_reflects_linked_device_types():
     registry, projects_path, captures_dir = new_env()
     registry.add(NODE_A, sensor_config=frozenset({SensorChannel.MIC}))
     registry.set_device_type(NODE_A, "motor001")
@@ -181,10 +205,17 @@ def test_status_reflects_connected_device_types():
     client = FakeEiClient()
     controller = EIController(registry, projects_path, captures_dir, client=client)
 
-    controller.connect("motor001", "me@example.com", "hunter2")
+    controller.link("motor001", "me@example.com", "hunter2")
 
     assert controller.status() == {"motor001": True, "pump002": False}
-    print("status() reports connected/not-connected per current device_type: PASS")
+    print("status() reports linked/not-linked per current device_type: PASS")
+
+    assert controller.project_ids() == {"motor001": 100}
+    print("project_ids() reports the linked device_type's EI project_id only: PASS")
+
+    create_call = next(c for c in client.calls if c[0] == "create_project")
+    assert create_call[2] == "edgeai-predictive-monitor-motor001", create_call
+    print("link() names the EI project 'edgeai-predictive-monitor-<device_type>': PASS")
 
 
 def test_upload_standardizes_using_node_baseline():
@@ -196,7 +227,7 @@ def test_upload_standardizes_using_node_baseline():
     entry.scalar_sigma = (2.0,) * 6  # (1.0 - 0.5) / 2.0 == 0.25 expected tail
     client = FakeEiClient()
     controller = EIController(registry, projects_path, captures_dir, client=client)
-    controller.connect("motor001", "me@example.com", "hunter2")
+    controller.link("motor001", "me@example.com", "hunter2")
     capture_id = save_capture(registry, captures_dir, NODE_A, "bearing_fault", count=3)
 
     result = controller.upload([capture_id])
@@ -222,7 +253,7 @@ def test_upload_falls_back_to_raw_when_uncommissioned():
     # No scalar_mu/scalar_sigma set -- node was never commissioned.
     client = FakeEiClient()
     controller = EIController(registry, projects_path, captures_dir, client=client)
-    controller.connect("motor001", "me@example.com", "hunter2")
+    controller.link("motor001", "me@example.com", "hunter2")
     capture_id = save_capture(registry, captures_dir, NODE_A, "bearing_fault", count=3)
 
     result = controller.upload([capture_id])
@@ -253,19 +284,19 @@ def test_upload_rejects_capture_with_no_device_type():
     print("upload() rejects a capture whose node has no device_type: PASS")
 
 
-def test_upload_rejects_capture_for_unconnected_device_type():
+def test_upload_rejects_capture_for_unlinked_device_type():
     registry, projects_path, captures_dir = new_env()
     registry.add(NODE_A, sensor_config=frozenset({SensorChannel.MIC}))
     registry.set_device_type(NODE_A, "motor001")
     client = FakeEiClient()
     controller = EIController(registry, projects_path, captures_dir, client=client)
-    # connect() deliberately never called for motor001.
+    # link() deliberately never called for motor001.
     capture_id = save_capture(registry, captures_dir, NODE_A, "bearing_fault", count=1)
 
     result = controller.upload([capture_id])
 
     assert capture_id in result["rejected"]
-    assert "connected" in result["rejected"][capture_id]
+    assert "linked" in result["rejected"][capture_id]
     print("upload() rejects a capture for a device_type with no EI project yet: PASS")
 
 
@@ -275,7 +306,7 @@ def test_upload_pools_same_label_across_captures_before_splitting():
     registry.set_device_type(NODE_A, "motor001")
     client = FakeEiClient()
     controller = EIController(registry, projects_path, captures_dir, client=client)
-    controller.connect("motor001", "me@example.com", "hunter2")
+    controller.link("motor001", "me@example.com", "hunter2")
     id_1 = save_capture(registry, captures_dir, NODE_A, "bearing_fault", count=2)
     id_2 = save_capture(registry, captures_dir, NODE_A, "bearing_fault", count=2)
 
@@ -289,17 +320,18 @@ def test_upload_pools_same_label_across_captures_before_splitting():
 
 
 def main():
-    test_connect_creates_project_on_first_call()
-    test_connect_is_idempotent()
-    test_connect_raises_for_device_type_with_no_node()
-    test_connect_propagates_totp_required()
-    test_status_reflects_connected_device_types()
+    test_link_creates_project_on_first_call()
+    test_link_is_idempotent()
+    test_link_raises_for_device_type_with_no_node()
+    test_link_propagates_totp_required()
+    test_unlink_clears_project_and_allows_relink()
+    test_status_reflects_linked_device_types()
     test_upload_standardizes_using_node_baseline()
     test_upload_falls_back_to_raw_when_uncommissioned()
     test_upload_rejects_capture_with_no_device_type()
-    test_upload_rejects_capture_for_unconnected_device_type()
+    test_upload_rejects_capture_for_unlinked_device_type()
     test_upload_pools_same_label_across_captures_before_splitting()
-    print("RESULT: PASS - EIController connects/uploads correctly against a "
+    print("RESULT: PASS - EIController links/uploads correctly against a "
           "faked ei_client, with no real network")
 
 

@@ -582,35 +582,37 @@ def test_captures_rename_unknown_id_is_400(tmp_dir):
         api.stop()
 
 
-def test_ei_status_reports_unconnected_by_default(tmp_dir):
+def test_ei_status_reports_unlinked_by_default(tmp_dir):
     # Round A "Upload" (docs/EDGE_IMPULSE_DASHBOARD_WORKFLOW_PLAN.md S4) --
     # a node's device_type shows up in GET /classifier/ei/status as
-    # unconnected until POST /classifier/ei/connect has run for it.
+    # unlinked until POST /classifier/ei/link has run for it.
     api = ApiUnderTest(tmp_dir)
     try:
         status, body = api.request("POST", f"/nodes/{NODE_ID}/device_type", {"device_type": "motor001"})
         assert status == 200, (status, body)
 
         status, body = api.request("GET", "/classifier/ei/status")
-        assert status == 200 and body == {"device_types": {"motor001": False}}, (status, body)
-        print("GET /classifier/ei/status reports an assigned-but-unconnected device_type: PASS")
+        assert status == 200 and body == {
+            "device_types": {"motor001": False}, "project_ids": {}}, (status, body)
+        print("GET /classifier/ei/status reports an assigned-but-unlinked device_type: PASS")
     finally:
         api.stop()
 
 
-def test_ei_connect_creates_project_then_upload_pushes_samples(tmp_dir):
+def test_ei_link_creates_project_then_upload_pushes_samples(tmp_dir):
     api = ApiUnderTest(tmp_dir)
     try:
         status, body = api.request("POST", f"/nodes/{NODE_ID}/device_type", {"device_type": "motor001"})
         assert status == 200, (status, body)
 
-        status, body = api.request("POST", "/classifier/ei/connect",
+        status, body = api.request("POST", "/classifier/ei/link",
                                     {"device_type": "motor001", "username": "me@example.com",
                                      "password": "hunter2"})
-        assert status == 200 and body["connected"] is True, (status, body)
+        assert status == 200 and body["linked"] is True, (status, body)
 
         status, body = api.request("GET", "/classifier/ei/status")
-        assert body == {"device_types": {"motor001": True}}, body
+        assert body == {"device_types": {"motor001": True},
+                         "project_ids": {"motor001": 100}}, body
 
         status, _ = api.request("POST", f"/nodes/{NODE_ID}/capture/start")
         assert status == 200
@@ -628,19 +630,19 @@ def test_ei_connect_creates_project_then_upload_pushes_samples(tmp_dir):
         counts = body["uploaded"]["motor001"]["bearing_fault"]
         assert counts["training"] + counts["testing"] == 1, body
         assert len(api.ei_client.uploads) == 1
-        print("POST /classifier/ei/connect + /classifier/ei/upload push a "
+        print("POST /classifier/ei/link + /classifier/ei/upload push a "
               "saved capture through to the (faked) Edge Impulse client: PASS")
     finally:
         api.stop()
 
 
-def test_ei_connect_totp_required_returns_400_marker(tmp_dir):
+def test_ei_link_totp_required_returns_400_marker(tmp_dir):
     api = ApiUnderTest(tmp_dir, ei_totp_code="654321")
     try:
         status, body = api.request("POST", f"/nodes/{NODE_ID}/device_type", {"device_type": "motor001"})
         assert status == 200, (status, body)
 
-        status, body = api.request("POST", "/classifier/ei/connect",
+        status, body = api.request("POST", "/classifier/ei/link",
                                     {"device_type": "motor001", "username": "me@example.com",
                                      "password": "hunter2"})
         # api/app.py's exception_handler rewrites HTTPException.detail into
@@ -648,10 +650,39 @@ def test_ei_connect_totp_required_returns_400_marker(tmp_dir):
         assert status == 400 and body["error"] == {"totp_required": True}, (status, body)
 
         status, body = api.request("GET", "/classifier/ei/status")
-        assert body == {"device_types": {"motor001": False}}, \
-            "a failed connect() must not report the device_type as connected"
-        print("POST /classifier/ei/connect surfaces a totp_required marker "
+        assert body == {"device_types": {"motor001": False}, "project_ids": {}}, \
+            "a failed link() must not report the device_type as linked"
+        print("POST /classifier/ei/link surfaces a totp_required marker "
               "(not a generic error) when EI's login needs a 2FA code: PASS")
+    finally:
+        api.stop()
+
+
+def test_ei_unlink_clears_project_and_allows_relink(tmp_dir):
+    api = ApiUnderTest(tmp_dir)
+    try:
+        status, body = api.request("POST", f"/nodes/{NODE_ID}/device_type", {"device_type": "motor001"})
+        assert status == 200, (status, body)
+        status, body = api.request("POST", "/classifier/ei/link",
+                                    {"device_type": "motor001", "username": "me@example.com",
+                                     "password": "hunter2"})
+        assert status == 200 and body["linked"] is True, (status, body)
+
+        status, body = api.request("POST", "/classifier/ei/unlink", {"device_type": "motor001"})
+        assert status == 200 and body == {"removed": True}, (status, body)
+
+        status, body = api.request("GET", "/classifier/ei/status")
+        assert body == {"device_types": {"motor001": False}, "project_ids": {}}, body
+
+        # Covers "I deleted the project in EI Studio, now what" -- unlinking
+        # locally lets a fresh link() create a brand new project rather than
+        # being stuck with a dead project_id and no way to recreate it.
+        status, body = api.request("POST", "/classifier/ei/link",
+                                    {"device_type": "motor001", "username": "me@example.com",
+                                     "password": "hunter2"})
+        assert status == 200 and body["linked"] is True, (status, body)
+        print("POST /classifier/ei/unlink clears the saved project so a "
+              "device_type can be linked again: PASS")
     finally:
         api.stop()
 
@@ -788,9 +819,10 @@ def main():
     test_decommission_discards_capture_session(tempfile.mkdtemp(dir=tmp_dir))
     test_captures_list_rename_delete(tempfile.mkdtemp(dir=tmp_dir))
     test_captures_rename_unknown_id_is_400(tempfile.mkdtemp(dir=tmp_dir))
-    test_ei_status_reports_unconnected_by_default(tempfile.mkdtemp(dir=tmp_dir))
-    test_ei_connect_creates_project_then_upload_pushes_samples(tempfile.mkdtemp(dir=tmp_dir))
-    test_ei_connect_totp_required_returns_400_marker(tempfile.mkdtemp(dir=tmp_dir))
+    test_ei_status_reports_unlinked_by_default(tempfile.mkdtemp(dir=tmp_dir))
+    test_ei_link_creates_project_then_upload_pushes_samples(tempfile.mkdtemp(dir=tmp_dir))
+    test_ei_link_totp_required_returns_400_marker(tempfile.mkdtemp(dir=tmp_dir))
+    test_ei_unlink_clears_project_and_allows_relink(tempfile.mkdtemp(dir=tmp_dir))
     test_history_endpoint_returns_recorded_scores(tempfile.mkdtemp(dir=tmp_dir))
     test_websocket_broadcast_reaches_connected_client(tempfile.mkdtemp(dir=tmp_dir))
     test_telegram_status_reports_not_configured_by_default(tempfile.mkdtemp(dir=tmp_dir))

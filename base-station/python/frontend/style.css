@@ -1664,7 +1664,7 @@ body {
   padding: 3px 10px;
 }
 
-.classifier-ei__pill--connected {
+.classifier-ei__pill--linked {
   color: var(--color-healthy);
   background-color: rgba(34, 197, 94, 0.14);
 }
@@ -1678,7 +1678,7 @@ body {
   background-color: rgba(245, 158, 11, 0.14);
 }
 
-.classifier-ei__connect {
+.classifier-ei__link {
   display: flex;
   align-items: center;
   gap: 8px;

@@ -8,14 +8,17 @@
  * label bucket via POST /captures/rename), delete (POST /captures/delete).
  *
  * The Edge Impulse panel (S4's "Upload" round) is now wired: one row per
- * device type with a connect/not-connected state (GET /classifier/ei/status),
+ * device type with a linked/not-linked state (GET /classifier/ei/status),
  * a login form per row that creates that type's EI project on first use
- * (POST /classifier/ei/connect -- username/password, not a static API key,
+ * (POST /classifier/ei/link -- username/password, not a static API key,
  * since project *creation* needs account-level auth; see docs/
  * EDGE_IMPULSE_DASHBOARD_WORKFLOW_PLAN.md S0), and "Upload selected" (POST
- * /classifier/ei/upload). Train/Fetch trained model stay disabled
- * placeholders -- S4 steps 5-9, a follow-up round (async job + WS log
- * streaming, a different shape from this round's request/response calls).
+ * /classifier/ei/upload). Deliberately "linked", not "connected" -- in EI's
+ * own vocabulary "connected" means a device is live on the ingestion
+ * WebSocket streaming data for inference, which this isn't. Train/Fetch
+ * trained model stay disabled placeholders -- S4 steps 5-9, a follow-up
+ * round (async job + WS log streaming, a different shape from this
+ * round's request/response calls).
  *
  * Same module shape as perf.js/alerts.js: owns its own data (fetches
  * /captures itself rather than reading another module's state), no shared
@@ -37,10 +40,11 @@ const Classifier = (() => {
   const state = {
     captures: [],           // [{id, node_id, device_type, label, timestamp, frame_count}]
     selected: new Set(),    // capture ids
-    eiStatus: {},           // {device_type: connected(bool)}
+    eiStatus: {},           // {device_type: linked(bool)}
+    eiProjectIds: {},       // {device_type: EI project_id}, for the Studio link
     fleetAssetClasses: [],  // GET /device_types -- classes currently assigned to a live node
-    connecting: null,       // device_type currently showing its login form, or null
-    connectForm: { username: "", password: "", totp: "", needsTotp: false, error: null, busy: false },
+    linking: null,          // device_type currently showing its login form, or null
+    linkForm: { username: "", password: "", totp: "", needsTotp: false, error: null, busy: false },
     uploadResult: null,     // last POST /classifier/ei/upload response, or null
   };
   let editingId = null;
@@ -68,7 +72,7 @@ const Classifier = (() => {
     return res.json();
   }
 
-  // /classifier/ei/connect's 400 for "needs a 2FA code" carries a
+  // /classifier/ei/link's 400 for "needs a 2FA code" carries a
   // structured `{totp_required: true}` error object, not a string --
   // postJson's generic Error(err.detail || err.error) would stringify an
   // object to "[object Object]", losing the signal. This one route gets
@@ -77,8 +81,8 @@ const Classifier = (() => {
   // to {"error": ...}, NOT FastAPI's default {"detail": ...} -- postJson's
   // `err.detail || err.error` already accounts for this app-wide
   // convention; this helper only needs the `error` key.
-  async function postEiConnect(body) {
-    const res = await fetch("/classifier/ei/connect", {
+  async function postEiLink(body) {
+    const res = await fetch("/classifier/ei/link", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
@@ -186,7 +190,7 @@ const Classifier = (() => {
   function deviceTypesInView() {
     // "live" rows: asset classes GET /device_types says some node
     // currently has, unioned with anything /classifier/ei/status already
-    // knows about (covers a class that's connected but whose last node
+    // knows about (covers a class that's linked but whose last node
     // was just reassigned/decommissioned -- the EI project is still real,
     // shouldn't vanish just because no node currently carries the class).
     //
@@ -194,8 +198,8 @@ const Classifier = (() => {
     // those -- the asset class was renamed/unset on its node (Fleet tab's
     // pill) after the recording was saved, capture.py freezes device_type
     // onto the JSON at save time and never updates it retroactively. A
-    // "Connect" button pointing at a class no node has anymore is a dead
-    // end (api/ei_controller.py's connect() needs a live node to read
+    // "Link" button pointing at a class no node has anymore is a dead
+    // end (api/ei_controller.py's link() needs a live node to read
     // input_dim from and will just 400) -- these get a delete-only row
     // instead, since removing the stale recordings is the only real fix.
     const live = new Set(state.fleetAssetClasses);
@@ -206,36 +210,45 @@ const Classifier = (() => {
     return { live: Array.from(live).sort(), orphaned: orphaned.sort() };
   }
 
-  function connectFormHtml(deviceType) {
-    const f = state.connectForm;
-    return `<div class="classifier-ei__connect">
+  function linkFormHtml(deviceType) {
+    const f = state.linkForm;
+    return `<div class="classifier-ei__link">
       <input type="text" class="classifier-table__rename-input" placeholder="Edge Impulse username or email"
              data-action="ei_username" value="${escapeAttr(f.username)}" autocomplete="off" ${f.busy ? "disabled" : ""}>
       <input type="password" class="classifier-table__rename-input" placeholder="Password"
              data-action="ei_password" value="${escapeAttr(f.password)}" autocomplete="off" ${f.busy ? "disabled" : ""}>
       ${f.needsTotp ? `<input type="text" class="classifier-table__rename-input" placeholder="2FA code"
              data-action="ei_totp" value="${escapeAttr(f.totp)}" autocomplete="off" ${f.busy ? "disabled" : ""}>` : ""}
-      <button type="button" class="btn-primary" data-action="ei_connect_submit"
+      <button type="button" class="btn-primary" data-action="ei_link_submit"
               data-type="${escapeAttr(deviceType)}" ${f.busy ? "disabled" : ""}>
-        ${f.busy ? "Connecting…" : "Connect"}
+        ${f.busy ? "Linking…" : "Link"}
       </button>
-      <button type="button" class="btn-text" data-action="ei_connect_cancel">Cancel</button>
+      <button type="button" class="btn-text" data-action="ei_link_cancel">Cancel</button>
       ${f.error ? `<div class="classifier-ei__error">${escapeHtmlLocal(f.error)}</div>` : ""}
     </div>`;
   }
 
+  function eiStudioUrl(projectId) {
+    return `https://studio.edgeimpulse.com/studio/${projectId}`;
+  }
+
   function eiRowHtml(deviceType) {
-    const connected = !!state.eiStatus[deviceType];
-    const isConnecting = state.connecting === deviceType;
+    const linked = !!state.eiStatus[deviceType];
+    const isLinking = state.linking === deviceType;
+    const projectId = state.eiProjectIds[deviceType];
     return `<div class="classifier-ei__row">
         <span class="classifier-ei__type">${escapeHtmlLocal(deviceType)}</span>
-        <span class="classifier-ei__pill ${connected ? "classifier-ei__pill--connected" : ""}">
-          ${connected ? "Connected" : "Not connected"}
+        <span class="classifier-ei__pill ${linked ? "classifier-ei__pill--linked" : ""}">
+          ${linked ? "Linked" : "Not linked"}
         </span>
-        ${connected || isConnecting ? "" : `<button type="button" class="btn-label"
-          data-action="ei_connect_start" data-type="${escapeAttr(deviceType)}">Connect</button>`}
+        ${linked && projectId ? `<a class="btn-label" href="${eiStudioUrl(projectId)}"
+          target="_blank" rel="noopener noreferrer">Open in Edge Impulse</a>` : ""}
+        ${linked ? `<button type="button" class="btn-text" data-action="ei_unlink"
+          data-type="${escapeAttr(deviceType)}">Unlink</button>` : ""}
+        ${linked || isLinking ? "" : `<button type="button" class="btn-label"
+          data-action="ei_link_start" data-type="${escapeAttr(deviceType)}">Link</button>`}
       </div>
-      ${isConnecting ? connectFormHtml(deviceType) : ""}`;
+      ${isLinking ? linkFormHtml(deviceType) : ""}`;
   }
 
   function orphanedRowHtml(deviceType) {
@@ -275,16 +288,16 @@ const Classifier = (() => {
       .filter((c) => state.selected.has(c.id) && c.device_type)
       .map((c) => c.device_type));
     const missing = Array.from(selectedTypes).filter((t) => !state.eiStatus[t]);
-    // A missing type this selection needs might be connectable (show up
-    // on Fleet, just never connected yet) or orphaned (no node has it
-    // anymore -- there's no "Connect" button to point at, only delete).
-    // Conflating the two would tell the operator to "Connect" a class
-    // that has no Connect button anywhere on this panel.
-    const missingConnectable = missing.filter((t) => !orphaned.includes(t));
+    // A missing type this selection needs might be linkable (show up
+    // on Fleet, just never linked yet) or orphaned (no node has it
+    // anymore -- there's no "Link" button to point at, only delete).
+    // Conflating the two would tell the operator to "Link" a class
+    // that has no Link button anywhere on this panel.
+    const missingLinkable = missing.filter((t) => !orphaned.includes(t));
     const missingOrphaned = missing.filter((t) => orphaned.includes(t));
     const uploadDisabled = selectedCount === 0 || missing.length > 0;
     let uploadTitle = "";
-    if (missingConnectable.length > 0) uploadTitle = `Connect ${missingConnectable.join(", ")} first`;
+    if (missingLinkable.length > 0) uploadTitle = `Link ${missingLinkable.join(", ")} first`;
     else if (missingOrphaned.length > 0) {
       uploadTitle = `${missingOrphaned.join(", ")} no longer exists in the fleet -- delete those recordings instead`;
     }
@@ -336,6 +349,7 @@ const Classifier = (() => {
       const res = await fetch("/classifier/ei/status");
       const body = await res.json();
       state.eiStatus = body.device_types || {};
+      state.eiProjectIds = body.project_ids || {};
     } catch (err) {
       console.error("Failed to fetch /classifier/ei/status", err);
     }
@@ -384,24 +398,24 @@ const Classifier = (() => {
   // Edge Impulse actions
   // ---------------------------------------------------------------------
 
-  function startConnect(deviceType) {
-    state.connecting = deviceType;
-    state.connectForm = { username: "", password: "", totp: "", needsTotp: false, error: null, busy: false };
+  function startLink(deviceType) {
+    state.linking = deviceType;
+    state.linkForm = { username: "", password: "", totp: "", needsTotp: false, error: null, busy: false };
     renderEi();
   }
 
-  function cancelConnect() {
-    state.connecting = null;
+  function cancelLink() {
+    state.linking = null;
     renderEi();
   }
 
-  async function submitConnect(deviceType) {
-    const f = state.connectForm;
+  async function submitLink(deviceType) {
+    const f = state.linkForm;
     f.busy = true;
     f.error = null;
     renderEi();
     try {
-      await postEiConnect({
+      await postEiLink({
         device_type: deviceType,
         username: f.username,
         password: f.password,
@@ -409,18 +423,39 @@ const Classifier = (() => {
       });
       // Success: forget the form entirely, including the password --
       // nothing about it lingers longer than this one request.
-      state.connecting = null;
-      state.connectForm = { username: "", password: "", totp: "", needsTotp: false, error: null, busy: false };
+      state.linking = null;
+      state.linkForm = { username: "", password: "", totp: "", needsTotp: false, error: null, busy: false };
       await refreshEiStatus();
     } catch (err) {
       if (err.totpRequired) {
-        state.connectForm = { ...f, needsTotp: true, busy: false, error: "Enter your 2FA code" };
+        state.linkForm = { ...f, needsTotp: true, busy: false, error: "Enter your 2FA code" };
       } else {
         // Wrong password / other failure: drop the password and let the
         // user retype it rather than holding it in state indefinitely.
-        state.connectForm = { ...f, password: "", busy: false, error: err.message };
+        state.linkForm = { ...f, password: "", busy: false, error: err.message };
       }
     }
+    renderEi();
+  }
+
+  async function unlinkType(deviceType) {
+    // Local-only: drops the saved project_id/api_key so a later "Link"
+    // creates a fresh project instead of treating a since-deleted (or
+    // just-unwanted) Studio project as still linked. Doesn't touch
+    // anything in EI itself -- see EIController.unlink()'s docstring for
+    // why a local "forget this" click shouldn't reach out and delete a
+    // Studio project as a side effect.
+    if (!confirm(`Unlink "${deviceType}" from Edge Impulse? If its Studio project still `
+        + "exists, this dashboard loses the API key needed to upload to it -- linking "
+        + "again creates a brand new project rather than reusing the old one.")) {
+      return;
+    }
+    try {
+      await postJson("/classifier/ei/unlink", { device_type: deviceType });
+    } catch (err) {
+      alert(`Unlink failed: ${err.message}`);
+    }
+    await refreshEiStatus();
     renderEi();
   }
 
@@ -454,11 +489,13 @@ const Classifier = (() => {
   function wireEiEvents() {
     const el = document.getElementById("classifier-ei");
     el.addEventListener("click", (e) => {
-      const startBtn = e.target.closest('[data-action="ei_connect_start"]');
-      if (startBtn) { startConnect(startBtn.dataset.type); return; }
-      if (e.target.closest('[data-action="ei_connect_cancel"]')) { cancelConnect(); return; }
-      const submitBtn = e.target.closest('[data-action="ei_connect_submit"]');
-      if (submitBtn) { submitConnect(submitBtn.dataset.type); return; }
+      const startBtn = e.target.closest('[data-action="ei_link_start"]');
+      if (startBtn) { startLink(startBtn.dataset.type); return; }
+      if (e.target.closest('[data-action="ei_link_cancel"]')) { cancelLink(); return; }
+      const submitBtn = e.target.closest('[data-action="ei_link_submit"]');
+      if (submitBtn) { submitLink(submitBtn.dataset.type); return; }
+      const unlinkBtn = e.target.closest('[data-action="ei_unlink"]');
+      if (unlinkBtn) { unlinkType(unlinkBtn.dataset.type); return; }
       const deleteOrphanBtn = e.target.closest('[data-action="ei_delete_orphaned"]');
       if (deleteOrphanBtn) { deleteOrphanedType(deleteOrphanBtn.dataset.type); return; }
       if (e.target.closest('[data-action="ei_upload"]')) { uploadSelected(); return; }
@@ -466,18 +503,18 @@ const Classifier = (() => {
 
     el.addEventListener("input", (e) => {
       const usernameInput = e.target.closest('[data-action="ei_username"]');
-      if (usernameInput) { state.connectForm.username = usernameInput.value; return; }
+      if (usernameInput) { state.linkForm.username = usernameInput.value; return; }
       const passwordInput = e.target.closest('[data-action="ei_password"]');
-      if (passwordInput) { state.connectForm.password = passwordInput.value; return; }
+      if (passwordInput) { state.linkForm.password = passwordInput.value; return; }
       const totpInput = e.target.closest('[data-action="ei_totp"]');
-      if (totpInput) { state.connectForm.totp = totpInput.value; return; }
+      if (totpInput) { state.linkForm.totp = totpInput.value; return; }
     });
 
     el.addEventListener("keydown", (e) => {
-      if (!e.target.closest(".classifier-ei__connect")) return;
-      const deviceType = state.connecting;
-      if (e.key === "Enter") { e.preventDefault(); if (deviceType) submitConnect(deviceType); }
-      else if (e.key === "Escape") { e.preventDefault(); cancelConnect(); }
+      if (!e.target.closest(".classifier-ei__link")) return;
+      const deviceType = state.linking;
+      if (e.key === "Enter") { e.preventDefault(); if (deviceType) submitLink(deviceType); }
+      else if (e.key === "Escape") { e.preventDefault(); cancelLink(); }
     });
   }
 

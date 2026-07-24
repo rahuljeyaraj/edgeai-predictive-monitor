@@ -181,6 +181,28 @@ classification.
 the dashboard. The classifier is a best-effort hint that can be wrong — that
 was an explicit call, not an oversight.
 
+**Revised 2026-07-24 (later same day):** two follow-ups from live use.
+1. Project naming changed from `"EdgeAI - {device_type}"` to
+   `"edgeai-predictive-monitor-{device_type}"` (matches the repo name).
+2. Renamed the whole connect/connected vocabulary to **link/linked**
+   throughout (`connect()` → `link()`, `POST /classifier/ei/connect` →
+   `/classifier/ei/link`, the `{"connected": true}` response key → `{"linked":
+   true}`, the dashboard pill/button text) — in Edge Impulse's own
+   terminology "connected" specifically means a device is live on the
+   ingestion WebSocket streaming data for inference, which this feature
+   never does; reusing that word for "a Studio project exists for this
+   device type" was a false claim about a live data connection.
+3. Added **unlink** (`POST /classifier/ei/unlink`, `EIController.unlink()`,
+   `ei_projects.remove_project()`): drops the locally-saved project_id/
+   api_key for a device type without calling EI's API. Covers the case
+   where the Studio project was deleted by hand — previously there was no
+   way to recover, since `link()` treats any saved mapping as already-done
+   and silently no-ops. A later `link()` after unlinking creates a brand
+   new project. The dashboard's "Linked" pill now also links out to the
+   real Studio project (`https://studio.edgeimpulse.com/studio/<project_id>`,
+   from the new `GET /classifier/ei/status`'s `project_ids` field) and
+   shows an "Unlink" button next to it.
+
 ---
 
 ## 5. Clustering / feature-explorer visualization — bring the data in

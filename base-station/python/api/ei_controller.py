@@ -4,7 +4,7 @@ CaptureController/CommissioningController's role: a thin lifecycle shim
 between REST routes and the ei_client/ei_projects/capture/features
 plumbing below it.
 
-Both connect() and upload() are plain blocking calls (no threading.Thread)
+Both link() and upload() are plain blocking calls (no threading.Thread)
 -- FastAPI already runs `def` route handlers in a worker thread (api/app.py's
 own docstring), and both are bounded request/response sequences, not a
 long-running job the way commissioning's run_training() is (that pattern
@@ -46,6 +46,12 @@ class EIController:
         projects = ei_projects.load_projects(self._projects_path)
         return {dt: dt in projects for dt in self._device_types()}
 
+    def project_ids(self) -> Dict[str, int]:
+        """device_type -> Edge Impulse project_id, so the dashboard can
+        link straight to the Studio project next to the "Linked" pill."""
+        return {dt: p["project_id"]
+                for dt, p in ei_projects.load_projects(self._projects_path).items()}
+
     def _input_dim_for(self, device_type: str) -> int:
         for entry in self._registry.list().values():
             if entry.device_type == device_type:
@@ -56,21 +62,29 @@ class EIController:
         return sorted({c["label"] for c in list_captures(self._captures_dir)
                        if c.get("device_type") == device_type})
 
-    def connect(self, device_type: str, username: str, password: str,
-                totp: Optional[str] = None) -> dict:
+    def link(self, device_type: str, username: str, password: str,
+              totp: Optional[str] = None) -> dict:
         """Idempotent: a device_type already in ei_projects.json is a
-        no-op, so re-connecting (or connecting a second device type right
+        no-op, so re-linking (or linking a second device type right
         after) never re-creates a project. Not gated on a real node
         existing with that exact device_type beyond needing one to derive
         input_dim from -- same "device_type is scoping key" contract as
-        the rest of S1."""
+        the rest of S1.
+
+        Named link()/"linked" rather than connect()/"connected" -- in EI's
+        own vocabulary "connected" means a device is live on the ingestion
+        WebSocket streaming data for inference, which is not what this
+        does (this only creates/remembers a Studio project). Reusing that
+        word here read as a claim about a live data connection that isn't
+        true."""
         existing = ei_projects.get_project(self._projects_path, device_type)
         if existing is not None:
-            return {"connected": True, "project_id": existing["project_id"]}
+            return {"linked": True, "project_id": existing["project_id"]}
 
         input_dim = self._input_dim_for(device_type)
         jwt = self._client.login(username, password, totp)
-        project_id, api_key = self._client.create_project(jwt, f"EdgeAI - {device_type}")
+        project_id, api_key = self._client.create_project(
+            jwt, f"edgeai-predictive-monitor-{device_type}")
         learn_id = self._client.create_impulse(api_key, project_id, input_dim)
         # Best-effort num_classes from labels already captured for this
         # device type; a lone class if none yet -- EI accepts changing
@@ -78,7 +92,18 @@ class EIController:
         num_classes = max(1, len(self._labels_for(device_type)))
         self._client.set_nn_config(api_key, project_id, learn_id, input_dim, num_classes)
         ei_projects.save_project(self._projects_path, device_type, project_id, api_key)
-        return {"connected": True, "project_id": project_id}
+        return {"linked": True, "project_id": project_id}
+
+    def unlink(self, device_type: str) -> dict:
+        """Drops device_type's saved project mapping without calling EI's
+        API -- there's nothing left to delete there once the project was
+        already removed by hand in EI Studio (the scenario this exists
+        for), and even if it wasn't, deleting someone's Studio project as
+        a side effect of a local "forget this" click would be a surprising
+        blast radius. A later link() then creates a brand new project
+        rather than treating the stale local entry as still-linked."""
+        removed = ei_projects.remove_project(self._projects_path, device_type)
+        return {"removed": removed}
 
     def _standardize(self, node_id: Optional[str], payload: dict,
                       vectors: List[Tuple[float, ...]]) -> Tuple[List[Tuple[float, ...]], bool]:
@@ -148,7 +173,7 @@ class EIController:
                 continue
             if device_type not in projects:
                 rejected[capture_id] = (
-                    f"device_type {device_type!r} isn't connected to Edge Impulse yet")
+                    f"device_type {device_type!r} isn't linked to Edge Impulse yet")
                 continue
 
             vectors = [tuple(v) for v in payload["vectors"]]

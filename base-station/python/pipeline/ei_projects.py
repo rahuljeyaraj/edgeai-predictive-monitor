@@ -9,7 +9,7 @@ jobs and spend account compute, so the file is written 0600 (owner-only),
 tighter than registry.json/captures/ which carry no secret. The EI
 username/password/JWT used to *create* a project are never written here or
 anywhere else -- api/ei_controller.py holds them in memory only for the
-duration of one connect() call.
+duration of one link() call.
 """
 import json
 import os
@@ -18,7 +18,7 @@ from typing import Dict, Optional
 
 def load_projects(path: str) -> Dict[str, dict]:
     """device_type -> {"project_id": int, "api_key": str}. Empty (not an
-    error) if nothing's been connected yet -- mirrors capture.py's
+    error) if nothing's been linked yet -- mirrors capture.py's
     list_labels()/list_captures() "no file yet" contract."""
     if not os.path.isfile(path):
         return {}
@@ -41,3 +41,20 @@ def save_project(path: str, device_type: str, project_id: int, api_key: str) -> 
         json.dump(projects, f)
     os.chmod(tmp_path, 0o600)
     os.replace(tmp_path, path)
+
+
+def remove_project(path: str, device_type: str) -> bool:
+    """Drops device_type's saved mapping (e.g. its Studio project was
+    deleted by hand and there's nothing left locally worth keeping).
+    Returns whether there was anything to remove."""
+    projects = load_projects(path)
+    if device_type not in projects:
+        return False
+    del projects[device_type]
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp_path = f"{path}.tmp"
+    with open(tmp_path, "w") as f:
+        json.dump(projects, f)
+    os.chmod(tmp_path, 0o600)
+    os.replace(tmp_path, path)
+    return True

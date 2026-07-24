@@ -109,11 +109,15 @@ class CaptureDeleteBody(BaseModel):
     ids: List[str]
 
 
-class EIConnectBody(BaseModel):
+class EILinkBody(BaseModel):
     device_type: str
     username: str
     password: str
     totp: Optional[str] = None
+
+
+class EIUnlinkBody(BaseModel):
+    device_type: str
 
 
 class EIUploadBody(BaseModel):
@@ -598,17 +602,22 @@ def create_app(registry: Registry, history_store: HistoryStore,
 
     @app.get("/classifier/ei/status")
     def ei_status():
-        return {"device_types": _require_ei().status()}
+        ctrl = _require_ei()
+        return {"device_types": ctrl.status(), "project_ids": ctrl.project_ids()}
 
-    @app.post("/classifier/ei/connect")
-    def ei_connect(body: EIConnectBody):
+    @app.post("/classifier/ei/link")
+    def ei_link(body: EILinkBody):
         try:
-            return _require_ei().connect(
+            return _require_ei().link(
                 body.device_type, body.username, body.password, body.totp)
         except EITotpRequiredError:
             raise HTTPException(status_code=400, detail={"totp_required": True})
         except (EIClientError, EIControllerError) as e:
             raise HTTPException(status_code=400, detail=str(e))
+
+    @app.post("/classifier/ei/unlink")
+    def ei_unlink(body: EIUnlinkBody):
+        return _require_ei().unlink(body.device_type)
 
     @app.post("/classifier/ei/upload")
     def ei_upload(body: EIUploadBody):

@@ -15,7 +15,7 @@ import stat
 import sys
 import tempfile
 
-from ei_projects import get_project, load_projects, save_project
+from ei_projects import get_project, load_projects, remove_project, save_project
 
 
 def test_missing_file_returns_empty_dict():
@@ -66,6 +66,25 @@ def test_save_creates_parent_directory():
         assert get_project(path, "motor001")["project_id"] == 42
 
 
+def test_remove_project_drops_only_that_device_type():
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        path = os.path.join(tmp_dir, "ei_projects.json")
+        save_project(path, "motor001", project_id=42, api_key="ei_abc")
+        save_project(path, "pump002", project_id=43, api_key="ei_def")
+
+        assert remove_project(path, "motor001") is True
+        assert get_project(path, "motor001") is None
+        assert get_project(path, "pump002") == {"project_id": 43, "api_key": "ei_def"}
+
+
+def test_remove_project_missing_device_type_returns_false():
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        path = os.path.join(tmp_dir, "ei_projects.json")
+        save_project(path, "motor001", project_id=42, api_key="ei_abc")
+        assert remove_project(path, "pump002") is False
+        assert get_project(path, "motor001") is not None
+
+
 def main():
     test_missing_file_returns_empty_dict()
     test_save_then_load_round_trips()
@@ -73,6 +92,8 @@ def main():
     test_save_overwrites_same_device_type()
     test_file_written_owner_only()
     test_save_creates_parent_directory()
+    test_remove_project_drops_only_that_device_type()
+    test_remove_project_missing_device_type_returns_false()
     print("RESULT: PASS - ei_projects round-trips device_type -> project "
           "mappings and writes the file owner-only")
 
