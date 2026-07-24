@@ -296,13 +296,36 @@ recordDrawer.hidden = true;
 document.body.appendChild(recordDrawer);
 
 // Renders the whole capture control into the singleton drawer below --
-// device type, Label/target inputs, Start (idle) or Save+Cancel
+// asset class (read-only), Label/target inputs, Start (idle) or Save+Cancel
 // (capturing/stopped). No "Idle" status line/dot -- 2026-07-24 round 6:
 // "i dont know why we need a idle status," and the Start button already
 // says nothing's recording, so a second line repeating that was pure
 // noise. The dot+status line only appears once a capture is actually
 // active.
 function recordDrawerBodyHtml(entry) {
+  const headerHtml = `<div class="record-drawer__header">
+    <span class="record-drawer__title">Record — ${escapeHtml(entry.device_name)}</span>
+    <button type="button" class="record-drawer__close" data-action="record_drawer_close" aria-label="Close">&times;</button>
+  </div>`;
+
+  // Asset class (device_type) is required before any capture can start,
+  // and it's no longer editable from here -- 2026-07-24 round 8: an
+  // earlier version had a "Set/Change device type" control right in this
+  // drawer, a second live editor for a field whose single source of truth
+  // is the Fleet row's pill (motorRowHtml()/startDeviceTypeEdit()).
+  // Instead of a small hint line next to a still-usable form, this fully
+  // replaces the capture form with a blocking message + a jump back to
+  // the Fleet row -- there's nothing else to do in here until it's set.
+  if (!entry.device_type) {
+    return `${headerHtml}
+    <div class="record-drawer__body">
+      <div class="record-drawer__block">
+        <p class="record-drawer__block-text">This asset has no class assigned yet. Recordings are grouped by asset class -- one fault-detection model gets trained per class -- so recording can't start until this asset has one.</p>
+        <button type="button" class="btn-label btn-label--ready" data-action="jump_to_fleet_asset_class">Go to Fleet</button>
+      </div>
+    </div>`;
+  }
+
   const cp = entry.capture_progress;
   // "stopped" is a near-instant transient (auto-save fires the moment
   // it's observed) -- rendered the same as "capturing", never its own
@@ -318,19 +341,7 @@ function recordDrawerBodyHtml(entry) {
     : active ? 0
     : (captureTargetDraftByNode[entry.node_id] || "");
 
-  // Each recording belongs to a device type (2026-07-24) -- editing
-  // happens in the row's pill (single source of truth, see motorRowHtml()
-  // and startDeviceTypeEdit()); the drawer just shows the current value
-  // (or a prompt if unset) with a "Change" link that jumps back to that
-  // same editor, rather than a second, duplicate editor live at once.
-  const deviceTypeHtml = entry.device_type
-    ? `<span class="record-drawer__device-type">${escapeHtml(entry.device_type)}</span>
-       <button type="button" class="record-drawer__device-type-change" data-action="edit_device_type_from_drawer">Change</button>`
-    : `<button type="button" class="btn-label" data-action="edit_device_type_from_drawer">Set device type</button>`;
-
-  const canStart = !!label && !!entry.device_type;
-  const hintHtml = !entry.device_type
-    ? `<p class="record-drawer__hint">Set a device type above before recording.</p>` : "";
+  const canStart = !!label;
 
   // .btn-label, not .btn-primary -- 2026-07-24: the borrowed
   // tools/raw_capture_server.py button style ("doesn't follow the style
@@ -341,11 +352,12 @@ function recordDrawerBodyHtml(entry) {
   const buttonsHtml = active
     ? `<button class="btn-label btn-label--save" data-action="capture_stop" title="Save this capture now" aria-label="Save this capture now">Save</button>
        <button class="btn-label btn-label--cancel" data-action="capture_cancel" title="Discard without saving" aria-label="Discard without saving">Cancel</button>`
-    // Disabled until a label AND a device type both exist -- 2026-07-24:
-    // clicking Start with no label used to just refocus the field,
-    // confusing enough that it reads better as an unclickable button
-    // (kept in sync live by syncCaptureLabelState(), called on every
-    // keystroke AND every dropdown pick).
+    // Disabled until a label exists (asset class is already guaranteed by
+    // this point -- see the blocking-state early return above) --
+    // 2026-07-24: clicking Start with no label used to just refocus the
+    // field, confusing enough that it reads better as an unclickable
+    // button (kept in sync live by syncCaptureLabelState(), called on
+    // every keystroke AND every dropdown pick).
     : `<button class="btn-label" data-action="capture_start" title="Start capturing" aria-label="Start capturing" ${canStart ? "" : "disabled"}>Start</button>`;
 
   const statusHtml = active
@@ -355,16 +367,12 @@ function recordDrawerBodyHtml(entry) {
       </div>`
     : "";
 
-  return `<div class="record-drawer__header">
-    <span class="record-drawer__title">Record — ${escapeHtml(entry.device_name)}</span>
-    <button type="button" class="record-drawer__close" data-action="record_drawer_close" aria-label="Close">&times;</button>
-  </div>
+  return `${headerHtml}
   <div class="record-drawer__body">
     <div class="record-drawer__device-type-row">
-      <label>Device type</label>
-      <div>${deviceTypeHtml}</div>
+      <label>Asset class</label>
+      <div><span class="record-drawer__device-type">${escapeHtml(entry.device_type)}</span></div>
     </div>
-    ${hintHtml}
     <div class="capture-toolbar__label">
       <label>Label</label>
       <div class="motor-row__capture-label-wrap">
@@ -442,6 +450,25 @@ function openRecordDrawer(nodeId) {
 function closeRecordDrawer() {
   openRecordNodeId = null;
   renderRecordDrawer();
+}
+
+// "Go to Fleet" (recordDrawerBodyHtml()'s blocking state, 2026-07-24 round
+// 8) -- closes the drawer and briefly pulses the row's outline so the
+// operator can actually find it among the rest of the list, then scrolls
+// it into view. Doesn't open the row's asset-class editor itself: this is
+// navigation, not a second edit path into a field whose only editor is
+// that pill (the whole reason the drawer's old inline "Change" control was
+// removed).
+function jumpToFleetForAssetClass(nodeId) {
+  closeRecordDrawer();
+  highlightNodeIds.add(nodeId);
+  renderFleetList(state.lastNodes);
+  const row = document.querySelector(`.motor-row-group[data-node-id="${CSS.escape(nodeId)}"]`);
+  if (row) row.scrollIntoView({ behavior: "smooth", block: "center" });
+  setTimeout(() => {
+    highlightNodeIds.delete(nodeId);
+    renderFleetList(state.lastNodes);
+  }, 1600);
 }
 
 recordDrawerBackdrop.addEventListener("click", closeRecordDrawer);
@@ -529,7 +556,7 @@ async function saveCapture(nodeId, label, count, deviceType) {
     await api("POST", `/nodes/${nodeId}/capture/save`, { label });
     await fetchCaptureLabels();
     const frameText = count != null ? `${count} frame${count === 1 ? "" : "s"}` : "capture";
-    const deviceTypeText = deviceType ? `, device type "${deviceType}"` : "";
+    const deviceTypeText = deviceType ? `, asset class "${deviceType}"` : "";
     showToast(`Saved ${frameText} to "${label}"${deviceTypeText}`);
   } catch (err) {
     console.error(`Save capture on ${nodeId} failed`, err);
@@ -595,11 +622,30 @@ let editingNodeId = null;
 // identity field, edited the same click-to-edit way.
 let editingDeviceTypeNodeId = null;
 
-// Distinct device_type values already assigned across the fleet (GET
-// /device_types), backing the device-type pill's suggestions dropdown --
-// same reasoning as captureLabels below (avoid near-duplicate types
+// Distinct device_type ("asset class") values already assigned across the
+// fleet (GET /device_types), backing the pill's suggestions dropdown --
+// same reasoning as captureLabels below (avoid near-duplicate classes
 // fragmenting the capture/label grouping this field exists for).
 let deviceTypes = [];
+
+// Deterministic pill color per asset-class value, cycling through a fixed
+// categorical palette by string hash -- lets an operator tell classes
+// apart at a glance across the fleet list (e.g. "all the blue pills are
+// conveyor motors") instead of re-reading each pill's text every time.
+const ASSET_CLASS_PALETTE = [
+  "#38bdf8", "#a78bfa", "#fb923c", "#34d399",
+  "#f472b6", "#facc15", "#60a5fa", "#4ade80",
+];
+
+function hashString(str) {
+  let h = 0;
+  for (let i = 0; i < str.length; i++) h = (h * 31 + str.charCodeAt(i)) | 0;
+  return Math.abs(h);
+}
+
+function assetClassColor(value) {
+  return ASSET_CLASS_PALETTE[hashString(value) % ASSET_CLASS_PALETTE.length];
+}
 
 async function fetchDeviceTypes() {
   try {
@@ -613,18 +659,29 @@ async function fetchDeviceTypes() {
 function renderDeviceTypeSuggestions(input) {
   const box = input.parentElement.querySelector('[data-role="device-type-suggestions"]');
   if (!box) return;
-  const query = input.value.trim().toLowerCase();
-  const matches = query
-    ? deviceTypes.filter((t) => t.toLowerCase().includes(query))
+  const query = input.value.trim();
+  const queryLower = query.toLowerCase();
+  const matches = queryLower
+    ? deviceTypes.filter((t) => t.toLowerCase().includes(queryLower))
     : deviceTypes;
-  if (!matches.length) {
+  // Existing classes first (dropdown-first, to steer operators toward
+  // reusing one instead of typing a near-duplicate) -- a pinned "+ Add new
+  // class" row only appears once what's typed doesn't already match one
+  // exactly, so free text is still possible but reuse is the path of
+  // least resistance.
+  const isNewClass = queryLower && !deviceTypes.some((t) => t.toLowerCase() === queryLower);
+  if (!matches.length && !isNewClass) {
     box.hidden = true;
     box.innerHTML = "";
     return;
   }
-  box.innerHTML = matches.map((t) =>
+  const matchesHtml = matches.map((t) =>
     `<button type="button" class="device-type-suggestion" data-value="${escapeHtml(t)}">${escapeHtml(t)}</button>`
   ).join("");
+  const addNewHtml = isNewClass
+    ? `<button type="button" class="device-type-suggestion device-type-suggestion--new" data-value="${escapeHtml(query)}">+ Add new class "${escapeHtml(query)}"</button>`
+    : "";
+  box.innerHTML = matchesHtml + addNewHtml;
   box.hidden = false;
 }
 
@@ -633,11 +690,12 @@ function hideDeviceTypeSuggestions(input) {
   if (box) box.hidden = true;
 }
 
-// Click-to-edit for the device-type pill (motorRowHtml()) -- mirrors
+// Click-to-edit for the asset-class pill (motorRowHtml()) -- mirrors
 // startRename()/commitRename() below exactly, the established pattern for
-// this kind of identity field. If the Record drawer is open for this same
-// node, its "Change"/"Set device type" control jumps here rather than
-// duplicating a second live editor (recordDrawerBodyHtml()'s comment).
+// this kind of identity field. This pill is the ONLY editor for
+// device_type -- the Record drawer only ever links back here
+// (jumpToFleetForAssetClass()) rather than duplicating a second live
+// editor (recordDrawerBodyHtml()'s comment).
 function startDeviceTypeEdit(nodeId) {
   editingDeviceTypeNodeId = nodeId;
   renderFleetList(state.lastNodes);
@@ -662,9 +720,16 @@ function startDeviceTypeEdit(nodeId) {
 // is a real, meaningful value here -- "clear it back to unassigned" -- so
 // this always calls the API, matching the backend's own contract
 // (api/app.py's DeviceTypeBody: empty string clears).
+//
+// Always lowercased before saving -- asset class is the key that groups
+// captures into one training set per Edge Impulse project, so "Conveyor",
+// "conveyor motor", and "Conveyor Motor " being three different values
+// would silently fragment the same machine's data across separate models.
+// Applies regardless of whether the value came from typing or picking an
+// existing suggestion, so it's a no-op for anything already normalized.
 async function commitDeviceType(nodeId, value) {
   editingDeviceTypeNodeId = null;
-  const trimmed = value.trim();
+  const trimmed = value.trim().toLowerCase();
   try {
     await api("POST", `/nodes/${nodeId}/device_type`, { device_type: trimmed });
     await fetchDeviceTypes();
@@ -745,6 +810,12 @@ const openRawIds = new Set();
 const openWaterfallIds = new Set();
 const openScalarsIds = new Set();
 
+// Node IDs whose row should render with a brief pulsing outline right now
+// -- used by the Record drawer's "Go to Fleet" jump (jumpToFleetForAssetClass()
+// below) so the operator can actually find the row it sent them to, not
+// just land back on an unchanged-looking list.
+const highlightNodeIds = new Set();
+
 function motorRowHtml(entry) {
   const bucket = bucketFor(entry);
   const label = statusLabelFor(entry, bucket);
@@ -760,25 +831,44 @@ function motorRowHtml(entry) {
   // icon color when idle, red + pulsing when active.
   const isRecording = !!(entry.capture_progress && entry.capture_progress.state !== "idle");
 
+  // device_name defaults server-side to the raw node_id (registry.py's
+  // add()) until an operator sets a real nickname -- treating "still equal
+  // to node_id" as the unset signal (rather than persisting a separate
+  // blank/set flag) lets the row show an inviting "Add nickname" prompt
+  // instead of a technical ID masquerading as a chosen name. The node_id
+  // itself is always shown too, right below, so the identity is never
+  // ambiguous either way.
+  const hasNickname = entry.device_name !== entry.node_id;
   const nameHtml = isEditing
-    ? `<input class="motor-row__name-input" data-role="name-input" value="${escapeHtml(entry.device_name)}" />`
-    : `<span class="motor-row__name" data-role="name" title="Double-click to rename">${escapeHtml(entry.device_name)}</span>`;
+    ? `<input class="motor-row__name-input" data-role="name-input" placeholder="Add nickname" value="${escapeHtml(hasNickname ? entry.device_name : "")}" />`
+    : `<span class="motor-row__name${hasNickname ? "" : " motor-row__name--unset"}" data-role="name" title="Double-click to ${hasNickname ? "rename" : "add a nickname"}">${hasNickname ? escapeHtml(entry.device_name) : "Add nickname"}</span>`;
+  const identityHtml = `<div class="motor-row__identity">
+      ${nameHtml}
+      <span class="motor-row__node-id" title="Node ID">${escapeHtml(entry.node_id)}</span>
+    </div>`;
 
-  // Each recording belongs to a device type (2026-07-24) -- a pill right
+  // Each recording belongs to an asset class (2026-07-24) -- a pill right
   // next to the device name, same click-to-edit idiom, so it's glanceable
   // fleet-wide (not just at the moment of recording, where the drawer also
-  // shows it).
+  // shows it). Renamed from "device type" in the UI (still `device_type`
+  // in the API/data model -- this is a display-only rename) since "device"
+  // in both field names read as two attributes of the same thing, hiding
+  // that this one is really "what class of machine is this," the field
+  // that decides which trained model applies, not a device property.
+  const assetClassHelpHtml = `<span class="device-type-help" tabindex="0" title="Assets in the same class share one fault detection model" aria-label="What is asset class?">?</span>`;
   const deviceTypePillHtml = isEditingDeviceType
     ? `<div class="device-type-edit-wrap">
         <input type="text" class="device-type-edit-input" data-role="device-type-input" placeholder="e.g. conveyor motor" autocomplete="off" value="${escapeHtml(entry.device_type || "")}" />
         <div class="device-type-suggestions" data-role="device-type-suggestions" hidden></div>
-      </div>`
-    : `<button type="button" class="device-type-pill${entry.device_type ? "" : " device-type-pill--unset"}" data-action="edit_device_type" title="Set device type" aria-label="Set device type">${entry.device_type ? escapeHtml(entry.device_type) : "+ device type"}</button>`;
+      </div>${assetClassHelpHtml}`
+    : entry.device_type
+      ? `<button type="button" class="device-type-pill" style="--accent:${assetClassColor(entry.device_type)}" data-action="edit_device_type" title="Change asset class" aria-label="Change asset class">${escapeHtml(entry.device_type)}</button>${assetClassHelpHtml}`
+      : `<button type="button" class="device-type-pill device-type-pill--unset" data-action="edit_device_type" title="Set asset class" aria-label="Set asset class">Set asset class</button>${assetClassHelpHtml}`;
 
-  const rowHtml = `<div class="motor-row${isExpanded ? " motor-row--expanded" : ""}" title="Click to expand">
+  const rowHtml = `<div class="motor-row${isExpanded ? " motor-row--expanded" : ""}${highlightNodeIds.has(entry.node_id) ? " motor-row--highlight" : ""}" title="Click to expand">
     <div class="motor-row__main">
-      ${nameHtml}
-      ${deviceTypePillHtml}
+      ${identityHtml}
+      <div class="motor-row__device-type-group">${deviceTypePillHtml}</div>
       <span class="motor-row__status">${label}</span>
     </div>
     <div class="motor-row__actions">
@@ -845,12 +935,20 @@ function startRename(nodeId) {
   }
 }
 
+// A blank submit now explicitly reverts to the node_id fallback (the
+// unset state motorRowHtml() renders as "Add nickname") rather than
+// silently keeping whatever was there before -- once the unset state has
+// its own visible meaning, "I cleared the field" has to actually clear it
+// server-side too, or the row would show "Add nickname" while the old
+// nickname was still secretly stored.
 async function commitRename(nodeId, value) {
   editingNodeId = null;
   const trimmed = value.trim();
-  if (trimmed) {
+  const newValue = trimmed || nodeId;
+  const entry = state.lastNodes[nodeId];
+  if (!entry || newValue !== entry.device_name) {
     try {
-      await api("POST", `/nodes/${nodeId}/rename`, { device_name: trimmed });
+      await api("POST", `/nodes/${nodeId}/rename`, { device_name: newValue });
     } catch (err) {
       console.error("Rename failed", err);
       alert(`Rename failed: ${err.message}`);
@@ -997,6 +1095,11 @@ document.getElementById("fleet-list").addEventListener("click", (e) => {
   // plain <input>, not a button[data-action]) would fall all the way
   // through to toggleExpand() instead of focusing it.
   if (e.target.closest(".device-type-edit-wrap")) return;
+  // Same guard for the asset-class (?) tooltip icon -- it's a plain <span>,
+  // not a button[data-action], so without this a click on it would fall
+  // through to toggleExpand() below and collapse/expand the row as an
+  // unwanted side effect of just reading the tooltip.
+  if (e.target.closest(".device-type-help")) return;
   // Plotly's modebar (zoom/pan/autoscale/...), the plots themselves, the
   // waterfall 2D/3D toggle pills, and the three <details> collapsibles all
   // live inside .motor-row__body, still part of this same
@@ -1044,10 +1147,8 @@ recordDrawer.addEventListener("click", (e) => {
       closeRecordDrawer();
       return;
     }
-    if (action === "edit_device_type_from_drawer") {
-      // No second editor inside the drawer -- jump to the row's pill,
-      // the single source of truth (recordDrawerBodyHtml()'s comment).
-      startDeviceTypeEdit(openRecordNodeId);
+    if (action === "jump_to_fleet_asset_class") {
+      jumpToFleetForAssetClass(openRecordNodeId);
       return;
     }
     if (!openRecordNodeId) return;

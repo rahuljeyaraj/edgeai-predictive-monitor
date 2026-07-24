@@ -254,17 +254,42 @@ body {
   border-bottom-right-radius: 0;
 }
 
+/* Brief pulse (jumpToFleetForAssetClass(), 2026-07-24 round 8) -- the
+   Record drawer's "Go to Fleet" button lands the operator back on this
+   row, which otherwise looks unchanged from every other row in the list;
+   this is what actually draws the eye to which one it meant. */
+@keyframes motor-row-highlight-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--color-new) 55%, transparent); }
+  50% { box-shadow: 0 0 0 6px color-mix(in srgb, var(--color-new) 0%, transparent); }
+}
+
+.motor-row--highlight {
+  animation: motor-row-highlight-pulse 0.8s ease-out 2;
+}
+
 .motor-row__main {
   display: grid;
-  /* Third column added 2026-07-24 for the device-type pill, next to the
-     name -- each recording belongs to a device type (docs/
+  /* Third column added 2026-07-24 for the asset-class pill, next to the
+     name -- each recording belongs to an asset class (docs/
      EDGE_IMPULSE_DASHBOARD_WORKFLOW_PLAN.md S1), so it needs to be
      glanceable fleet-wide, not just inside the Record drawer. */
-  grid-template-columns: minmax(0, 160px) minmax(0, 130px) 150px;
+  grid-template-columns: minmax(0, 160px) minmax(0, 165px) 130px;
   align-items: center;
   gap: 8px 18px;
   min-width: 0;
   flex: 1 1 320px;
+}
+
+/* Nickname + node_id (motorRowHtml(), 2026-07-24 round 8) -- stacked so
+   the node_id (the thing that's actually stable/unique, and what the
+   nickname silently defaults to server-side until set) is always visible
+   right below whatever's currently shown as the name, instead of a
+   default nickname being indistinguishable from a real one. */
+.motor-row__identity {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
 }
 
 .motor-row__name {
@@ -284,6 +309,15 @@ body {
   border-bottom-color: #64748b;
 }
 
+/* Unset state ("Add nickname") -- muted + italic so it reads as an
+   invitation to click, not a real chosen name (same "ghost" language as
+   .device-type-pill--unset below). */
+.motor-row__name--unset {
+  color: #64748b;
+  font-style: italic;
+  font-weight: 500;
+}
+
 .motor-row__name-input {
   font: inherit;
   color: #f1f5f9;
@@ -295,7 +329,51 @@ body {
   max-width: 180px;
 }
 
-/* Device-type pill (motorRowHtml(), 2026-07-24) -- same click-to-edit
+.motor-row__node-id {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 11px;
+  color: #64748b;
+  cursor: text;
+  user-select: all;
+}
+
+.motor-row__device-type-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+/* (?) tooltip (motorRowHtml(), 2026-07-24 round 8) -- explains what asset
+   class actually does (groups training data / picks the model) before an
+   operator commits to typing something, using the same native-title
+   tooltip idiom every other affordance in this app already relies on. */
+.device-type-help {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  background-color: #334155;
+  color: #94a3b8;
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 10px;
+  font-weight: 700;
+  cursor: help;
+}
+
+.device-type-help:hover {
+  background-color: #475569;
+  color: #e2e8f0;
+}
+
+/* Asset-class pill (motorRowHtml(), 2026-07-24) -- same click-to-edit
    idiom as the name above, but visually a pill/tag rather than plain text
    since it's a classification label, not an identity name. */
 .device-type-pill {
@@ -321,18 +399,29 @@ body {
   background-color: #475569;
 }
 
-/* Unset state ("+ device type") -- a dashed ghost pill, same "invites a
-   click" affordance as an empty tag-input elsewhere, so it reads as
-   "nothing set yet" rather than a real assigned value. */
+/* Set state -- color-coded per class value (assetClassColor() in app.js)
+   so classes are tellable apart at a glance across the fleet list without
+   re-reading each pill's text every time. :not() here outranks the plain
+   .device-type-pill rule above on specificity, so this wins once --accent
+   is set inline. */
+.device-type-pill:not(.device-type-pill--unset) {
+  background-color: color-mix(in srgb, var(--accent) 20%, #1e293b);
+  color: var(--accent);
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+}
+
+/* Unset state ("Set asset class") -- warning-tinted rather than a neutral
+   ghost pill, since capture can't start at all without this (canStart in
+   app.js) -- it should visibly read as "required," not "optional metadata
+   you haven't gotten to yet." */
 .device-type-pill--unset {
-  background-color: transparent;
-  border: 1px dashed #475569;
-  color: #64748b;
+  background-color: color-mix(in srgb, var(--color-warning) 16%, #1e293b);
+  border: 1px dashed var(--color-warning);
+  color: var(--color-warning);
 }
 
 .device-type-pill--unset:hover {
-  border-color: #64748b;
-  color: #94a3b8;
+  background-color: color-mix(in srgb, var(--color-warning) 26%, #1e293b);
 }
 
 .device-type-edit-wrap {
@@ -392,6 +481,17 @@ body {
 
 .device-type-suggestion:hover {
   background-color: #334155;
+}
+
+/* Pinned "+ Add new class" row (renderDeviceTypeSuggestions(), 2026-07-24
+   round 8) -- only appears once typed text doesn't match an existing
+   class, separated from the reuse-first list above it by a divider so
+   "create new" reads as the deliberate, distinct choice it is. */
+.device-type-suggestion--new {
+  color: var(--color-new);
+  border-top: 1px solid #334155;
+  margin-top: 2px;
+  padding-top: 9px;
 }
 
 .motor-row__status {
@@ -784,7 +884,7 @@ body {
 
 @media (max-width: 640px) {
   .motor-row__main {
-    grid-template-columns: minmax(0, 110px) minmax(0, 90px) 130px;
+    grid-template-columns: minmax(0, 110px) minmax(0, 110px) 110px;
   }
 
   .motor-row__actions {
@@ -1305,21 +1405,21 @@ body {
   color: #e2e8f0;
 }
 
-.record-drawer__device-type-change {
-  font: inherit;
-  font-size: 13px;
-  color: var(--color-warning);
-  background: none;
-  border: none;
-  cursor: pointer;
-  text-decoration: underline;
-  padding: 0;
+/* Blocking state (recordDrawerBodyHtml(), 2026-07-24 round 8) -- replaces
+   the whole capture form when this asset has no class assigned, instead of
+   a small hint line next to a still-clickable-but-disabled form. */
+.record-drawer__block {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 8px 0 4px;
 }
 
-.record-drawer__hint {
+.record-drawer__block-text {
   font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
-  font-size: 13px;
-  color: var(--color-warning);
+  font-size: 14px;
+  line-height: 1.5;
+  color: #cbd5e1;
 }
 
 .record-drawer__actions {
@@ -1555,8 +1655,70 @@ body {
   display: flex;
   align-items: center;
   gap: 10px;
+  flex-wrap: wrap;
 }
 
 .classifier-ei__row + .classifier-ei__row {
   margin-top: 10px;
+}
+
+.classifier-ei__actions {
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid rgba(148, 163, 184, 0.15);
+}
+
+.classifier-ei__type {
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 15px;
+  font-weight: 600;
+  color: #e2e8f0;
+  min-width: 120px;
+}
+
+.classifier-ei__pill {
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 13px;
+  font-weight: 600;
+  color: #94a3b8;
+  background-color: rgba(148, 163, 184, 0.12);
+  border-radius: 999px;
+  padding: 3px 10px;
+}
+
+.classifier-ei__pill--connected {
+  color: var(--color-healthy);
+  background-color: rgba(34, 197, 94, 0.14);
+}
+
+.classifier-ei__connect {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 8px 0 14px;
+  padding: 10px;
+  border-radius: 8px;
+  background-color: rgba(148, 163, 184, 0.06);
+}
+
+.classifier-ei__error {
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 13px;
+  color: var(--color-fault, #f87171);
+  width: 100%;
+}
+
+.classifier-ei__result {
+  margin-top: 12px;
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 13px;
+  color: #cbd5e1;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.classifier-ei__warning {
+  color: #fbbf24;
 }
