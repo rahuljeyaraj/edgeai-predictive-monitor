@@ -20,7 +20,8 @@ import tempfile
 from sensor_frame import FrameSource, SensorFrame
 from registry import Registry, SensorChannel, NodeStatus
 from gate import MotorStateGate
-from capture import CaptureError, CaptureSession, normalize_label, list_labels
+from capture import (CaptureError, CaptureSession, normalize_label, list_labels,
+                      list_captures, rename_capture, delete_capture)
 
 NODE_ID = "node-1"
 DIM = 128  # SensorChannel.MIC's spectral bin count (registry._DIM_BY_CHANNEL)
@@ -286,6 +287,74 @@ def test_save_without_stop_raises(registry, captures_dir):
     print("save() before stop() raises in both idle and capturing states: PASS")
 
 
+def test_list_captures_returns_saved_batches(registry, captures_dir):
+    session = new_session(registry, captures_dir)
+    session.start()
+    for _ in range(3):
+        session.feed_frame(RUNNING)
+    session.stop()
+    path = session.save("list_probe")
+    expected_id = os.path.relpath(path, captures_dir).replace(os.sep, "/")
+
+    entries = [e for e in list_captures(captures_dir) if e["label"] == "list_probe"]
+    assert len(entries) == 1, entries
+    entry = entries[0]
+    assert entry["id"] == expected_id, entry
+    assert entry["node_id"] == NODE_ID, entry
+    assert entry["frame_count"] == 3, entry
+    print("list_captures() surfaces a saved batch's id/node/label/frame_count: PASS")
+
+
+def test_rename_capture_moves_label_bucket(registry, captures_dir):
+    session = new_session(registry, captures_dir)
+    session.start()
+    session.feed_frame(RUNNING)
+    session.stop()
+    path = session.save("rename_probe_before")
+    old_id = os.path.relpath(path, captures_dir).replace(os.sep, "/")
+
+    new_id = rename_capture(captures_dir, old_id, "Rename Probe After")
+    assert new_id.startswith("rename_probe_after/"), new_id
+    assert not os.path.exists(path), "old file should be gone after rename"
+
+    with open(os.path.join(captures_dir, new_id)) as f:
+        payload = json.load(f)
+    assert payload["label"] == "rename_probe_after", payload
+
+    entries = {e["id"]: e for e in list_captures(captures_dir)}
+    assert new_id in entries, entries
+    assert old_id not in entries, entries
+    print("rename_capture() moves a saved batch into a new label directory: PASS")
+
+
+def test_delete_capture_removes_file(registry, captures_dir):
+    session = new_session(registry, captures_dir)
+    session.start()
+    session.feed_frame(RUNNING)
+    session.stop()
+    path = session.save("delete_probe")
+    capture_id = os.path.relpath(path, captures_dir).replace(os.sep, "/")
+    assert os.path.exists(path)
+
+    delete_capture(captures_dir, capture_id)
+    assert not os.path.exists(path)
+    assert capture_id not in {e["id"] for e in list_captures(captures_dir)}
+    print("delete_capture() removes the saved file: PASS")
+
+
+def test_capture_id_path_traversal_rejected(registry, captures_dir):
+    # capture_id is dashboard/REST-supplied -- same concern normalize_label()
+    # guards for save()'s label, but here the whole "label/filename" pair is
+    # untrusted input turned back into a filesystem path.
+    for bad_id in ("../../../etc/passwd", "healthy/../../../etc/passwd", "healthy/nonexistent.json"):
+        try:
+            delete_capture(captures_dir, bad_id)
+            assert False, f"expected CaptureError for id {bad_id!r}"
+        except CaptureError:
+            pass
+    print("delete_capture()/rename_capture() reject ids that escape captures_dir: PASS")
+
+
 def main():
     test_normalize_label()
 
@@ -308,6 +377,10 @@ def main():
     test_double_start_raises(registry, captures_dir)
     test_frames_for_other_node_ignored(registry, captures_dir)
     test_save_without_stop_raises(registry, captures_dir)
+    test_list_captures_returns_saved_batches(registry, captures_dir)
+    test_rename_capture_moves_label_bucket(registry, captures_dir)
+    test_delete_capture_removes_file(registry, captures_dir)
+    test_capture_id_path_traversal_rejected(registry, captures_dir)
 
     print("RESULT: PASS - capture collects gated running data, saves labeled batches, "
           "is reusable across cycles, and never touches NodeStatus")

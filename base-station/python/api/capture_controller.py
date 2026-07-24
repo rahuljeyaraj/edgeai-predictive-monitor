@@ -9,7 +9,8 @@ from typing import Callable, Dict, List, Optional, Tuple
 
 from registry import NodeNotFoundError, Registry
 from gate import MotorStateGate
-from capture import CaptureError, CaptureSession, list_labels
+from capture import (CaptureError, CaptureSession, list_labels, list_captures,
+                      rename_capture, delete_capture)
 
 
 class CaptureController:
@@ -113,3 +114,12 @@ class CaptureController:
 
     def list_labels(self) -> List[str]:
         return list_labels(self._captures_dir)
+
+    def list_captures(self) -> List[dict]:
+        return list_captures(self._captures_dir)
+
+    def rename_capture(self, capture_id: str, new_label: str) -> str:
+        return rename_capture(self._captures_dir, capture_id, new_label)
+
+    def delete_capture(self, capture_id: str) -> None:
+        delete_capture(self._captures_dir, capture_id)

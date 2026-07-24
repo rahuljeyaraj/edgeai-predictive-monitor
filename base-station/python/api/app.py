@@ -98,6 +98,15 @@ class CaptureSaveBody(BaseModel):
     label: str
 
 
+class CaptureRenameBody(BaseModel):
+    id: str
+    label: str
+
+
+class CaptureDeleteBody(BaseModel):
+    ids: List[str]
+
+
 class TelegramPrefsBody(BaseModel):
     # Whole-object PUT, not a partial PATCH: the frontend always has the
     # subscriber's current prefs from GET /alerts/telegram/subscribers
@@ -524,6 +533,32 @@ def create_app(registry: Registry, history_store: HistoryStore,
     @app.get("/captures/labels")
     def get_capture_labels():
         return {"labels": app.state.capture.list_labels()}
+
+    @app.get("/captures")
+    def get_captures():
+        # Classifier tab's sample table (docs/EDGE_IMPULSE_DASHBOARD_WORKFLOW_PLAN.md
+        # S3) -- every saved batch across every node/label, not scoped to
+        # one node the way the /nodes/{node_id}/capture/* routes above are.
+        return {"captures": app.state.capture.list_captures()}
+
+    @app.post("/captures/rename")
+    def rename_capture_route(body: CaptureRenameBody):
+        try:
+            new_id = app.state.capture.rename_capture(body.id, body.label)
+        except CaptureError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        return {"id": new_id}
+
+    @app.post("/captures/delete")
+    def delete_captures_route(body: CaptureDeleteBody):
+        deleted = 0
+        for capture_id in body.ids:
+            try:
+                app.state.capture.delete_capture(capture_id)
+                deleted += 1
+            except CaptureError:
+                pass  # already gone / bad id -- deleting a selection is best-effort
+        return {"deleted": deleted}
 
     @app.get("/device_types")
     def get_device_types():

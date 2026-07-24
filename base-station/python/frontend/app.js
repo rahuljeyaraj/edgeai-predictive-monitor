@@ -1136,6 +1136,10 @@ document.querySelector(".topbar__nav").addEventListener("click", (e) => {
   document.querySelectorAll(".tab-panel").forEach((panel) => {
     panel.hidden = panel.dataset.tabPanel !== tab;
   });
+  // Classifier's sample list isn't fed by the shared WS/poll loop (it only
+  // changes via its own mutations, or a Record save on the Fleet tab), so
+  // refetch on every switch into the tab rather than risk a stale table.
+  if (tab === "classifier") Classifier.refresh();
 });
 
 // ---------------------------------------------------------------------
@@ -1272,6 +1276,7 @@ Charts.init((msg) => {
 
 Perf.init();
 Alerts.init();
+Classifier.init();
 pollNodes();
 fetchCaptureLabels();
 fetchDeviceTypes();

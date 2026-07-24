@@ -483,6 +483,60 @@ def test_decommission_discards_capture_session(tmp_dir):
         api.stop()
 
 
+def test_captures_list_rename_delete(tmp_dir):
+    # Classifier tab's sample table (docs/EDGE_IMPULSE_DASHBOARD_WORKFLOW_PLAN.md
+    # S3): GET /captures lists every saved batch, POST /captures/rename
+    # moves one into a new label bucket, POST /captures/delete removes a
+    # selection -- all fleet-wide, not scoped under /nodes/{node_id}.
+    api = ApiUnderTest(tmp_dir)
+    try:
+        status, _ = api.request("POST", f"/nodes/{NODE_ID}/capture/start")
+        assert status == 200
+        api.capture.feed_frame(frame(NODE_ID))
+        status, _ = api.request("POST", f"/nodes/{NODE_ID}/capture/stop")
+        assert status == 200
+        status, _ = api.request("POST", f"/nodes/{NODE_ID}/capture/save", {"label": "bearing_fault"})
+        assert status == 200
+
+        status, body = api.request("GET", "/captures")
+        assert status == 200 and len(body["captures"]) == 1, (status, body)
+        entry = body["captures"][0]
+        assert entry["label"] == "bearing_fault", entry
+        assert entry["node_id"] == NODE_ID, entry
+        assert entry["frame_count"] == 1, entry
+        capture_id = entry["id"]
+
+        status, body = api.request("POST", "/captures/rename", {"id": capture_id, "label": "Loose Mount"})
+        assert status == 200, (status, body)
+        new_id = body["id"]
+        assert new_id.startswith("loose_mount/"), body
+
+        status, body = api.request("GET", "/captures")
+        assert status == 200 and len(body["captures"]) == 1, (status, body)
+        assert body["captures"][0]["id"] == new_id, body
+        assert body["captures"][0]["label"] == "loose_mount", body
+
+        status, body = api.request("POST", "/captures/delete", {"ids": [new_id]})
+        assert status == 200 and body["deleted"] == 1, (status, body)
+
+        status, body = api.request("GET", "/captures")
+        assert status == 200 and body["captures"] == [], (status, body)
+        print("GET/POST /captures list/rename/delete saved batches: PASS")
+    finally:
+        api.stop()
+
+
+def test_captures_rename_unknown_id_is_400(tmp_dir):
+    api = ApiUnderTest(tmp_dir)
+    try:
+        status, body = api.request("POST", "/captures/rename",
+                                    {"id": "healthy/does-not-exist.json", "label": "x"})
+        assert status == 400, (status, body)
+        print("POST /captures/rename for an unknown id returns 400: PASS")
+    finally:
+        api.stop()
+
+
 def test_history_endpoint_returns_recorded_scores(tmp_dir):
     api = ApiUnderTest(tmp_dir)
     try:
@@ -613,6 +667,8 @@ def main():
     test_capture_cancel_discards_batch(tempfile.mkdtemp(dir=tmp_dir))
     test_capture_start_unknown_node_is_404(tempfile.mkdtemp(dir=tmp_dir))
     test_decommission_discards_capture_session(tempfile.mkdtemp(dir=tmp_dir))
+    test_captures_list_rename_delete(tempfile.mkdtemp(dir=tmp_dir))
+    test_captures_rename_unknown_id_is_400(tempfile.mkdtemp(dir=tmp_dir))
     test_history_endpoint_returns_recorded_scores(tempfile.mkdtemp(dir=tmp_dir))
     test_websocket_broadcast_reaches_connected_client(tempfile.mkdtemp(dir=tmp_dir))
     test_telegram_status_reports_not_configured_by_default(tempfile.mkdtemp(dir=tmp_dir))

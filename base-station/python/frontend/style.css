@@ -1437,3 +1437,126 @@ body {
 .toast__close:hover {
   opacity: 1;
 }
+
+/* ---------------------------------------------------------------------
+   Classifier tab (docs/EDGE_IMPULSE_DASHBOARD_WORKFLOW_PLAN.md S3) --
+   recorded-sample table (reuses .perf-card/.perf-empty/.perf-chart__caption
+   from the perf/alerts pages for the panel chrome) + a placeholder Edge
+   Impulse card below it.
+   --------------------------------------------------------------------- */
+
+.classifier-page {
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.classifier-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.classifier-toolbar__all {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 14px;
+  color: #94a3b8;
+  cursor: pointer;
+}
+
+.classifier-toolbar__count {
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 14px;
+  color: #64748b;
+  flex: 1 1 auto;
+}
+
+.classifier-table-card {
+  padding: 16px;
+}
+
+.classifier-table__wrap {
+  overflow-x: auto;
+}
+
+.classifier-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 14px;
+}
+
+.classifier-table th {
+  text-align: left;
+  padding: 8px 10px;
+  color: #64748b;
+  font-weight: 600;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  border-bottom: 1px solid #334155;
+  white-space: nowrap;
+}
+
+.classifier-table td {
+  padding: 10px;
+  color: #e2e8f0;
+  border-bottom: 1px solid #1e293b;
+  white-space: nowrap;
+}
+
+.classifier-table__row:hover {
+  background-color: #1e293b;
+}
+
+.classifier-table__muted {
+  color: #64748b;
+}
+
+.classifier-table__actions {
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+}
+
+.classifier-table__rename {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.classifier-table__rename-input {
+  font: inherit;
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 14px;
+  color: #e2e8f0;
+  background-color: #0f172a;
+  border: 1px solid #334155;
+  border-radius: 6px;
+  padding: 6px 9px;
+  min-width: 160px;
+}
+
+.classifier-table__rename-input:disabled {
+  opacity: 0.6;
+}
+
+.classifier-table__rename-input:-webkit-autofill {
+  -webkit-box-shadow: 0 0 0 1000px #0f172a inset;
+  -webkit-text-fill-color: #e2e8f0;
+  caret-color: #e2e8f0;
+}
+
+.classifier-ei__row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.classifier-ei__row + .classifier-ei__row {
+  margin-top: 10px;
+}

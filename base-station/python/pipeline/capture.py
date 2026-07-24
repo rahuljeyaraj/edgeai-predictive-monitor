@@ -63,6 +63,82 @@ def list_labels(captures_dir: str) -> List[str]:
                   if os.path.isdir(os.path.join(captures_dir, name)))
 
 
+def list_captures(captures_dir: str) -> List[dict]:
+    """Every saved batch across every label, newest first, for the
+    dashboard's Classifier tab (docs/EDGE_IMPULSE_DASHBOARD_WORKFLOW_PLAN.md
+    S3). `id` is the `<label>/<filename>` pair save() produces -- the same
+    string rename_capture()/delete_capture() below take back in, so the
+    frontend never needs to construct or parse a path itself. Mirrors
+    save()'s payload shape minus the vectors themselves (`frame_count`
+    stands in -- the table doesn't need hundreds of raw floats per row).
+    Skips any file that fails to parse rather than raising, since one
+    corrupt/partial save shouldn't block the whole list from rendering."""
+    if not os.path.isdir(captures_dir):
+        return []
+    entries: List[dict] = []
+    for label in os.listdir(captures_dir):
+        label_dir = os.path.join(captures_dir, label)
+        if not os.path.isdir(label_dir):
+            continue
+        for filename in os.listdir(label_dir):
+            if not filename.endswith(".json"):
+                continue
+            try:
+                with open(os.path.join(label_dir, filename)) as f:
+                    payload = json.load(f)
+            except (OSError, json.JSONDecodeError):
+                continue
+            entries.append({
+                "id": f"{label}/{filename}",
+                "node_id": payload.get("node_id"),
+                "device_type": payload.get("device_type"),
+                "label": payload.get("label", label),
+                "timestamp": payload.get("timestamp"),
+                "frame_count": len(payload.get("vectors", [])),
+            })
+    entries.sort(key=lambda e: e["timestamp"] or 0, reverse=True)
+    return entries
+
+
+def _resolve_capture_path(captures_dir: str, capture_id: str) -> str:
+    """Turns a dashboard-supplied `<label>/<filename>` id back into a real
+    on-disk path, same path-traversal concern normalize_label() guards for
+    save() -- but here the whole id, not just a label, is REST input, so
+    the check is a containment check against captures_dir instead."""
+    captures_root = os.path.realpath(captures_dir)
+    path = os.path.realpath(os.path.join(captures_dir, capture_id))
+    if not (path == captures_root or path.startswith(captures_root + os.sep)) \
+            or not os.path.isfile(path):
+        raise CaptureError(f"unknown capture id {capture_id!r}")
+    return path
+
+
+def delete_capture(captures_dir: str, capture_id: str) -> None:
+    os.remove(_resolve_capture_path(captures_dir, capture_id))
+
+
+def rename_capture(captures_dir: str, capture_id: str, new_label: str) -> str:
+    """Moves a saved batch into a different label bucket and returns its
+    new id -- same directory-per-label convention save() uses, so a
+    renamed capture is indistinguishable from one originally saved under
+    the new label."""
+    path = _resolve_capture_path(captures_dir, capture_id)
+    safe_label = normalize_label(new_label)
+    with open(path) as f:
+        payload = json.load(f)
+    payload["label"] = safe_label
+
+    new_dir = os.path.join(captures_dir, safe_label)
+    os.makedirs(new_dir, exist_ok=True)
+    filename = os.path.basename(path)
+    new_path = os.path.join(new_dir, filename)
+    with open(new_path, "w") as f:
+        json.dump(payload, f)
+    if os.path.realpath(new_path) != os.path.realpath(path):
+        os.remove(path)
+    return f"{safe_label}/{filename}"
+
+
 class CaptureSession:
     """One capture session per node, reused across repeated
     start/stop/save cycles over that node's lifetime."""
