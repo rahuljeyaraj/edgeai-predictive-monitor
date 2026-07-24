@@ -7,6 +7,7 @@
 #include <freertos/task.h>
 
 #include "app_config.h"
+#include "dsp/scalar_stats.h"
 #include "hal/hal_accel.h"
 #include "threads/accel_sampler_task.h"
 
@@ -14,15 +15,20 @@
  * Continuous SPI capture + FFT task - the Arduino/FreeRTOS port of
  * mcu/src/threads/accel_sampler_thread.c. Same structural shape: read the
  * KX134's hardware FIFO in chunks (it's much smaller than one FFT window,
- * so multiple reads accumulate one window), FFT each axis independently,
- * sum bin-by-bin into one combined magnitude spectrum.
+ * so multiple reads accumulate one window), FFT each axis independently.
  *
- * Three axes, summed (not max-picked, not single-axis): carried over
- * unchanged from mcu/'s accel_sampler_thread.c - see that file's header
- * comment for the vibration-directionality/fault-signature reasoning
- * (a signal-processing decision, not MCU-specific, so it applies here
- * identically). Do not "simplify" this back to single-axis without
- * re-confirming that decision.
+ * Each axis is published on its own (accel_x/y/z, registry.SensorChannel
+ * members) rather than summed into one combined magnitude spectrum -
+ * base-station/sketch/fuser.cpp's own migration away from a combined
+ * `accel` channel found that summing x/y/z erases the directional
+ * signature an imbalance fault produces (+1.8 sigma combined vs. +38.5
+ * sigma per-axis on real captures, tools/offline_experiment.py). This
+ * satellite firmware had drifted behind that change (last synced when the
+ * base station still summed axes) - per-axis is now the only shape the
+ * base station's ingestion (pipeline/features.py's build_feature_vector())
+ * accepts. Each axis's own raw window also feeds compute_scalars()
+ * (dsp/scalar_stats.h) for the model's scalar tail - fuser_task.cpp reads
+ * both the spectrum and the scalars out of the queue below.
  */
 
 #define ACCEL_SAMPLER_TASK_STACK_WORDS 6144
@@ -40,8 +46,6 @@
 #define ACCEL_SAMPLER_READ_CHUNK_FRAMES 64
 
 #define ACCEL_SAMPLER_MAX_RECOVERY_ATTEMPTS 5
-
-#define ACCEL_FFT_LEN (ACCEL_FFT_BIN_COUNT * 2)
 
 QueueHandle_t accel_spectrum_queue;
 
@@ -61,7 +65,9 @@ static ArduinoFFT<float> accel_fft;
  * pointers are bound once (accel_sampler_task_start()) and reused for
  * every call - calling setArrays() per-call would re-allocate its
  * internal windowing-factor scratch buffer on every FFT, needless heap
- * churn on a long-running embedded task. */
+ * churn on a long-running embedded task. `window` is left untouched
+ * (fft_real is a scratch copy), since compute_scalars() below still
+ * needs the original raw window after this returns. */
 static void accel_fft_magnitude(const float *window, float *out_mag)
 {
 	memcpy(fft_real, window, ACCEL_FFT_LEN * sizeof(float));
@@ -74,6 +80,13 @@ static void accel_fft_magnitude(const float *window, float *out_mag)
 	memcpy(out_mag, &fft_real[1], ACCEL_FFT_BIN_COUNT * sizeof(float));
 }
 
+static void accel_axis_process(const float *window, struct accel_axis_result *out)
+{
+	accel_fft_magnitude(window, out->mag);
+	compute_scalars(window, ACCEL_FFT_LEN, &out->rms, &out->kurtosis, &out->std, &out->peak,
+			&out->crest_factor, &out->skewness);
+}
+
 static void accel_sampler_task_entry(void *arg)
 {
 	(void)arg;
@@ -82,10 +95,7 @@ static void accel_sampler_task_entry(void *arg)
 	static float accel_window_x[ACCEL_FFT_LEN];
 	static float accel_window_y[ACCEL_FFT_LEN];
 	static float accel_window_z[ACCEL_FFT_LEN];
-	static float accel_mag_x[ACCEL_FFT_BIN_COUNT];
-	static float accel_mag_y[ACCEL_FFT_BIN_COUNT];
-	static float accel_mag_z[ACCEL_FFT_BIN_COUNT];
-	static float accel_mag_combined[ACCEL_FFT_BIN_COUNT];
+	static struct accel_sample sample;
 	size_t frames_accumulated = 0;
 	uint32_t consecutive_failures = 0;
 
@@ -118,15 +128,11 @@ static void accel_sampler_task_entry(void *arg)
 			continue;
 		}
 
-		accel_fft_magnitude(accel_window_x, accel_mag_x);
-		accel_fft_magnitude(accel_window_y, accel_mag_y);
-		accel_fft_magnitude(accel_window_z, accel_mag_z);
+		accel_axis_process(accel_window_x, &sample.x);
+		accel_axis_process(accel_window_y, &sample.y);
+		accel_axis_process(accel_window_z, &sample.z);
 
-		for (size_t i = 0; i < ACCEL_FFT_BIN_COUNT; i++) {
-			accel_mag_combined[i] = accel_mag_x[i] + accel_mag_y[i] + accel_mag_z[i];
-		}
-
-		xQueueOverwrite(accel_spectrum_queue, accel_mag_combined);
+		xQueueOverwrite(accel_spectrum_queue, &sample);
 
 		frames_accumulated = 0;
 	}
@@ -139,7 +145,7 @@ int accel_sampler_task_start(void)
 		return 0;
 	}
 
-	accel_spectrum_queue = xQueueCreate(1, ACCEL_FFT_BIN_COUNT * sizeof(float));
+	accel_spectrum_queue = xQueueCreate(1, sizeof(struct accel_sample));
 	if (accel_spectrum_queue == NULL) {
 		return -ENOMEM;
 	}

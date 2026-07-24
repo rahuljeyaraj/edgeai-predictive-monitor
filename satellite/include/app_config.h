@@ -41,20 +41,27 @@
 #define MIC_SENSOR_ENABLED   1
 #define ACCEL_SENSOR_ENABLED 1
 
-/* FFT bin counts (unique bins, excl. 0Hz) - both fixed at 512 to match
- * mpu/registry/registry.py's INPUT_DIM_BY_CHANNEL (512 for both MIC and
- * ACCEL, S4.2 "drives 512 vs 1024 model dim"). This fixes the FFT window
- * size (FFT_LEN = bin_count * 2, both channels), which in turn fixes the
- * fft_size field in the outgoing SPECTRUM message's
- * spectrum_fused_payload_header (frame_codec/spectrum_codec.h) - the
- * receiver (mpu/common/wire_protocol.py's decode_spectrum_fused_payload())
- * reads fft_size straight off the wire rather than hardcoding it, but
- * mpu/registry/registry.py's fixed per-channel model input dimension
- * still requires bin_count to equal 512 here. Every bin is sent, dense -
- * see spectrum_build_fused_payload(), there's no peak-selection/
- * truncation step anymore. */
+/* FFT bin counts (unique bins, excl. 0Hz) - the native FFT resolution used
+ * for both the on-device spectrum and the scalar tile's time-domain window
+ * (FFT_LEN = bin_count * 2, both channels). This does NOT have to match
+ * MODEL_SPECTRUM_BINS below or any fixed model dimension -
+ * base-station/python/pipeline/manager.py's _infer_sensor_config_and_dim()
+ * commits a node's input_dim from whatever bin count its own first frame
+ * reports, so a satellite node's wire bin count is free to differ from the
+ * base station's own. Kept dense at 512 here (rather than lowered to
+ * MODEL_SPECTRUM_BINS directly) so the time-domain window feeding
+ * compute_scalars() stays reasonably long. */
 #define MIC_FFT_BIN_COUNT   512
 #define ACCEL_FFT_BIN_COUNT 512
+
+/* Per-channel bin count actually put on the wire (fuser_task.cpp
+ * average-pools each MIC_FFT_BIN_COUNT/ACCEL_FFT_BIN_COUNT spectrum down to
+ * this many buckets before encoding) - mirrors base-station/sketch/
+ * app_config.h's FUSER_MODEL_SPECTRUM_BINS and
+ * python/tools/satellite_node_sim.py's DEFAULT_BIN_COUNT, keeping a real
+ * node's per-frame payload size (and therefore MQTT bandwidth) the same
+ * order of magnitude as the rest of the fleet. */
+#define MODEL_SPECTRUM_BINS 128
 
 /* Fuser epoch: how often the fuser task drains both sensors' latest FFT
  * result and publishes one fused SPECTRUM MQTT message - the WiFi/MQTT

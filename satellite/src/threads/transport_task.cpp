@@ -34,16 +34,17 @@
  * this->buffer before writing it to the socket (PubSubClient.cpp), so this
  * must be >= the largest telemetry frame threads/fuser_task.cpp can produce
  * (frame_codec/spectrum_codec.h's section-list frame: num_sections byte +
- * one SPECTRUM section per channel, each section a 5-byte header + fs/
- * fft_size/bin_count preamble + its dense float32 bins) - at
- * MIC_FFT_BIN_COUNT=ACCEL_FFT_BIN_COUNT=512 (app_config.h) that's ~4.1KB, an
- * order of magnitude smaller than the JSON envelope an early revision of
- * this firmware used to send (~31.8KB at the same bin count). setBufferSize()
- * takes a uint16_t (max 65535) - this expression stays comfortably under
- * that even at much larger bin counts than today's. */
+ * one SPECTRUM section per channel (mic, accel_x, accel_y, accel_z, each
+ * pooled to MODEL_SPECTRUM_BINS bins) + one SCALAR_SET section of up to 24
+ * rms/kurtosis/std/peak/crest_factor/skewness entries) - worst case (all
+ * sensors enabled) that's under 3KB at MODEL_SPECTRUM_BINS=128
+ * (app_config.h), an order of magnitude smaller than the JSON envelope an
+ * early revision of this firmware used to send (~31.8KB at a comparable bin
+ * count). setBufferSize() takes a uint16_t (max 65535) - this expression
+ * stays comfortably under that even at much larger bin counts than today's. */
 #define MQTT_BUFFER_SIZE                                                                         \
-	(1 + 2 * SPECTRUM_SECTION_OVERHEAD + (MIC_FFT_BIN_COUNT * sizeof(float)) +                \
-	 (ACCEL_FFT_BIN_COUNT * sizeof(float)))
+	(1 + 4 * (SPECTRUM_SECTION_OVERHEAD + MODEL_SPECTRUM_BINS * sizeof(float)) +              \
+	 SCALAR_SECTION_OVERHEAD + 24 * SCALAR_ENTRY_SIZE)
 
 static WiFiClient wifi_client;
 static PubSubClient mqtt_client(wifi_client);

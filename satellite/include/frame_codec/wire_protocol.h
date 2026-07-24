@@ -43,7 +43,7 @@ struct display_rgb_payload {
 
 /* Writes [TYPE: 1B][payload[0..payload_len)] into out_buf. Returns the
  * total length written (1 + payload_len), or 0 if out_buf_size is too
- * small - mirrors spectrum_codec.h's telemetry_build_spectrum_frame()'s
+ * small - mirrors spectrum_codec.h's telemetry_build_frame()'s
  * "0 means didn't fit" convention. */
 size_t mqtt_encode_message(enum mqtt_msg_type type, const uint8_t *payload, size_t payload_len,
 			    uint8_t *out_buf, size_t out_buf_size);

@@ -23,14 +23,20 @@ the base station's own SPI link sends
 ([`base-station/telemetry_schema.json`](../base-station/telemetry_schema.json),
 [docs/SENSOR_TELEMETRY_FRAME_PLAN.md](../docs/SENSOR_TELEMETRY_FRAME_PLAN.md)
 S3/S6): `[num_sections u8]` then, per channel, a
-`[source_id][channel_id][data_kind][section_len]` header followed by a
-SPECTRUM body (`fs`/`fft_size`/`bin_count`/dense float32 bins). Published as
-the raw MQTT message body with **no extra envelope** — MQTT already frames
-and delivers each message, so a second TYPE byte would be redundant. This
-node only ever emits SPECTRUM sections for `mic`/`accel`
-(`frame_codec/spectrum_codec.h`, `struct spectrum_channel` +
-`telemetry_build_spectrum_frame()`) — no per-axis/scalar/time-series
-sections. Wire constants (`TELEM_SOURCE_SATELLITE`, `TELEM_CHANNEL_MIC`, …)
+`[source_id][channel_id][data_kind][section_len]` header followed by either
+a SPECTRUM body (`fs`/`fft_size`/`bin_count`/dense float32 bins) or, for one
+trailing SCALAR_SET section, a `count`/id-array/value-array body. Published
+as the raw MQTT message body with **no extra envelope** — MQTT already
+frames and delivers each message, so a second TYPE byte would be redundant.
+This node emits one SPECTRUM section per enabled per-axis channel (`mic`,
+`accel_x`, `accel_y`, `accel_z` — the combined `accel` channel was retired
+once the base station's own model moved to per-axis, see
+`pipeline/features.py`) plus one SCALAR_SET section carrying that same
+channel set's `rms`/`kurtosis`/`std`/`peak`/`crest_factor`/`skewness` tiles
+(`frame_codec/spectrum_codec.h`, `struct spectrum_channel`/`struct
+scalar_entry` + `telemetry_build_frame()`) — `pipeline/features.py`'s
+`build_feature_vector()` rejects a frame outright if any live channel is
+missing its full 6-scalar tile. Wire constants (`TELEM_SOURCE_SATELLITE`, `TELEM_CHANNEL_MIC`, …)
 live in `include/frame_codec/telemetry_schema.h`, generated (not hand-edited)
 by
 [`python/tools/gen_telemetry_schema.py`](../base-station/python/tools/gen_telemetry_schema.py)
@@ -50,9 +56,11 @@ and
 [`python/ingestion/mqtt_subscriber.py`](../base-station/python/ingestion/mqtt_subscriber.py)
 field-for-field, so a real node and the simulator are interchangeable from
 the dashboard's point of view. FFT window sizes (1024 per channel → 512
-bins, matching
-[`python/registry/registry.py`](../base-station/python/registry/registry.py)'s
-per-channel input dim) and the publish cadence (200ms) are set in
+native bins, pooled to `MODEL_SPECTRUM_BINS` = 128 for the wire — a node's
+actual per-channel bin count is committed dynamically from its first frame
+by
+[`python/pipeline/manager.py`](../base-station/python/pipeline/manager.py),
+not a fixed global table) and the publish cadence (200ms) are set in
 `include/app_config.h`.
 
 ## Hardware / wiring

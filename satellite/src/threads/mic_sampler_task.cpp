@@ -7,20 +7,23 @@
 #include <freertos/task.h>
 
 #include "app_config.h"
+#include "dsp/scalar_stats.h"
 #include "hal/hal_audio.h"
 #include "threads/mic_sampler_task.h"
 
 /*
  * Continuous I2S capture + FFT task - the Arduino/FreeRTOS port of
  * mcu/src/threads/mic_sampler_thread.c. Single channel, no axis-summing
- * (that's accel-specific - see accel_sampler_task.cpp).
+ * (that's accel-specific - see accel_sampler_task.cpp). Also computes the
+ * mic's own scalar tile (compute_scalars(), dsp/scalar_stats.h) on the same
+ * raw window - model input alongside the spectrum, matching
+ * base-station/sketch/fuser.cpp and pipeline/features.py's per-channel
+ * scalar design.
  */
 
 #define MIC_SAMPLER_TASK_STACK_WORDS 6144
 #define MIC_SAMPLER_TASK_PRIORITY    5
 #define MIC_SAMPLER_MAX_RECOVERY_ATTEMPTS 5
-
-#define MIC_FFT_LEN (MIC_FFT_BIN_COUNT * 2)
 
 static_assert(MIC_FFT_LEN == AUDIO_BLOCK_SAMPLES,
 	      "MIC_FFT_LEN must equal AUDIO_BLOCK_SAMPLES (hal/hal_audio.h) - the FFT window "
@@ -53,7 +56,7 @@ static void mic_sampler_task_entry(void *arg)
 
 	static int32_t block[AUDIO_BLOCK_SAMPLES];
 	static float mic_window[MIC_FFT_LEN];
-	static float mic_mag[MIC_FFT_BIN_COUNT];
+	static struct mic_sample sample;
 	uint32_t consecutive_failures = 0;
 
 	while (1) {
@@ -78,8 +81,10 @@ static void mic_sampler_task_entry(void *arg)
 			mic_window[i] = (float)block[i];
 		}
 
-		mic_fft_magnitude(mic_window, mic_mag);
-		xQueueOverwrite(mic_spectrum_queue, mic_mag);
+		mic_fft_magnitude(mic_window, sample.mag);
+		compute_scalars(mic_window, MIC_FFT_LEN, &sample.rms, &sample.kurtosis, &sample.std,
+				&sample.peak, &sample.crest_factor, &sample.skewness);
+		xQueueOverwrite(mic_spectrum_queue, &sample);
 	}
 }
 
@@ -90,7 +95,7 @@ int mic_sampler_task_start(void)
 		return 0;
 	}
 
-	mic_spectrum_queue = xQueueCreate(1, MIC_FFT_BIN_COUNT * sizeof(float));
+	mic_spectrum_queue = xQueueCreate(1, sizeof(struct mic_sample));
 	if (mic_spectrum_queue == NULL) {
 		return -ENOMEM;
 	}
