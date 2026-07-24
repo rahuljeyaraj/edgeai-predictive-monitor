@@ -874,6 +874,18 @@ let skipNextBlurCommit = false;
 // Same idea, for the device-type pill's edit mode.
 let skipNextDeviceTypeBlurCommit = false;
 
+// A mousedown on a suggestion button shifts focus off the input as its
+// default action, firing blur/focusout (and thus a stale commit of
+// whatever was typed) BEFORE the button's own click handler ever runs --
+// same ordering the Escape branch below already works around. Set the
+// skip flag here, ahead of that default action, so the real commit is
+// left to the click handler's explicit commitDeviceType() call instead.
+document.getElementById("fleet-list").addEventListener("mousedown", (e) => {
+  if (e.target.closest(".device-type-suggestion")) {
+    skipNextDeviceTypeBlurCommit = true;
+  }
+});
+
 document.getElementById("fleet-list").addEventListener("keydown", (e) => {
   const deviceTypeInput = e.target.closest('[data-role="device-type-input"]');
   if (deviceTypeInput) {
@@ -971,11 +983,12 @@ document.getElementById("fleet-list").addEventListener("click", (e) => {
   if (e.target.closest('[data-role="name"]')) return;
   const suggestion = e.target.closest(".device-type-suggestion");
   if (suggestion) {
-    const input = suggestion.closest(".device-type-edit-wrap")
-      .querySelector('[data-role="device-type-input"]');
-    input.value = suggestion.dataset.value;
-    hideDeviceTypeSuggestions(input);
-    input.focus();
+    // Commit directly rather than writing suggestion.dataset.value into
+    // the input and relying on a later blur to commit it -- the mousedown
+    // above already suppressed the premature blur-commit, but nothing
+    // else would ever fire a real commit for the picked value otherwise.
+    const nodeId = suggestion.closest(".motor-row-group").dataset.nodeId;
+    commitDeviceType(nodeId, suggestion.dataset.value);
     return;
   }
   // The device-type pill's edit form (input + suggestions) -- same "don't
