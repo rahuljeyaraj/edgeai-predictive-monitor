@@ -17,11 +17,10 @@
 #      websockets for the dashboard, numpy/paho-mqtt for the sim).
 #   2. Checks a MQTT broker is reachable on localhost:1883 (does not start
 #      one -- see the error message below if none is running).
-#   3. Generates synthetic capture .npz files for the sim node to stream, if
-#      not already present (python/tools/gen_synthetic_captures.py) -- only
-#      used when --captures-dir isn't passed; pass it to replay real
-#      recordings from base-station/captures/ (or any other capture folder)
-#      instead.
+#   3. Streams real capture .npz files for the sim node from
+#      base-station/captures/ by default. Pass --captures-dir DIR to replay a
+#      different folder, or --captures-dir "" to fall back to generated
+#      synthetic captures (python/tools/gen_synthetic_captures.py).
 #   4. Starts main.py (--mqtt-host localhost, isolated --data-dir so this
 #      never touches a real device's registry/history).
 #   5. Starts one satellite_node_sim.py copy, waits for its HTTP control API
@@ -47,7 +46,7 @@ PY_DIR="${LOCAL_DIR}/python"
 VENV="${PY_DIR}/.venv"
 DATA_DIR="${LOCAL_DIR}/.cache/data-desktop"
 SIM_DATA_DIR="${LOCAL_DIR}/.cache/sim-data"
-CAPTURES_DIR=""  # empty = use SIM_DATA_DIR (synthetic), set via --captures-dir to replay real captures
+CAPTURES_DIR="${LOCAL_DIR}/captures"  # default: real captures; pass --captures-dir "" for synthetic SIM_DATA_DIR
 AUTO_ONLINE=0    # 0 = leave the sim node offline for you to review/click "Go Online"; --auto-online flips it for you
 DASHBOARD_HOST=127.0.0.1  # --host 0.0.0.0 to expose on the LAN (e.g. for checking mobile view)
 # Deliberately NOT 8080 -- that's app.yaml's real on-device dashboard port,
