@@ -57,6 +57,7 @@ from gpu_perf import GpuPerfPoller
 from app import create_app, broadcast_threadsafe
 from commissioning_controller import CommissioningController
 from capture_controller import CaptureController
+from ei_controller import EIController
 from alert_store import AlertStore
 
 logger = logging.getLogger("main")
@@ -280,8 +281,10 @@ def main():
 
     commissioning = CommissioningController(
         registry, models_dir, gate_factory, min_frames=args.min_commission_frames)
-    capture = CaptureController(
-        registry, os.path.join(args.data_dir, "captures"), gate_factory)
+    captures_dir = os.path.join(args.data_dir, "captures")
+    capture = CaptureController(registry, captures_dir, gate_factory)
+    ei_controller = EIController(
+        registry, os.path.join(args.data_dir, "ei_projects.json"), captures_dir)
 
     def on_frame(frame: SensorFrame) -> None:
         manager.route(frame)
@@ -362,7 +365,7 @@ def main():
 
     app = create_app(registry, history, commissioning, capture=capture, manager=manager,
                       perf_monitor=perf_monitor, gpu_perf=gpu_perf, spi_consumer=spi_consumer,
-                      alert_store=alert_store, telegram_bot=telegram_bot,
+                      alert_store=alert_store, telegram_bot=telegram_bot, ei=ei_controller,
                       on_startup=start_ingestion)
 
     # Mounted after every REST/WebSocket route above is registered, so

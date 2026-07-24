@@ -46,6 +46,8 @@ from pydantic import BaseModel
 
 from commissioning import CommissioningError
 from capture import CaptureError
+from ei_client import EIClientError, EITotpRequiredError
+from ei_controller import EIControllerError
 from registry import InvalidTransitionError, NodeNotFoundError, Registry
 from store import HistoryStore
 from retention import DEFAULT_RETENTION_SECONDS, run_retention_loop
@@ -107,6 +109,17 @@ class CaptureDeleteBody(BaseModel):
     ids: List[str]
 
 
+class EIConnectBody(BaseModel):
+    device_type: str
+    username: str
+    password: str
+    totp: Optional[str] = None
+
+
+class EIUploadBody(BaseModel):
+    capture_ids: List[str]
+
+
 class TelegramPrefsBody(BaseModel):
     # Whole-object PUT, not a partial PATCH: the frontend always has the
     # subscriber's current prefs from GET /alerts/telegram/subscribers
@@ -139,6 +152,7 @@ def create_app(registry: Registry, history_store: HistoryStore,
                 spi_consumer: Optional[SpiConsumer] = None,
                 alert_store: Optional[AlertStore] = None,
                 telegram_bot=None,
+                ei=None,
                 on_startup: Optional[callable] = None) -> FastAPI:
     def _perf_payload() -> dict:
         data = app.state.perf_monitor.snapshot().to_dict()
@@ -197,6 +211,7 @@ def create_app(registry: Registry, history_store: HistoryStore,
     app.state.spi_consumer = spi_consumer
     app.state.alert_store = alert_store
     app.state.telegram_bot = telegram_bot
+    app.state.ei = ei
     app.state.connection_manager = ConnectionManager()
     app.state.loop = None
 
@@ -570,5 +585,36 @@ def create_app(registry: Registry, history_store: HistoryStore,
         types = {entry.device_type for entry in app.state.registry.list().values()
                  if entry.device_type}
         return {"device_types": sorted(types)}
+
+    # Edge Impulse Round A -- Upload (docs/EDGE_IMPULSE_DASHBOARD_WORKFLOW_PLAN.md
+    # S4). Unlike Telegram (env-var-configured, legitimately absent on some
+    # deployments), app.state.ei being unset means the controller was never
+    # wired at all -- main.py always constructs one, so this only guards
+    # against test/dev call sites that construct routes standalone.
+    def _require_ei():
+        if app.state.ei is None:
+            raise HTTPException(status_code=503, detail="Edge Impulse integration not configured")
+        return app.state.ei
+
+    @app.get("/classifier/ei/status")
+    def ei_status():
+        return {"device_types": _require_ei().status()}
+
+    @app.post("/classifier/ei/connect")
+    def ei_connect(body: EIConnectBody):
+        try:
+            return _require_ei().connect(
+                body.device_type, body.username, body.password, body.totp)
+        except EITotpRequiredError:
+            raise HTTPException(status_code=400, detail={"totp_required": True})
+        except (EIClientError, EIControllerError) as e:
+            raise HTTPException(status_code=400, detail=str(e))
+
+    @app.post("/classifier/ei/upload")
+    def ei_upload(body: EIUploadBody):
+        try:
+            return _require_ei().upload(body.capture_ids)
+        except EIClientError as e:
+            raise HTTPException(status_code=502, detail=str(e))
 
     return app

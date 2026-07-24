@@ -117,6 +117,17 @@ def delete_capture(captures_dir: str, capture_id: str) -> None:
     os.remove(_resolve_capture_path(captures_dir, capture_id))
 
 
+def load_capture(captures_dir: str, capture_id: str) -> dict:
+    """Full save()-shaped payload (node_id/device_type/label/timestamp/
+    sensor_config/input_dim/vectors) for one capture -- unlike
+    list_captures(), which strips `vectors` for the table view, this is
+    for callers that need the actual data (api/ei_controller.py's upload()).
+    Reuses _resolve_capture_path()'s path-traversal guard rather than
+    duplicating it."""
+    with open(_resolve_capture_path(captures_dir, capture_id)) as f:
+        return json.load(f)
+
+
 def rename_capture(captures_dir: str, capture_id: str, new_label: str) -> str:
     """Moves a saved batch into a different label bucket and returns its
     new id -- same directory-per-label convention save() uses, so a

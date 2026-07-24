@@ -1,8 +1,12 @@
 # Plan — Edge Impulse dashboard-driven workflow (capture → label → group → train → deploy)
 
-Status: **Brainstorm complete (2026-07-23). Edge Impulse automation flow is fully
-resolved — every step has a confirmed REST endpoint, no Studio visit required.
-Record/train button UX is the one open item (ideas captured, not decided).**
+Status: **Brainstorm complete (2026-07-23). Round A ("Upload") of S4 shipped
+2026-07-24: connect (creates a per-device-type EI project) + upload
+(pushes selected recordings) are live from the Classifier tab, tests
+passing, live smoke test against the real EI account pending. Train/
+poll/build/fetch (S4 steps 5-9) are Round B, not started. Record/train
+button UX (for the capture/commission flow, not this panel) is still an
+open item (ideas captured, not decided).**
 
 Companion to [EDGE_IMPULSE_FAULT_CLASSIFICATION_PLAN.md](EDGE_IMPULSE_FAULT_CLASSIFICATION_PLAN.md)
 — that doc is the pipeline-wiring task list (T1-T11: `pipeline/classifier.py`,
@@ -92,10 +96,22 @@ change.
   Network/Alerts are already placeholder stubs, so adding a tab is an
   established pattern here).
 - Contents: a table of captured samples (device, device type, label,
-  timestamp), checkboxes to select which to push, an API key field (entered
-  once, stored server-side — **not** a casually re-typed client-facing field,
-  since this key can trigger real training jobs and spend EI compute), an
-  "Upload selected" button, and a model-fetch panel sitting right next to it.
+  timestamp), checkboxes to select which to push, an "Upload selected"
+  button, and a model-fetch panel sitting right next to it.
+- **Revised 2026-07-24 (Round A build):** the "one static API key field"
+  design above assumed a project already exists. Real EI project
+  *creation* needs account-level auth, not a project key — a project
+  doesn't exist yet to scope a key to. Replaced with **one row per device
+  type**, each with a connected/not-connected pill and, if not connected, a
+  one-time username+password(+TOTP) login form (`POST
+  /classifier/ei/connect`) that creates that type's project, impulse, and
+  NN config, then stores only the resulting **per-project API key**
+  server-side (`<data_dir>/ei_projects.json`, 0600) — the login credentials
+  themselves are held in memory for that one request and never persisted.
+  This resolved cleanly because the user's EI account (Google-SSO only) had
+  no native password to begin with; they set one via EI's own account
+  settings first. See `pipeline/ei_client.py`/`pipeline/ei_projects.py`/
+  `api/ei_controller.py` for the implementation.
 - Device name / device type editing lives **near the existing Fleet
   record/capture controls**, not on the Classifier tab — it's node/device
   identity, not a classifier-workflow action.
@@ -136,6 +152,22 @@ Steps 1-3 are the same fixed JSON body every time a new device type is added
 — only the project id changes. This means "add a new device type" could
 itself become a single dashboard action later, though the first version of
 this can just script it manually per new type.
+
+**Round A ("Upload," steps 1-4) shipped 2026-07-24** — `POST
+/classifier/ei/connect` (steps 1-3, idempotent per device type) and `POST
+/classifier/ei/upload` (step 4). One correctness issue found and fixed
+during the build: `pipeline/capture.py` stores the *raw*
+`build_feature_vector()` output, but live inference
+(`pipeline/inference.py`) always standardizes the scalar tail against that
+node's own commissioned baseline before scoring. Uploading raw vectors
+would have trained the classifier on a different distribution than it
+sees at runtime — the same class of leakage bug this project has hit
+twice before. Fixed by standardizing at upload time using each capture's
+own node's `scalar_mu`/`scalar_sigma` (falls back to raw, with a surfaced
+warning, for a capture from a node that was never commissioned, rather
+than blocking the upload). Steps 5-9 (train/poll/build/download) are
+**Round B**, not started — different mechanism (async job + WebSocket log
+streaming vs. this round's plain request/response calls).
 
 **Model deployment is a fetch, not an upload.** No file picker in the
 dashboard — the base station calls Edge Impulse's API directly and pulls

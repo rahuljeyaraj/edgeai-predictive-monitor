@@ -32,6 +32,9 @@ from capture_controller import CaptureController
 from gate import MotorStateGate
 from manager import PipelineManager
 from alert_store import AlertStore
+import ei_client
+from ei_client import EITotpRequiredError
+from ei_controller import EIController
 
 NODE_ID = "node-1"
 DIM = 128  # SensorChannel.MIC's spectral bin count (registry._DIM_BY_CHANNEL)
@@ -67,6 +70,44 @@ class FakeTelegramBot:
         return True
 
 
+class FakeEiClient:
+    """Same role as FakeTelegramBot above, for EIController's injected
+    `client` (api/ei_controller.py, docs/
+    EDGE_IMPULSE_DASHBOARD_WORKFLOW_PLAN.md S4) -- lets the REST layer's
+    connect()/upload() routes be exercised end-to-end with no real network.
+    Fuller behavioral coverage (idempotency, standardization branch, split)
+    lives in tests/ei_controller_test.py; this file only needs enough to
+    confirm the routes themselves wire through correctly."""
+
+    def __init__(self, totp_code=None):
+        self.uploads = []
+        self._totp_code = totp_code
+        self._next_id = 100
+        self.batched = ei_client.batched
+        self.timestamped_filename = ei_client.timestamped_filename
+
+    def login(self, username, password, totp=None):
+        if self._totp_code is not None and totp != self._totp_code:
+            raise EITotpRequiredError("ERR_TOTP_TOKEN_IS_REQUIRED")
+        return "jwt-fake"
+
+    def create_project(self, jwt_token, project_name):
+        project_id = self._next_id
+        self._next_id += 1
+        return project_id, f"ei_key_{project_id}"
+
+    def create_impulse(self, api_key, project_id, input_dim):
+        return 3
+
+    def set_nn_config(self, api_key, project_id, learn_id, input_dim, num_classes):
+        pass
+
+    def upload_samples(self, api_key, category, label, samples):
+        self.uploads.append(
+            {"api_key": api_key, "category": category, "label": label, "samples": samples})
+        return len(samples)
+
+
 class ApiUnderTest:
     """One FastAPI app (REST + WebSocket, api/app.py) driven in-process
     via TestClient, matching how main.py wires api/app.py in production
@@ -74,7 +115,7 @@ class ApiUnderTest:
     registry/history state never leaks between tests."""
 
     def __init__(self, tmp_dir: str, node_id=NODE_ID, sensor_config=frozenset({SensorChannel.MIC}),
-                 min_frames=5, epochs=300, telegram_bot=None):
+                 min_frames=5, epochs=300, telegram_bot=None, ei_totp_code=None):
         registry_path = os.path.join(tmp_dir, "registry.json")
         self.registry = Registry(registry_path)
         self.registry.add(node_id, sensor_config=sensor_config)
@@ -87,9 +128,13 @@ class ApiUnderTest:
         self.captures_dir = os.path.join(tmp_dir, "captures")
         self.capture = CaptureController(self.registry, self.captures_dir, gate_factory)
         self.manager = PipelineManager(self.registry, gate_factory, history_store=self.history)
+        self.ei_client = FakeEiClient(totp_code=ei_totp_code)
+        self.ei = EIController(
+            self.registry, os.path.join(tmp_dir, "ei_projects.json"), self.captures_dir,
+            client=self.ei_client)
         self.app = create_app(self.registry, self.history, self.commissioning, self.capture,
                                manager=self.manager,
-                               alert_store=self.alert_store, telegram_bot=telegram_bot)
+                               alert_store=self.alert_store, telegram_bot=telegram_bot, ei=self.ei)
         self._client_cm = TestClient(self.app)
         self.client = self._client_cm.__enter__()  # runs lifespan, so broadcast_threadsafe works
 
@@ -537,6 +582,80 @@ def test_captures_rename_unknown_id_is_400(tmp_dir):
         api.stop()
 
 
+def test_ei_status_reports_unconnected_by_default(tmp_dir):
+    # Round A "Upload" (docs/EDGE_IMPULSE_DASHBOARD_WORKFLOW_PLAN.md S4) --
+    # a node's device_type shows up in GET /classifier/ei/status as
+    # unconnected until POST /classifier/ei/connect has run for it.
+    api = ApiUnderTest(tmp_dir)
+    try:
+        status, body = api.request("POST", f"/nodes/{NODE_ID}/device_type", {"device_type": "motor001"})
+        assert status == 200, (status, body)
+
+        status, body = api.request("GET", "/classifier/ei/status")
+        assert status == 200 and body == {"device_types": {"motor001": False}}, (status, body)
+        print("GET /classifier/ei/status reports an assigned-but-unconnected device_type: PASS")
+    finally:
+        api.stop()
+
+
+def test_ei_connect_creates_project_then_upload_pushes_samples(tmp_dir):
+    api = ApiUnderTest(tmp_dir)
+    try:
+        status, body = api.request("POST", f"/nodes/{NODE_ID}/device_type", {"device_type": "motor001"})
+        assert status == 200, (status, body)
+
+        status, body = api.request("POST", "/classifier/ei/connect",
+                                    {"device_type": "motor001", "username": "me@example.com",
+                                     "password": "hunter2"})
+        assert status == 200 and body["connected"] is True, (status, body)
+
+        status, body = api.request("GET", "/classifier/ei/status")
+        assert body == {"device_types": {"motor001": True}}, body
+
+        status, _ = api.request("POST", f"/nodes/{NODE_ID}/capture/start")
+        assert status == 200
+        api.capture.feed_frame(frame(NODE_ID))
+        status, _ = api.request("POST", f"/nodes/{NODE_ID}/capture/stop")
+        assert status == 200
+        status, body = api.request("POST", f"/nodes/{NODE_ID}/capture/save", {"label": "bearing_fault"})
+        assert status == 200, (status, body)
+        status, body = api.request("GET", "/captures")
+        capture_id = body["captures"][0]["id"]
+
+        status, body = api.request("POST", "/classifier/ei/upload", {"capture_ids": [capture_id]})
+        assert status == 200, (status, body)
+        assert body["rejected"] == {}, body
+        counts = body["uploaded"]["motor001"]["bearing_fault"]
+        assert counts["training"] + counts["testing"] == 1, body
+        assert len(api.ei_client.uploads) == 1
+        print("POST /classifier/ei/connect + /classifier/ei/upload push a "
+              "saved capture through to the (faked) Edge Impulse client: PASS")
+    finally:
+        api.stop()
+
+
+def test_ei_connect_totp_required_returns_400_marker(tmp_dir):
+    api = ApiUnderTest(tmp_dir, ei_totp_code="654321")
+    try:
+        status, body = api.request("POST", f"/nodes/{NODE_ID}/device_type", {"device_type": "motor001"})
+        assert status == 200, (status, body)
+
+        status, body = api.request("POST", "/classifier/ei/connect",
+                                    {"device_type": "motor001", "username": "me@example.com",
+                                     "password": "hunter2"})
+        # api/app.py's exception_handler rewrites HTTPException.detail into
+        # a {"error": ...} response body, not FastAPI's default {"detail": ...}.
+        assert status == 400 and body["error"] == {"totp_required": True}, (status, body)
+
+        status, body = api.request("GET", "/classifier/ei/status")
+        assert body == {"device_types": {"motor001": False}}, \
+            "a failed connect() must not report the device_type as connected"
+        print("POST /classifier/ei/connect surfaces a totp_required marker "
+              "(not a generic error) when EI's login needs a 2FA code: PASS")
+    finally:
+        api.stop()
+
+
 def test_history_endpoint_returns_recorded_scores(tmp_dir):
     api = ApiUnderTest(tmp_dir)
     try:
@@ -669,6 +788,9 @@ def main():
     test_decommission_discards_capture_session(tempfile.mkdtemp(dir=tmp_dir))
     test_captures_list_rename_delete(tempfile.mkdtemp(dir=tmp_dir))
     test_captures_rename_unknown_id_is_400(tempfile.mkdtemp(dir=tmp_dir))
+    test_ei_status_reports_unconnected_by_default(tempfile.mkdtemp(dir=tmp_dir))
+    test_ei_connect_creates_project_then_upload_pushes_samples(tempfile.mkdtemp(dir=tmp_dir))
+    test_ei_connect_totp_required_returns_400_marker(tempfile.mkdtemp(dir=tmp_dir))
     test_history_endpoint_returns_recorded_scores(tempfile.mkdtemp(dir=tmp_dir))
     test_websocket_broadcast_reaches_connected_client(tempfile.mkdtemp(dir=tmp_dir))
     test_telegram_status_reports_not_configured_by_default(tempfile.mkdtemp(dir=tmp_dir))
