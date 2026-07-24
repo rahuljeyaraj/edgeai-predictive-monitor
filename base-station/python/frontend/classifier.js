@@ -38,6 +38,7 @@ const Classifier = (() => {
     captures: [],           // [{id, node_id, device_type, label, timestamp, frame_count}]
     selected: new Set(),    // capture ids
     eiStatus: {},           // {device_type: connected(bool)}
+    fleetAssetClasses: [],  // GET /device_types -- classes currently assigned to a live node
     connecting: null,       // device_type currently showing its login form, or null
     connectForm: { username: "", password: "", totp: "", needsTotp: false, error: null, busy: false },
     uploadResult: null,     // last POST /classifier/ei/upload response, or null
@@ -183,14 +184,26 @@ const Classifier = (() => {
   // ---------------------------------------------------------------------
 
   function deviceTypesInView() {
-    // Union of device types already assigned to some node (via saved
-    // captures) and any type /classifier/ei/status already knows about --
-    // covers a type that's been connected but has no captures selected
-    // right now, not just types currently visible in the samples table.
-    const types = new Set();
-    state.captures.forEach((c) => { if (c.device_type) types.add(c.device_type); });
-    Object.keys(state.eiStatus).forEach((t) => types.add(t));
-    return Array.from(types).sort();
+    // "live" rows: asset classes GET /device_types says some node
+    // currently has, unioned with anything /classifier/ei/status already
+    // knows about (covers a class that's connected but whose last node
+    // was just reassigned/decommissioned -- the EI project is still real,
+    // shouldn't vanish just because no node currently carries the class).
+    //
+    // "orphaned": a saved recording's device_type that isn't in either of
+    // those -- the asset class was renamed/unset on its node (Fleet tab's
+    // pill) after the recording was saved, capture.py freezes device_type
+    // onto the JSON at save time and never updates it retroactively. A
+    // "Connect" button pointing at a class no node has anymore is a dead
+    // end (api/ei_controller.py's connect() needs a live node to read
+    // input_dim from and will just 400) -- these get a delete-only row
+    // instead, since removing the stale recordings is the only real fix.
+    const live = new Set(state.fleetAssetClasses);
+    Object.keys(state.eiStatus).forEach((t) => live.add(t));
+    const captureTypes = new Set();
+    state.captures.forEach((c) => { if (c.device_type) captureTypes.add(c.device_type); });
+    const orphaned = Array.from(captureTypes).filter((t) => !live.has(t));
+    return { live: Array.from(live).sort(), orphaned: orphaned.sort() };
   }
 
   function connectFormHtml(deviceType) {
@@ -225,6 +238,18 @@ const Classifier = (() => {
       ${isConnecting ? connectFormHtml(deviceType) : ""}`;
   }
 
+  function orphanedRowHtml(deviceType) {
+    const count = state.captures.filter((c) => c.device_type === deviceType).length;
+    return `<div class="classifier-ei__row">
+      <span class="classifier-ei__type">${escapeHtmlLocal(deviceType)}</span>
+      <span class="classifier-ei__pill classifier-ei__pill--orphaned">Not in fleet anymore</span>
+      <button type="button" class="btn-icon btn-icon--danger" data-action="ei_delete_orphaned"
+              data-type="${escapeAttr(deviceType)}"
+              title="Delete ${count} recording(s) saved under this class"
+              aria-label="Delete recordings for ${escapeAttr(deviceType)}">${ICON_TRASH}</button>
+    </div>`;
+  }
+
   function uploadResultHtml(result) {
     const lines = [];
     Object.entries(result.uploaded || {}).forEach(([deviceType, byLabel]) => {
@@ -245,13 +270,24 @@ const Classifier = (() => {
     const el = document.getElementById("classifier-ei");
     if (!el) return;
     const selectedCount = state.selected.size;
-    const types = deviceTypesInView();
+    const { live, orphaned } = deviceTypesInView();
     const selectedTypes = new Set(state.captures
       .filter((c) => state.selected.has(c.id) && c.device_type)
       .map((c) => c.device_type));
     const missing = Array.from(selectedTypes).filter((t) => !state.eiStatus[t]);
+    // A missing type this selection needs might be connectable (show up
+    // on Fleet, just never connected yet) or orphaned (no node has it
+    // anymore -- there's no "Connect" button to point at, only delete).
+    // Conflating the two would tell the operator to "Connect" a class
+    // that has no Connect button anywhere on this panel.
+    const missingConnectable = missing.filter((t) => !orphaned.includes(t));
+    const missingOrphaned = missing.filter((t) => orphaned.includes(t));
     const uploadDisabled = selectedCount === 0 || missing.length > 0;
-    const uploadTitle = missing.length > 0 ? `Connect ${missing.join(", ")} first` : "";
+    let uploadTitle = "";
+    if (missingConnectable.length > 0) uploadTitle = `Connect ${missingConnectable.join(", ")} first`;
+    else if (missingOrphaned.length > 0) {
+      uploadTitle = `${missingOrphaned.join(", ")} no longer exists in the fleet -- delete those recordings instead`;
+    }
 
     el.innerHTML = `<div class="perf-card">
       <div class="alerts-connect__title">Edge Impulse</div>
@@ -259,9 +295,9 @@ const Classifier = (() => {
         Push selected recordings to Edge Impulse for classifier training, and pull a
         trained model back down.
       </div>
-      ${types.length === 0
+      ${live.length === 0 && orphaned.length === 0
         ? `<div class="perf-empty">No asset classes assigned yet -- set one on a node in the Fleet tab first.</div>`
-        : types.map(eiRowHtml).join("")}
+        : live.map(eiRowHtml).join("") + orphaned.map(orphanedRowHtml).join("")}
       <div class="classifier-ei__row classifier-ei__actions">
         <button type="button" class="btn-label btn-label--ready" data-action="ei_upload"
                 ${uploadDisabled ? "disabled" : ""} title="${escapeAttr(uploadTitle)}">
@@ -305,8 +341,18 @@ const Classifier = (() => {
     }
   }
 
+  async function refreshFleetAssetClasses() {
+    try {
+      const res = await fetch("/device_types");
+      const body = await res.json();
+      state.fleetAssetClasses = body.device_types || [];
+    } catch (err) {
+      console.error("Failed to fetch /device_types", err);
+    }
+  }
+
   async function refresh() {
-    await Promise.all([refreshCaptures(), refreshEiStatus()]);
+    await Promise.all([refreshCaptures(), refreshEiStatus(), refreshFleetAssetClasses()]);
     render();
   }
 
@@ -378,6 +424,22 @@ const Classifier = (() => {
     renderEi();
   }
 
+  async function deleteOrphanedType(deviceType) {
+    const ids = state.captures.filter((c) => c.device_type === deviceType).map((c) => c.id);
+    if (ids.length === 0) return;
+    const label = ids.length === 1 ? "1 recording" : `${ids.length} recordings`;
+    if (!confirm(`Delete ${label} saved under "${deviceType}"? That asset class no longer `
+        + "exists in the fleet, so this is the only way to clear it. This can't be undone.")) {
+      return;
+    }
+    try {
+      await postJson("/captures/delete", { ids });
+    } catch (err) {
+      alert(`Delete failed: ${err.message}`);
+    }
+    await refresh();
+  }
+
   async function uploadSelected() {
     const ids = Array.from(state.selected);
     if (ids.length === 0) return;
@@ -397,6 +459,8 @@ const Classifier = (() => {
       if (e.target.closest('[data-action="ei_connect_cancel"]')) { cancelConnect(); return; }
       const submitBtn = e.target.closest('[data-action="ei_connect_submit"]');
       if (submitBtn) { submitConnect(submitBtn.dataset.type); return; }
+      const deleteOrphanBtn = e.target.closest('[data-action="ei_delete_orphaned"]');
+      if (deleteOrphanBtn) { deleteOrphanedType(deleteOrphanBtn.dataset.type); return; }
       if (e.target.closest('[data-action="ei_upload"]')) { uploadSelected(); return; }
     });
 
