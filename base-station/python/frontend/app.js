@@ -880,14 +880,11 @@ function motorRowHtml(entry) {
   </div>`;
 
   // Capture no longer lives here (2026-07-24 round 6: see recordDrawer
-  // above) -- this is just Node ID + charts now, one column, no side
-  // panel.
+  // above) -- this is just charts now, one column, no side panel. Node ID
+  // is already shown in the identity block above (motor-row__node-id);
+  // repeating it here was redundant.
   const detailHtml = isExpanded ? `<div class="motor-row__detail">
     <div class="motor-row__detail-main">
-      <div class="motor-row__detail-item">
-        <span class="motor-row__detail-label">Node ID</span>
-        <span class="motor-row__detail-value">${escapeHtml(entry.node_id)}</span>
-      </div>
       ${Charts.detailBodyHtml(entry, {
         rawOpen: openRawIds.has(entry.node_id),
         waterfallOpen: openWaterfallIds.has(entry.node_id),

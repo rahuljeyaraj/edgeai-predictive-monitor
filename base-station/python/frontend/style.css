@@ -537,28 +537,6 @@ body {
   min-width: 0;
 }
 
-.motor-row__detail-item {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.motor-row__detail-label {
-  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
-  font-size: 12px;
-  font-weight: 600;
-  color: #64748b;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-}
-
-.motor-row__detail-value {
-  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-  font-variant-numeric: tabular-nums;
-  font-size: 15px;
-  color: #e2e8f0;
-}
-
 /* ---------------------------------------------------------------------
    Per-asset live charts (charts.js), docs/CHART_CLUTTER_PLAN.md §1: hero
    anomaly score, scalar tiles, accel/mic spectrum charts, and two
