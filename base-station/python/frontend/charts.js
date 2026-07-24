@@ -472,7 +472,7 @@ const Charts = (() => {
   // redraw). Dragging the right handle away from "now" (or both handles)
   // pins the view exactly where dropped (node.anomalyLive = false) until
   // the user drags back within ANOMALY_LIVE_SNAP_TOLERANCE_SECONDS of "now"
-  // or clicks the LIVE pill.
+  // or clicks the Live button.
   //
   // A rangeslider drag emits a single `"xaxis.range": [x0, x1]` array key,
   // NOT the `"xaxis.range[0]"`/`"xaxis.range[1]"` bracket-indexed pair a
@@ -502,13 +502,6 @@ const Charts = (() => {
       node.anomalyLive = false;
       node.anomalyPinnedRange = [x0, x1];
     }
-    setAnomalyLivePillActive(nodeId, node.anomalyLive);
-  }
-
-  function setAnomalyLivePillActive(nodeId, active) {
-    for (const btn of document.querySelectorAll("button[data-anomaly-live-toggle]")) {
-      if (btn.dataset.nodeId === nodeId) btn.classList.toggle("is-active", active);
-    }
   }
 
   // Full-size replacement for the old hero sparkline: a real Plotly chart
@@ -516,6 +509,40 @@ const Charts = (() => {
   // idiom rather than a bespoke hand-rolled SVG. Per-point marker color by
   // that point's own status (carried over from the pre-redesign timeline
   // chart) plus dashed threshold lines.
+  //
+  // y-range is recomputed from the points inside the current x-window (not
+  // Plotly's default autorange, which fits the *entire* trace) -- a
+  // zoomed-in window used to keep the full-history y-scale, so small real
+  // moves in a narrow time slice rendered as a flat line near the bottom of
+  // a range sized for the dataset's all-time min/max. The warning/fault
+  // threshold lines are always folded into min/max too, even if they sit
+  // well outside the visible data -- otherwise a zoomed-in view would
+  // silently scroll the dashed threshold lines off-screen with no
+  // indication they'd left the picture.
+  function anomalyVisibleYRange(node, range) {
+    if (!range) return null;
+    const t0 = new Date(range[0]).getTime();
+    const t1 = new Date(range[1]).getTime();
+    let min = Infinity, max = -Infinity;
+    for (const p of node.anomaly) {
+      const ms = p.t * 1000;
+      if (ms < t0 || ms > t1) continue;
+      if (p.score < min) min = p.score;
+      if (p.score > max) max = p.score;
+    }
+    if (typeof node.warningThreshold === "number") {
+      min = Math.min(min, node.warningThreshold);
+      max = Math.max(max, node.warningThreshold);
+    }
+    if (typeof node.faultThreshold === "number") {
+      min = Math.min(min, node.faultThreshold);
+      max = Math.max(max, node.faultThreshold);
+    }
+    if (min > max) return null;
+    const pad = (max - min) * 0.1 || Math.abs(max) * 0.1 || 0.05;
+    return [min - pad, max + pad];
+  }
+
   function buildAnomalyFigure(nodeId, node) {
     const times = node.anomaly.map((p) => new Date(p.t * 1000));
     const scores = node.anomaly.map((p) => p.score);
@@ -531,13 +558,14 @@ const Charts = (() => {
     if (typeof node.warningThreshold === "number") shapes.push(hLine(node.warningThreshold, STATUS_COLOR.warning, "y"));
     if (typeof node.faultThreshold === "number") shapes.push(hLine(node.faultThreshold, STATUS_COLOR.fault, "y"));
     const range = node.anomalyLive ? anomalyLiveRange(node) : node.anomalyPinnedRange;
+    const yRange = anomalyVisibleYRange(node, range);
     const layout = {
       ...darkLayoutBase(), uirevision: nodeId, shapes, height: 230,
       xaxis: axisBase({
         anchor: "y", fixedrange: true, range,
         rangeslider: { visible: true, thickness: 0.12, bgcolor: PLOT_BG, bordercolor: AXIS_COLOR, borderwidth: 1 },
       }),
-      yaxis: axisBase({ anchor: "x", fixedrange: true }),
+      yaxis: axisBase({ anchor: "x", fixedrange: true, range: yRange, autorange: !yRange }),
     };
     return [traces, layout];
   }
@@ -995,7 +1023,7 @@ const Charts = (() => {
     html += `<div class="chart-section">
       <div class="chart-section__title-row">
         <div class="chart-section__title">Anomaly score</div>
-        <button type="button" class="waterfall-toggle__btn${node.anomalyLive ? " is-active" : ""}" data-anomaly-live-toggle data-node-id="${safeId}">LIVE</button>
+        <button type="button" class="btn-label" data-anomaly-live-toggle data-node-id="${safeId}">Live</button>
       </div>
       ${chartSlotHtml("chart-slot-anomaly", nodeId)}
     </div>`;
@@ -1083,7 +1111,6 @@ const Charts = (() => {
       const node = ensureNode(nodeId);
       node.anomalyLive = true;
       node.anomalyPinnedRange = null;
-      btn.classList.add("is-active");
       dirty.add(nodeId);
     });
   }
