@@ -494,6 +494,13 @@ body {
   padding-top: 9px;
 }
 
+.motor-row__status-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
 .motor-row__status {
   font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   font-variant-numeric: tabular-nums;
@@ -505,6 +512,29 @@ body {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* Fault classifier's read, next to the status pill (motorRowHtml(),
+   fleet-wide glance without expanding the row). Same neutral violet as
+   the expanded panel's classification-bar--top fill (#818cf8) -- not
+   --accent's green/amber/red, since this is an independent signal from
+   NodeStatus and can legitimately disagree with it. */
+.motor-row__classification-chip {
+  display: inline-flex;
+  align-items: center;
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 12px;
+  font-weight: 600;
+  color: #818cf8;
+  background-color: color-mix(in srgb, #818cf8 18%, #1e293b);
+  border: 1px solid color-mix(in srgb, #818cf8 40%, transparent);
+  border-radius: 999px;
+  padding: 2px 9px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 140px;
+  flex: 0 1 auto;
 }
 
 .motor-row__actions {

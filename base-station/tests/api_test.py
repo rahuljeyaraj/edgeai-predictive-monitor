@@ -392,6 +392,53 @@ def test_commissioning_start_feed_stop_trains_model(tmp_dir):
         api.stop()
 
 
+def test_recommissioning_clears_stale_history(tmp_dir):
+    """A recommission overwrites the model in place (S6 open question #6)
+    rather than versioning it -- the dashboard's anomaly-score history
+    (durable in history/store.py, separate from the registry entry) must
+    be wiped alongside it, or the chart that reappears once training
+    finishes would show the *previous* model's scores merged in as if
+    they were current (frontend/charts.js's UNCOMMISSIONED_STATUSES
+    gating hides the chart entirely while status is mid-recommission, then
+    expects a clean slate once it reappears)."""
+    api = ApiUnderTest(tmp_dir, min_frames=5, epochs=10)
+    try:
+        # Commission once already (bypassing the REST flow -- that's
+        # covered by the test above) and leave a stale score behind, as if
+        # this node had been running healthy for a while already.
+        api.registry.start_commissioning(NODE_ID)
+        api.registry.stop_collecting(NODE_ID)
+        api.registry.complete_commissioning(NODE_ID, model_path="unused.pt")
+        api.history.record(NODE_ID, 1.0, 99.0, NodeStatus.FAULT)
+        assert len(api.history.query(NODE_ID)) == 1, api.history.query(NODE_ID)
+
+        with api.client.websocket_connect("/ws") as ws:
+            status, body = api.request("POST", f"/nodes/{NODE_ID}/commission/start")
+            assert status == 200 and body["status"] == "commissioning_collecting", (status, body)
+            ws.receive_json()  # start's broadcast
+
+            for i in range(10):
+                api.commissioning.feed_frame(frame(NODE_ID, timestamp=float(i)))
+
+            status, body = api.request("POST", f"/nodes/{NODE_ID}/commission/stop")
+            assert status == 200, (status, body)
+            ws.receive_json()  # stop_collecting's immediate broadcast
+
+            final_entry = None
+            for _ in range(200):
+                message = ws.receive_json()
+                if message["type"] == "registry" and message["entry"]["status"] == "healthy":
+                    final_entry = message["entry"]
+                    break
+            assert final_entry is not None, "training never completed"
+
+        assert api.history.query(NODE_ID) == [], api.history.query(NODE_ID)
+        print("recommissioning clears the previous model's stale anomaly-score "
+              "history: PASS")
+    finally:
+        api.stop()
+
+
 def test_commissioning_stop_without_start_is_409(tmp_dir):
     api = ApiUnderTest(tmp_dir)
     try:
@@ -1017,6 +1064,7 @@ def main():
     test_decommission_removes_node_and_history(tempfile.mkdtemp(dir=tmp_dir))
     test_decommission_mid_commissioning_node_succeeds(tempfile.mkdtemp(dir=tmp_dir))
     test_commissioning_start_feed_stop_trains_model(tempfile.mkdtemp(dir=tmp_dir))
+    test_recommissioning_clears_stale_history(tempfile.mkdtemp(dir=tmp_dir))
     test_commissioning_stop_without_start_is_409(tempfile.mkdtemp(dir=tmp_dir))
     test_commissioning_double_start_is_409(tempfile.mkdtemp(dir=tmp_dir))
     test_capture_start_feed_stop_save_persists_labeled_batch(tempfile.mkdtemp(dir=tmp_dir))

@@ -514,8 +514,18 @@ def create_app(registry: Registry, history_store: HistoryStore,
                 # or auto-recovering the node.
                 logger.exception("training failed for node %r", node_id)
                 return
-            # No broadcast_threadsafe here -- complete_commissioning()
-            # already fired _on_registry_status_change above (HEALTHY).
+            # Wipe this node's history now that a new model/calibration is in
+            # place -- a recommission overwrites model_path in place (S6 open
+            # question #6) rather than versioning it, but the old anomaly-
+            # score trend was scored against the *previous* model/thresholds
+            # and would otherwise sit in the dashboard's graph looking like
+            # current data. Covers a first-time commission too (no-op: there's
+            # nothing to delete yet). No broadcast_threadsafe here --
+            # complete_commissioning() already fired _on_registry_status_change
+            # above (HEALTHY), which the frontend uses as its own signal to
+            # clear the client-side buffer in step (frontend/charts.js's
+            # applyThresholds()).
+            app.state.history_store.delete(node_id)
 
         threading.Thread(target=run_training, daemon=True).start()
         return entry.to_dict()

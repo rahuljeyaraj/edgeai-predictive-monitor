@@ -590,6 +590,15 @@ function escapeHtml(str) {
     .replace(/'/g, "&#39;");
 }
 
+// Same idiom as charts.js's own titleCase() (fault classification bars) --
+// recording labels are the operator's own words (bearing/loose/unbalanced/
+// healthy), not Edge Impulse jargon, so title-casing is all display needs.
+// Duplicated rather than imported: charts.js doesn't expose it on its
+// public Charts object, and it's a one-liner.
+function titleCase(label) {
+  return String(label).replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
 // Inline SVGs rather than an emoji/icon-font dependency -- consistent
 // rendering across platforms with no extra asset or build step. Only
 // commission/train stays a labeled text button (see rowControls()/
@@ -865,11 +874,29 @@ function motorRowHtml(entry) {
       ? `<button type="button" class="device-type-pill" style="--accent:${assetClassColor(entry.device_type)}" data-action="edit_device_type" title="Change asset class" aria-label="Change asset class">${escapeHtml(entry.device_type)}</button>${assetClassHelpHtml}`
       : `<button type="button" class="device-type-pill device-type-pill--unset" data-action="edit_device_type" title="Set asset class" aria-label="Set asset class">Set asset class</button>${assetClassHelpHtml}`;
 
+  // Fault classifier's current read, next to the status pill -- only when
+  // there's an actual fault to look at (bucket healthy/new/paused/offline
+  // stay bare) AND a model has actually scored this node at least once
+  // (entry.last_classification, same presence check charts.js's detail
+  // panel now uses -- no device_type-only guess). Deliberately its own
+  // chip, not folded into .motor-row__status: the classifier is a signal
+  // independent of NodeStatus (docs/EDGE_IMPULSE_CLASSIFIER's own note,
+  // see charts.js's buildClassificationHtml) and can legitimately disagree
+  // with it, so it keeps the same neutral violet accent used there instead
+  // of borrowing --accent's green/amber/red.
+  const showClassificationChip = (bucket === "warning" || bucket === "fault") && entry.last_classification;
+  const classificationChipHtml = showClassificationChip
+    ? `<span class="motor-row__classification-chip" title="Fault classifier's current read -- an independent signal from the status above">${escapeHtml(titleCase(entry.last_classification.label))}</span>`
+    : "";
+
   const rowHtml = `<div class="motor-row${isExpanded ? " motor-row--expanded" : ""}${highlightNodeIds.has(entry.node_id) ? " motor-row--highlight" : ""}" title="Click to expand">
     <div class="motor-row__main">
       ${identityHtml}
       <div class="motor-row__device-type-group">${deviceTypePillHtml}</div>
-      <span class="motor-row__status">${label}</span>
+      <div class="motor-row__status-group">
+        <span class="motor-row__status">${label}</span>
+        ${classificationChipHtml}
+      </div>
     </div>
     <div class="motor-row__actions">
       <button class="btn-label btn-label--${controls.commissionVariant}" ${controls.commissionAction ? `data-action="${controls.commissionAction}"` : ""} title="${controls.commissionTooltip}" aria-label="${controls.commissionTooltip}" ${controls.commissionEnabled ? "" : "disabled"}>${controls.commissionLabel}</button>

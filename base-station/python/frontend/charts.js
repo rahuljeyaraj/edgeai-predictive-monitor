@@ -66,6 +66,17 @@ const Charts = (() => {
   // present/absent section gating in detailBodyHtml().
   const ALL_CHANNELS = ["accel_x", "accel_y", "accel_z", "mic"];
 
+  // entry.status values with no anomaly model yet -- either never
+  // commissioned, or a recommission overwriting the old one is in flight
+  // (registry.py's start_commissioning() transitions HEALTHY/WARNING/FAULT
+  // straight back into COMMISSIONING_COLLECTING). The Anomaly score section
+  // is hidden for all three: an uncommissioned node has nothing to plot, and
+  // showing the pre-recommission chart while a fresh baseline is being
+  // collected would just be stale data masquerading as current.
+  const UNCOMMISSIONED_STATUSES = new Set([
+    "uncommissioned", "commissioning_collecting", "commissioning_training",
+  ]);
+
   // Reuses the exact status palette already defined in style.css (:root)
   // rather than inventing a new one -- the redesign spec (S2) reserves
   // green/amber/red for this one meaning across the whole dashboard.
@@ -378,6 +389,17 @@ const Charts = (() => {
   // so an uncommissioned node's hero renders its neutral state instead.
   function applyThresholds(nodeId, entry) {
     const node = ensureNode(nodeId);
+    // A recommission just completed (was collecting/training, now scored) --
+    // history/store.py's row for this node was wiped server-side alongside
+    // the new model (api/app.py's commission/stop), so the old pre-
+    // recommission points must go too, or the chart that reappears (see
+    // UNCOMMISSIONED_STATUSES gating in detailBodyHtml) would show a stale
+    // trend merged with the fresh one. Re-seeding on the next expand just
+    // re-fetches the now-empty history, so this is a no-op there too.
+    if (UNCOMMISSIONED_STATUSES.has(node.status) && !UNCOMMISSIONED_STATUSES.has(entry.status)) {
+      node.anomaly = [];
+      node.anomalySeeded = false;
+    }
     node.warningThreshold = typeof entry.warning_threshold === "number" ? entry.warning_threshold : null;
     node.faultThreshold = typeof entry.fault_threshold === "number" ? entry.fault_threshold : null;
     node.status = entry.status;
@@ -925,14 +947,15 @@ const Charts = (() => {
     waterfallOpenIds = openWaterfallIds;
 
     for (const nodeId of expandedNodeIds) {
-      // Look the slot up *before* touching any buffers: a stale id can
+      // Look the row up *before* touching any buffers: a stale id can
       // linger in expandedNodeIds after its node was decommissioned (app.js
       // doesn't prune that Set on removal), in which case detailBodyHtml()
-      // never rendered a row for it at all this pass, so no slot exists.
-      // chart-slot-anomaly is always rendered unconditionally (like the
-      // retired hero slot used to be), so it's the row-exists signal now.
-      const anomalySlot = findSlot("chart-slot-anomaly", nodeId);
-      if (!anomalySlot) continue;
+      // never rendered a row for it at all this pass, so no anchor exists.
+      // motor-row-body is the row-exists signal (always rendered whenever a
+      // row exists at all) -- chart-slot-anomaly can no longer serve that
+      // role since it's now conditional on the node having a model.
+      const rowBody = findSlot("motor-row-body", nodeId);
+      if (!rowBody) continue;
 
       const node = ensureNode(nodeId);
       ensureHostElements(node);
@@ -943,12 +966,19 @@ const Charts = (() => {
       const classificationSlot = findSlot("chart-slot-classification", nodeId);
       if (classificationSlot) reparent(node.classificationEl, classificationSlot);
 
-      reparent(node.anomalyEl, anomalySlot);
-      if (!node.anomalyMounted) {
-        const [traces, layout] = buildAnomalyFigure(nodeId, node);
-        Plotly.newPlot(node.anomalyEl, traces, layout, SPECTRUM_CONFIG);
-        node.anomalyMounted = true;
-        node.anomalyEl.on("plotly_relayout", (ev) => onAnomalyRelayout(nodeId, node, ev));
+      const anomalySlot = findSlot("chart-slot-anomaly", nodeId);
+      if (anomalySlot) {
+        reparent(node.anomalyEl, anomalySlot);
+        if (!node.anomalyMounted) {
+          const [traces, layout] = buildAnomalyFigure(nodeId, node);
+          Plotly.newPlot(node.anomalyEl, traces, layout, SPECTRUM_CONFIG);
+          node.anomalyMounted = true;
+          node.anomalyEl.on("plotly_relayout", (ev) => onAnomalyRelayout(nodeId, node, ev));
+        }
+        if (!node.anomalySeeded) {
+          node.anomalySeeded = true;
+          seedAnomalyHistory(nodeId, node);
+        }
       }
 
       const accelSlot = findSlot("chart-slot-accel-spectrum", nodeId);
@@ -970,10 +1000,6 @@ const Charts = (() => {
         }
       }
 
-      if (!node.anomalySeeded) {
-        node.anomalySeeded = true;
-        seedAnomalyHistory(nodeId, node);
-      }
       node.tilesEl.innerHTML = buildScalarTilesHtml(node);
       if (node.classificationEl) node.classificationEl.innerHTML = buildClassificationHtml(node);
 
@@ -1078,20 +1104,30 @@ const Charts = (() => {
     // Anomaly score chart leads the section (always visible, no standalone
     // number anymore) -- scalar tiles are demoted to a collapsible, same
     // idiom as Raw signals/Waterfall, rather than always-on real estate.
-    let html = `<div class="motor-row__body">`;
-    html += `<div class="chart-section">
-      <div class="chart-section__title-row">
-        <div class="chart-section__title">Anomaly score</div>
-        <button type="button" class="btn-label" data-anomaly-live-toggle data-node-id="${safeId}">Live</button>
-      </div>
-      ${chartSlotHtml("chart-slot-anomaly", nodeId)}
-    </div>`;
+    // The outer wrapper (not the anomaly slot below) is attachExpanded()'s
+    // "does this row exist at all" anchor now, since the anomaly section
+    // itself is conditional -- see its own data-role.
+    let html = `<div class="motor-row__body" data-role="motor-row-body" data-node-id="${safeId}">`;
+    // Hidden until a model exists: an uncommissioned node has nothing to
+    // plot, and a recommission in flight would otherwise show the stale
+    // pre-recommission trend while a fresh baseline is being collected.
+    if (!UNCOMMISSIONED_STATUSES.has(entry.status)) {
+      html += `<div class="chart-section">
+        <div class="chart-section__title-row">
+          <div class="chart-section__title">Anomaly score</div>
+          <button type="button" class="btn-label" data-anomaly-live-toggle data-node-id="${safeId}">Live</button>
+        </div>
+        ${chartSlotHtml("chart-slot-anomaly", nodeId)}
+      </div>`;
+    }
 
-    // Independent of the anomaly score above -- entry.device_type gates this
-    // the same way hasAccel/hasMic gate the sensor charts, not entry.status,
-    // since the classifier runs regardless of commissioning state (S1: "no
+    // Independent of the anomaly score above -- gated on last_classification
+    // actually having a result, not just entry.device_type being set, so
+    // this stays hidden (not an empty "no classifier trained" placeholder)
+    // until a model for this device_type has actually scored a frame. The
+    // classifier runs regardless of commissioning state (S1: "no
     // device_type, or type has no model -> anomaly score only").
-    if (entry.device_type) {
+    if (entry.last_classification) {
       html += `<div class="chart-section">
         <div class="chart-section__title">Fault classification</div>
         ${chartSlotHtml("chart-slot-classification", nodeId)}
