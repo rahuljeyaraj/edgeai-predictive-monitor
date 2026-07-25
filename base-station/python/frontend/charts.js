@@ -612,7 +612,10 @@ const Charts = (() => {
         anchor: "y", fixedrange: true, range,
         rangeslider: { visible: true, thickness: 0.12, bgcolor: PLOT_BG, bordercolor: AXIS_COLOR, borderwidth: 1 },
       }),
-      yaxis: axisBase({ anchor: "x", fixedrange: true, range: yRange, autorange: !yRange }),
+      yaxis: axisBase({
+        anchor: "x", fixedrange: true, autorange: !yRange,
+        ...(yRange ? { range: yRange } : {}),
+      }),
     };
     return [traces, layout];
   }

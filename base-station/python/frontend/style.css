@@ -273,7 +273,7 @@ body {
      name -- each recording belongs to an asset class (docs/
      EDGE_IMPULSE_DASHBOARD_WORKFLOW_PLAN.md S1), so it needs to be
      glanceable fleet-wide, not just inside the Record drawer. */
-  grid-template-columns: minmax(0, 160px) minmax(0, 165px) 130px;
+  grid-template-columns: minmax(0, 160px) minmax(0, 165px) minmax(130px, auto);
   align-items: center;
   gap: 8px 18px;
   min-width: 0;
