@@ -3,10 +3,48 @@
 Status: **Brainstorm complete (2026-07-23). Round A ("Upload") of S4 shipped
 2026-07-24: connect (creates a per-device-type EI project) + upload
 (pushes selected recordings) are live from the Classifier tab, tests
-passing, live smoke test against the real EI account pending. Train/
-poll/build/fetch (S4 steps 5-9) are Round B, not started. Record/train
-button UX (for the capture/commission flow, not this panel) is still an
-open item (ideas captured, not decided).**
+passing, live smoke test against the real EI account pending. Round B
+("Train/Build/Fetch", S4 steps 5-9) built 2026-07-24: Train (generate
+features + train) and Fetch trained model (build + download) buttons per
+device type, background job + WS "ei_progress" streaming (mirrors
+commission/stop's training_progress pattern), model saved to
+`<data_dir>/ei_models/<device_type>.tflite`. Tests passing; **not yet
+smoke-tested against a real EI account** (same gap Round A still has --
+the job endpoint shapes in `pipeline/ei_client.py` are built from EI's
+documented API, unverified live). Record/train button UX (for the
+capture/commission flow, not this panel) is still an open item (ideas
+captured, not decided). Actually wiring the fetched model into live
+per-frame classification (§6 "Runtime behavior") is a further round, not
+started.**
+
+**2026-07-25: real usage of Round A/B surfaced enough UX and correctness
+problems (silent upload failures, no per-project clarity, commissioning-
+dependent normalization producing inconsistent data) that the Classifier
+tab UI and the upload/normalization approach got fully re-brainstormed —
+see §8. §8 supersedes §3's UI shape and §4's normalization approach; §3-4
+are kept as-is for history.**
+
+**§8 implemented same day (2026-07-25):** one-card-per-asset-class UI
+(`frontend/classifier.js`/`style.css`/`index.html`) with a Delete(N)/
+Edit-label(N) action bar, `Upload all` (async job + WS `deleting`/
+`uploading N/M` progress readout), Studio link/Unlink, and Fetch-only
+model row. Backend: `EIController.upload()` rewritten around a
+device_type-scoped gather + pooled per-device-type scalar-tail baseline
+(train-split-only, persisted in new `pipeline/ei_scaling.py`), a new
+`ei_client.delete_all_samples()` (S8.5) wipes the project before every
+upload, `POST /classifier/ei/upload` moved to the background-job/WS
+pattern train/fetch already used, and `POST /captures/rename_bulk` backs
+the new Edit-label action. Round B's Train route/button dropped per §8.2
+(`EIController.train()` itself left in place, unused, per that section's
+explicit call). Model-staleness indicator (§8.4/§8.7.2) skipped per
+explicit user answer this session. All Python tests green (`ei_client_test.py`,
+`ei_controller_test.py`, `ei_scaling_test.py` (new), `api_test.py`) and the
+UI was exercised live in a headless browser against a faked Edge Impulse
+client (no real account in this environment) — selection/action-bar
+counts, the deleting→uploading progress readout, and Fetch all verified
+working with no console errors. **Still not verified against a real Edge
+Impulse account** — same gap §3/§4 already had; the `delete-all` endpoint
+shape especially should be smoke-tested early per §8.7.4. Not yet committed.
 
 Companion to [EDGE_IMPULSE_FAULT_CLASSIFICATION_PLAN.md](EDGE_IMPULSE_FAULT_CLASSIFICATION_PLAN.md)
 — that doc is the pipeline-wiring task list (T1-T11: `pipeline/classifier.py`,
@@ -165,9 +203,48 @@ sees at runtime — the same class of leakage bug this project has hit
 twice before. Fixed by standardizing at upload time using each capture's
 own node's `scalar_mu`/`scalar_sigma` (falls back to raw, with a surfaced
 warning, for a capture from a node that was never commissioned, rather
-than blocking the upload). Steps 5-9 (train/poll/build/download) are
-**Round B**, not started — different mechanism (async job + WebSocket log
-streaming vs. this round's plain request/response calls).
+than blocking the upload).
+
+**Round B ("Train/Build/Fetch," steps 5-9) shipped 2026-07-24.** Two new
+per-device-type buttons on the Classifier tab's Edge Impulse panel:
+- **Train** — `POST /classifier/ei/train {device_type}`. Runs step 5
+  (`generate-features` job) then step 6 (`train/keras` job),
+  `EIController.train()` blocking the calling thread while it polls each
+  job via `ei_client.wait_for_job()`.
+- **Fetch trained model** — `POST /classifier/ei/fetch_model
+  {device_type}`. Runs step 8 (`build-ondevice-model` job, `engine:
+  tflite`) then step 9 (download the deployment ZIP,
+  `ei_client.extract_tflite()` pulls out the one `.tflite` entry), saving
+  to `<data_dir>/ei_models/<device_type>.tflite` (overwrites any
+  previous fetch for that type — same no-versioning call as
+  commissioning.py's per-node `model_path`).
+
+Both routes return `{"started": true}` immediately (409 synchronously
+first if the device_type isn't linked yet, or a job's already running for
+it) and run the actual work on a background `Thread`, exactly mirroring
+`commission/stop`'s `stop_collecting()`/`train()` split — an EI job is
+real minutes, not a request/response. Progress streams over the
+dashboard's own `/ws` as `{"type": "ei_progress", "device_type", "action":
+"train"|"fetch", "stage", ...}` messages (stages: `generating_features`,
+`training`, `building`, `downloading`, then `done`/`error`) — **not**
+Edge Impulse's own WebSocket "remote management protocol" for job logs,
+which this deliberately doesn't use (would need a second WS client just
+for a nicer progress string; a plain REST status poll was judged good
+enough, see `pipeline/ei_client.py`'s module docstring). `GET
+/classifier/ei/status` now also returns `"models"` (device_type → fetched
+model's mtime, or null) and `"jobs"` (device_type → `"train"`/`"fetch"`
+for whichever are currently running) so the panel reflects the right
+state after a page refresh, not just while its WS connection is open.
+
+Same live-verification gap as Round A: built and unit-tested against a
+faked `ei_client` (`ei_client_test.py`, `ei_controller_test.py`,
+`api_test.py` all green), but the real job endpoints
+(`generate-features`/`train/keras`/`build-ondevice-model`/`jobs/{id}/status`/
+`deployment/download`) and their exact response shapes are unverified
+against a live EI account — expect to adjust `ei_client.py` if a real
+run disagrees with the documented API. Actually loading the fetched
+`.tflite` into live per-frame classification (§6) is a further round, not
+started.
 
 **Model deployment is a fetch, not an upload.** No file picker in the
 dashboard — the base station calls Edge Impulse's API directly and pulls
@@ -254,8 +331,250 @@ native chart on the Classifier tab.
    - Alternative, less disruptive: keep both icons but add a visible 2-step
      sequence indicator (① Record → ② Train, current step lit) so it reads
      as one flow instead of two independent controls.
-2. Does capture+label require a commissioned node first, or can it run on an
-   uncommissioned one? (§2, still open.)
+2. ~~Does capture+label require a commissioned node first, or can it run on an
+   uncommissioned one?~~ **Resolved by §8**: capture never needed
+   commissioning (confirmed by reading `capture.py` — it only needs
+   sensor_config/input_dim, never touches standardize_scalars()), and after
+   §8's normalization rework, upload doesn't need it either. Nothing in this
+   flow depends on commissioning status anymore.
 3. NN architecture specifics (layer sizes) for the shared/fixed template —
    not chosen yet, just confirmed to be configurable via the Keras settings
    endpoint.
+
+---
+
+## 8. Classifier tab UI redesign + upload/normalization rework (2026-07-25 — spec for next session, not yet implemented)
+
+Brainstormed live after real usage of Round A/B surfaced several problems:
+upload fails with no logs/progress, no way to tell which EI project a
+selection uploads to, no filter on the recordings table, meaningless box
+labels, awkward select-all placement, and the EI panel reads as clutter.
+Also re-examined scalar-tail normalization (§4's "standardize at upload
+time using each capture's own node's `scalar_mu`/`scalar_sigma`") and found
+a real design gap: it silently produces inconsistent data across nodes and
+depends on commissioning, which capture/upload were never supposed to
+require. This section supersedes §3's UI shape and §4's upload/
+normalization approach; §3-4 are left as-is above for history (what Round
+A/B actually shipped).
+
+### 8.1 Why — the guiding reframe
+
+This tab's only job: get recorded data into the right Edge Impulse project.
+Everything after that (DSP tuning, training, deploying) happens in Edge
+Impulse Studio, not here. Confirmed several times over the course of this
+brainstorm that trying to make EI Studio do part of our job (its
+"Normalize features" DSP toggle, multi-axis input restructuring) costs more
+than it saves — see 8.4.
+
+### 8.2 UI shape — one card per asset class, table lives inside it
+
+No more global recordings table + separate disconnected EI status panel.
+One card per `device_type`, each a self-contained unit:
+
+```
+┌─ Bearing ──────────────────────────────── Linked ✓ ─┐
+│ [ Delete (3) ]  [ Edit label (3) ]                    │
+│ ┌──┬────────┬─────────────┬────────┬──────────┐      │
+│ │☐ │ Node   │ Label       │ Frames │ Recorded │      │
+│ ├──┼────────┼─────────────┼────────┼──────────┤      │
+│ │☑ │ node-3 │ healthy     │  128   │ Jul 20   │      │
+│ │☑ │ node-3 │ bearing_flt │  128   │ Jul 21   │      │
+│ │☑ │ node-5 │ healthy     │  128   │ Jul 22   │      │
+│ └──┴────────┴─────────────┴────────┴──────────┘      │
+│                                                        │
+│ [ Upload all (42) ]                                   │
+│                                                        │
+│ [ Open in Edge Impulse Studio ↗ ]        Unlink       │
+│ Model: fetched Jul 24, 3:12pm  [ Fetch again ]        │
+└────────────────────────────────────────────────────────┘
+```
+
+Not-linked card: same table (rename/delete are local-only, work with no EI
+project), `[ Link to Edge Impulse ]` button in place of Upload, no
+Open-in-Studio/Model row.
+
+Orphaned device types (a capture's `device_type` no longer exists on any
+fleet node) keep their own de-emphasized, delete-only card — unchanged from
+§3's original design.
+
+Specific decisions baked into this layout:
+- No separate "select all" control — the table header's own `☐` covers it.
+- Per-row action icons (pencil/trash) are gone. One selection mechanism for
+  everything: check rows (any count, including 1), then use the action bar.
+  Mirrors Edge Impulse's own sample-table UX (Delete/Edit labels buttons
+  with a live count badge) rather than inventing a different pattern.
+- An earlier version of this design showed an aggregate label breakdown
+  (`healthy ▓▓▓▓▓▓▓▓░░ 120 recorded` with a bulk-rename pencil per label)
+  instead of a row-level table. **Reversed** — went back to a plain
+  per-capture table so the existing rename/delete-selected/upload
+  machinery didn't need two separate code paths (label-level and
+  capture-level). Don't reintroduce the bars.
+- No filter UI added anywhere — each card is already scoped to one asset
+  class, which was the only filter axis that mattered.
+- Model row keeps only **Fetch trained model** — no Train button. Training
+  is exactly the kind of EI-internal tuning work that stays in Studio;
+  fetch is necessary glue (nothing else can pull the compiled artifact back
+  down). Round B's Train button/route can be removed from the tab (backend
+  `EIController.train()` can stay dead code or be removed — implementer's
+  call).
+
+### 8.3 Selection + Upload semantics (the big behavior change)
+
+- Table checkboxes are **only** for `Delete (N)` / `Edit label (N)` — they
+  no longer decide what gets uploaded.
+- **Upload always uploads every local recording for that asset class**,
+  selection state irrelevant. Reason: the new normalization (8.4) needs to
+  fit mean/stdev across the whole local population for that class — a
+  partial/selected upload would fit against an incomplete, inconsistent
+  slice.
+- **Upload always wipes the EI project first.** No separate "Replace all
+  data" button (considered, then dropped in favor of folding it into the
+  one Upload action) — every Upload is: delete all existing samples in the
+  project (`8.5`'s new endpoint), then push every local recording fresh.
+  This matches the actual expected usage pattern (confirmed by the user:
+  "mostly what he will do is delete everything in remote and reupload it")
+  and, as a side effect, eliminates any need to track what's already been
+  sent — there's never a partial/stale remote state to reconcile against.
+- Clicking Upload replaces the button with a two-stage inline progress
+  readout (reuse the WS `ei_progress` job pattern already built for Train/
+  Fetch — background thread, broadcast per stage):
+  1. `"Deleting existing project data…"`
+  2. `"Uploading… 22 / 60"` with a running ✓/✗ count, failures listed inline
+     (capture id + reason) rather than one `alert()` at the end.
+
+### 8.4 Scalar-tail normalization rework
+
+**Dropping** the current per-node commissioning-baseline approach
+(`EIController._standardize()`, §4's "standardize at upload time using each
+capture's own node's `scalar_mu`/`scalar_sigma`, fallback to raw with a
+warning") for the **EI upload path only** — live inference's own per-node
+normalization (`pipeline/inference.py`, `pipeline/commissioning.py`) is
+untouched, separate model, separate concern, do not conflate.
+
+Two alternatives investigated and rejected first, so they aren't
+re-proposed later:
+- **Let EI's own "Normalize features" DSP toggle do it** — confirmed
+  against docs and a live project screenshot that this normalizes the
+  *entire* DSP block output, not a selectable subset of columns. Our
+  impulse's "features" input block exposes exactly one axis (confirmed
+  live: Studio's own "Input axes (1)" list), so there's no way to scope it
+  to just the scalar tail without restructuring to a "time-series" input +
+  EI's own Spectral Analysis DSP block — a much bigger change that reopens
+  the "configure EI's DSP blind" risk the original `"features"` block
+  choice deliberately avoided (see §4's intro paragraph).
+- **Split the vector into multiple named axes at upload** (e.g. separate
+  x/y/z/mic/scalar axes) to route just the scalar axis through its own
+  normalized DSP block — genuinely uncertain whether the `"features"`
+  input type supports multi-axis samples at all (EI's multi-axis JSON
+  ingestion format is built around real time-series semantics —
+  `interval_ms`, sampled-over-time — not a bag of independent precomputed
+  vectors). Worth a cheap live test before ever revisiting this, but
+  shelved for now in favor of the local approach below, which is known to
+  work with zero uncertainty.
+
+**New local scheme** — same shape as before (z-score the scalar tail,
+spectral bins untouched, per-column mean/stdev, `spectral_dim` marks where
+the tail starts, all reusing `features.py`'s existing
+`standardize_scalars()`), different baseline:
+
+1. Population: **every local capture for that device_type, every label**
+   (not "healthy" — no such label is guaranteed to exist; labels are
+   free-typed, `capture.py:normalize_label()` has no fixed vocabulary).
+   Since Upload now always uploads everything (8.3), this population is
+   just "everything about to be uploaded."
+2. Pool raw vectors per label, run the existing contiguous-tail `_split()`
+   per label (unchanged) → train_vectors/test_vectors per label.
+3. Union **only the train_vectors, across every label** for this device
+   type → the fit set. (Union the *test* vectors in too and you leak
+   validation data into the scaling stats — the mistake caught mid-brainstorm.)
+4. Compute mean + stdev **independently per scalar column** (~24 columns:
+   6 scalars × up to 4 channels) from the fit set only — same
+   `statistics.fmean`/`pstdev` pattern `commissioning.py:train()` already
+   uses, just pooled across nodes/labels instead of one node's healthy
+   batch.
+5. Apply that one fitted mu/sigma to standardize the scalar tail of every
+   vector — train and test, every label — before uploading.
+6. No commissioning dependency anywhere in this path anymore. The
+   "uploaded with a raw non-standardized tail, node was never commissioned"
+   warning path in the current `upload()` goes away entirely — every
+   upload is now standardized, always.
+
+**Persistence**: this per-device-type mu/sigma is needed by anything that
+later runs this classifier for real (train/serve skew otherwise — same bug
+class as the original reason `_standardize()` existed at all). Save it
+alongside the project mapping — a small store sibling to `ei_projects.json`
+(same read/write-then-rename shape, no need for 0600 since it's not a
+secret), written every time Upload runs. **Do not** write it into
+`RegistryEntry.scalar_mu`/`scalar_sigma` — wrong scope (those are per-node,
+fit at commissioning, owned by the autoencoder; this is per-device-type,
+fit at upload, owned by the EI classifier — conflating them risks one
+silently overwriting the other).
+
+**Known gap, not solved here, note for whoever wires the model into real
+inference later**: because Upload always wipes + fully re-fits (8.3), the
+stored mu/sigma is only guaranteed to match whatever was in the *last*
+Upload. If a model gets trained/fetched, then a later Upload adds more data
+(recomputing mu/sigma), the already-fetched model and the freshly-stored
+mu/sigma have drifted apart. Same underlying issue as "delete-all
+invalidates EI's DSP/learn blocks, so a previously-fetched model is stale
+the moment you Upload again" — both point at the same fix: a staleness
+indicator on the Model row (e.g. "fetched Jul 24 — data has changed since,
+may be stale") once Upload has run again after a fetch. Proposed, not
+confirmed with the user — flag for a quick check before building it.
+
+### 8.5 New Edge Impulse API call needed
+
+`ei_client.py` needs one more function, same shape as everything else in
+that module (plain `x-api-key` POST, no new dependency):
+
+```
+POST {STUDIO_BASE}/api/{project_id}/raw-data/delete-all
+headers: {"x-api-key": api_key}
+body: none
+response: {"success": bool, "error": str (optional)}
+```
+
+Deletes all samples across all categories for the project and invalidates
+its DSP/learn block state (features + trained model) — not deleted from
+EI's cold storage, but a clean wipe from Studio's perspective. Unverified
+against a live account, like every other job endpoint in this module (see
+its module docstring) — same "expect to adjust if a real run disagrees"
+caveat applies.
+
+### 8.6 Explicitly ruled out (so these don't get quietly reintroduced)
+
+- Selection-scoped upload, single or multi-asset-class — replaced by
+  always-upload-everything (8.3).
+- Tracking "sent vs not sent" per capture — no tracking at all; local disk
+  is the source of truth, remote is disposable (8.3).
+- A separate "Replace all data" button distinct from "Upload" — merged
+  into one Upload action (8.3).
+- Per-node commissioning baseline for EI upload normalization — replaced
+  by the pooled per-device-type baseline (8.4).
+- EI's own "Normalize features" DSP toggle — investigated, doesn't fit our
+  vector shape (8.4).
+- A "healthy"-labeled baseline for normalization — no such label is
+  guaranteed to exist; replaced by whole-population pooling (8.4).
+- Train button on this tab — dropped, only Fetch stays (8.2).
+- Aggregate per-label bars view with bulk-rename-by-label — reversed back
+  to a plain per-capture table (8.2).
+- A collapsed "▸ manage recordings" drill-down separate from the main
+  card view — reversed; the table is inline/always-visible now, there's no
+  separate summary-vs-detail split anymore.
+
+### 8.7 Open items for next session
+
+1. Bulk "Edit label (N)" needs either a real bulk-rename endpoint
+   (multiple capture ids + one new label in one call) or a client-side
+   loop calling the existing single-id `POST /captures/rename` per
+   selected row — not decided, implementer's call.
+2. Model-staleness indicator (end of 8.4) — proposed during the brainstorm,
+   never explicitly confirmed with the user. Check before building.
+3. Whether the Link (username/password/TOTP) form should move into a modal
+   instead of the inline expansion it uses today — mentioned once in
+   passing, not settled.
+4. Nothing in 8.3-8.5 has been tested against a live EI account — same gap
+   Round A/B already had (see §4). The `delete-all` endpoint shape
+   especially should be smoke-tested early, since every Upload now depends
+   on it working correctly (a failed delete followed by a successful
+   upload would double up data in the project).

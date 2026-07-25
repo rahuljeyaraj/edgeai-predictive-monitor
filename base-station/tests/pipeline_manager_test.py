@@ -20,14 +20,19 @@ Run with PYTHONPATH covering base-station/python/{ingestion,registry,pipeline,hi
 base-station/python/pipeline:base-station/python/history \\
         python3 base-station/tests/pipeline_manager_test.py
 """
+import json
 import os
 import sys
 import tempfile
+
+import numpy as np
 
 from sensor_frame import BASE_STATION_NODE_ID, FrameSource, SensorFrame
 from registry import NodeNotFoundError, Registry, SensorChannel
 from features import build_feature_vector
 from autoencoder import build_autoencoder, save_model, train_autoencoder
+from classifier import ClassifierRegistry
+from ei_scaling import save_scaling
 from gate import MotorStateGate
 from store import HistoryStore
 from manager import PipelineManager
@@ -483,6 +488,155 @@ def test_dynamic_input_dim_from_first_frame():
     print("node's own first-frame bin count (not a fixed table) is what later frames are validated against: PASS")
 
 
+def fake_classify_interpreter(scores_by_label):
+    """interpreter_factory that always reports the given fixed
+    {label: probability} dict regardless of input -- classify()'s own
+    quantization plumbing is already covered by classifier_test.py, this
+    only needs to exercise manager.py's wiring into it."""
+    values = list(scores_by_label.values())
+
+    class FakeInterpreter:
+        def get_input_details(self):
+            return [{"index": 0, "dtype": np.float32, "quantization": (0.0, 0)}]
+
+        def get_output_details(self):
+            return [{"index": 1, "dtype": np.float32, "quantization": (0.0, 0)}]
+
+        def set_tensor(self, index, value):
+            pass
+
+        def invoke(self):
+            pass
+
+        def get_tensor(self, index):
+            return np.array([values], dtype=np.float32)
+
+    return lambda model_path: (FakeInterpreter(), "cpu")
+
+
+def classifier_env(labels_and_scores):
+    """A registry + classifier setup sharing NODE_ID/DIM's shape above --
+    device_type "motor001", a fetched model reporting labels_and_scores on
+    every classify() call, and a matching ei_scaling.json baseline (upload()
+    always fits+saves one before a model is fetchable in the real flow, see
+    manager.py's _maybe_classify() docstring)."""
+    tmp_dir = tempfile.mkdtemp(prefix="pipeline_manager_test_")
+    registry = Registry(os.path.join(tmp_dir, "registry.json"))
+    registry.add(NODE_ID, sensor_config=frozenset({SensorChannel.MIC}))
+    registry.set_device_type(NODE_ID, "motor001")
+
+    models_dir = os.path.join(tmp_dir, "ei_models")
+    os.makedirs(models_dir)
+    with open(os.path.join(models_dir, "motor001.tflite"), "wb") as f:
+        f.write(b"fake-tflite-bytes")
+    with open(os.path.join(models_dir, "motor001.labels.json"), "w") as f:
+        json.dump(list(labels_and_scores.keys()), f)
+
+    scaling_path = os.path.join(tmp_dir, "ei_scaling.json")
+    save_scaling(scaling_path, "motor001", spectral_dim=DIM,
+                 mu=tuple(0.0 for _ in range(6)), sigma=tuple(1.0 for _ in range(6)))
+
+    classifier_registry = ClassifierRegistry(
+        models_dir, interpreter_factory=fake_classify_interpreter(labels_and_scores))
+    return registry, classifier_registry, scaling_path
+
+
+def test_classification_runs_without_commissioning():
+    """The classifier must not require this node to ever have been
+    commissioned -- docs/EDGE_IMPULSE_DASHBOARD_WORKFLOW_PLAN.md S6:
+    "Classifier runs every frame, in parallel with the autoencoder -- both
+    always-on independently whenever a model exists for that node's device
+    type." Regression risk this pins down: gating classification behind the
+    same `not entry.model_path` early-return the autoencoder uses (an easy
+    thing to do by accident, since that's where the existing per-frame
+    scoring hook already lives) would make classification wrongly depend on
+    the unrelated autoencoder being commissioned."""
+    registry, classifier_registry, scaling_path = classifier_env({"bearing": 0.2, "healthy": 0.8})
+    events = []
+    manager = PipelineManager(
+        registry, lambda: MotorStateGate(threshold=0.5, debounce_frames=1),
+        classifier_registry=classifier_registry, scaling_path=scaling_path,
+        on_classification=lambda node_id, ts, result: events.append((node_id, ts, result)))
+
+    manager.route(scored_frame(HEALTHY_BINS, timestamp=0.0))
+
+    entry = registry.get(NODE_ID)
+    assert entry.model_path is None, "this node must stay uncommissioned for the test to prove anything"
+    assert entry.last_anomaly_score is None, entry.last_anomaly_score
+    result = entry.last_classification
+    assert result["label"] == "healthy", result
+    assert abs(result["confidence"] - 0.8) < 1e-6, result
+    assert abs(result["scores"]["bearing"] - 0.2) < 1e-6, result
+    assert abs(result["scores"]["healthy"] - 0.8) < 1e-6, result
+    assert result["ts"] == 0.0, result
+    assert events == [(NODE_ID, 0.0, result)], events
+    print("classification runs on gated frames for a never-commissioned node, independent of the autoencoder: PASS")
+
+
+def test_classification_skipped_with_no_device_type():
+    registry, classifier_registry, scaling_path = classifier_env({"bearing": 0.2, "healthy": 0.8})
+    registry.set_device_type(NODE_ID, None)
+    manager = PipelineManager(
+        registry, lambda: MotorStateGate(threshold=0.5, debounce_frames=1),
+        classifier_registry=classifier_registry, scaling_path=scaling_path)
+
+    manager.route(scored_frame(HEALTHY_BINS, timestamp=0.0))
+
+    assert registry.get(NODE_ID).last_classification is None
+    print("classification is skipped for a node with no device_type: PASS")
+
+
+def test_classification_skipped_with_no_fetched_model():
+    registry, classifier_registry, scaling_path = classifier_env({"bearing": 0.2, "healthy": 0.8})
+    registry.set_device_type(NODE_ID, "some-other-type")  # linked but no model fetched for THIS type
+    manager = PipelineManager(
+        registry, lambda: MotorStateGate(threshold=0.5, debounce_frames=1),
+        classifier_registry=classifier_registry, scaling_path=scaling_path)
+
+    manager.route(scored_frame(HEALTHY_BINS, timestamp=0.0))
+
+    assert registry.get(NODE_ID).last_classification is None
+    print("classification is skipped for a device_type with no fetched model: PASS")
+
+
+def test_classification_frozen_while_paused():
+    """pause() only allows a healthy/warning/fault node (registry.py's
+    state machine), so this node needs a real (trivial) commissioning to
+    reach a pausable status first -- unlike
+    test_classification_runs_without_commissioning above, which
+    deliberately stays uncommissioned to prove the opposite point."""
+    registry, classifier_registry, scaling_path = classifier_env({"bearing": 0.2, "healthy": 0.8})
+
+    model = build_autoencoder(INPUT_DIM)
+    healthy_vector, _ = build_feature_vector(
+        scored_frame(HEALTHY_BINS, 0.0), frozenset({SensorChannel.MIC}), INPUT_DIM)
+    train_autoencoder(model, [healthy_vector] * 5, epochs=50)
+    model_path = os.path.join(tempfile.mkdtemp(prefix="pipeline_manager_test_"), f"{NODE_ID}.pt")
+    save_model(model, model_path)
+    registry.start_commissioning(NODE_ID)
+    registry.stop_collecting(NODE_ID)
+    registry.complete_commissioning(NODE_ID, model_path, warning_threshold=1e8, fault_threshold=1e9)
+
+    manager = PipelineManager(
+        registry, lambda: MotorStateGate(threshold=0.5, debounce_frames=1),
+        classifier_registry=classifier_registry, scaling_path=scaling_path)
+
+    manager.route(scored_frame(HEALTHY_BINS, timestamp=0.0))
+    entry = registry.get(NODE_ID)
+    assert entry.last_classification is not None
+    assert entry.last_anomaly_score is not None
+    baseline_classification = entry.last_classification
+    baseline_score = entry.last_anomaly_score
+
+    registry.pause(NODE_ID)
+    manager.route(scored_frame(HEALTHY_BINS, timestamp=1.0))
+
+    entry = registry.get(NODE_ID)
+    assert entry.last_classification == baseline_classification, entry.last_classification
+    assert entry.last_anomaly_score == baseline_score, entry.last_anomaly_score
+    print("classification is frozen on a paused node, same as the autoencoder score: PASS")
+
+
 if __name__ == "__main__":
     try:
         main()
@@ -495,6 +649,10 @@ if __name__ == "__main__":
         test_non_sensor_channel_bin_key_is_ignored_not_raised()
         test_decommission_removes_mid_commissioning_node()
         test_dynamic_input_dim_from_first_frame()
+        test_classification_runs_without_commissioning()
+        test_classification_skipped_with_no_device_type()
+        test_classification_skipped_with_no_fetched_model()
+        test_classification_frozen_while_paused()
     except AssertionError as e:
         print(f"RESULT: FAIL - {e}")
         sys.exit(1)

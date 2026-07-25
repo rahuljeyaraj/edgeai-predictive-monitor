@@ -109,6 +109,11 @@ class CaptureDeleteBody(BaseModel):
     ids: List[str]
 
 
+class CaptureRenameBulkBody(BaseModel):
+    ids: List[str]
+    label: str
+
+
 class EILinkBody(BaseModel):
     device_type: str
     username: str
@@ -121,7 +126,11 @@ class EIUnlinkBody(BaseModel):
 
 
 class EIUploadBody(BaseModel):
-    capture_ids: List[str]
+    device_type: str
+
+
+class EIFetchModelBody(BaseModel):
+    device_type: str
 
 
 class TelegramPrefsBody(BaseModel):
@@ -579,6 +588,22 @@ def create_app(registry: Registry, history_store: HistoryStore,
                 pass  # already gone / bad id -- deleting a selection is best-effort
         return {"deleted": deleted}
 
+    @app.post("/captures/rename_bulk")
+    def rename_captures_bulk_route(body: CaptureRenameBulkBody):
+        # Classifier tab's "Edit label (N)" action (docs/
+        # EDGE_IMPULSE_DASHBOARD_WORKFLOW_PLAN.md S8.7.1) -- one new label
+        # applied to every selected row in a single call rather than N
+        # sequential /captures/rename round-trips. Best-effort per id, same
+        # shape as /captures/delete above.
+        renamed = 0
+        for capture_id in body.ids:
+            try:
+                app.state.capture.rename_capture(capture_id, body.label)
+                renamed += 1
+            except CaptureError:
+                pass
+        return {"renamed": renamed}
+
     @app.get("/device_types")
     def get_device_types():
         # Distinct types already assigned across the fleet, for the same
@@ -590,8 +615,8 @@ def create_app(registry: Registry, history_store: HistoryStore,
                  if entry.device_type}
         return {"device_types": sorted(types)}
 
-    # Edge Impulse Round A -- Upload (docs/EDGE_IMPULSE_DASHBOARD_WORKFLOW_PLAN.md
-    # S4). Unlike Telegram (env-var-configured, legitimately absent on some
+    # Edge Impulse (docs/EDGE_IMPULSE_DASHBOARD_WORKFLOW_PLAN.md S4/S8).
+    # Unlike Telegram (env-var-configured, legitimately absent on some
     # deployments), app.state.ei being unset means the controller was never
     # wired at all -- main.py always constructs one, so this only guards
     # against test/dev call sites that construct routes standalone.
@@ -603,7 +628,8 @@ def create_app(registry: Registry, history_store: HistoryStore,
     @app.get("/classifier/ei/status")
     def ei_status():
         ctrl = _require_ei()
-        return {"device_types": ctrl.status(), "project_ids": ctrl.project_ids()}
+        return {"device_types": ctrl.status(), "project_ids": ctrl.project_ids(),
+                "models": ctrl.model_status(), "jobs": ctrl.job_state()}
 
     @app.post("/classifier/ei/link")
     def ei_link(body: EILinkBody):
@@ -619,11 +645,76 @@ def create_app(registry: Registry, history_store: HistoryStore,
     def ei_unlink(body: EIUnlinkBody):
         return _require_ei().unlink(body.device_type)
 
+    # Edge Impulse -- Upload/Fetch (S4 steps 4/8-9, upload reworked per S8).
+    # All three long-running actions (upload/train/fetch -- train is no
+    # longer reachable from a route, see EIController's module docstring)
+    # share this shape: a fast synchronous 409 if the device_type isn't
+    # linked yet or a job's already running for it (checked here so that
+    # common case is an immediate HTTP error, not just an async broadcast),
+    # then the actual EI work runs on a background Thread and streams
+    # "ei_progress" over /ws the same way commission/stop streams
+    # "training_progress", since a FastAPI route handler blocking for real
+    # minutes would tie up a worker thread and leave the request hanging.
+    # on_progress(stage, **extra) -- extra is spread into the broadcast so
+    # upload()'s uploaded/total/failures counters ride along the same
+    # message shape train()/fetch_model()'s bare stage strings use.
+    def _run_ei_job(device_type: str, action: str, job_fn) -> None:
+        def on_progress(stage: str, **extra) -> None:
+            broadcast_threadsafe(app, {
+                "type": "ei_progress", "device_type": device_type,
+                "action": action, "stage": stage, **extra,
+            })
+
+        def run() -> None:
+            try:
+                job_fn(on_progress)
+            except Exception as e:
+                # Broad on purpose, not just (EIClientError, EIControllerError):
+                # this runs off a background Thread, so an exception this
+                # doesn't catch doesn't propagate anywhere -- it just kills the
+                # thread silently and leaves the dashboard stuck on its last
+                # progress stage forever with no error shown. Bit us for real
+                # once already (extract_tflite()'s zipfile.BadZipFile, from the
+                # deployment/download `type` query-param bug fixed alongside
+                # this in ei_client.py) so anything unexpected must still reach
+                # the "error" broadcast below.
+                logger.exception("EI %s failed for device_type %r", action, device_type)
+                broadcast_threadsafe(app, {
+                    "type": "ei_progress", "device_type": device_type,
+                    "action": action, "stage": "error", "error": str(e),
+                })
+                return
+            broadcast_threadsafe(app, {
+                "type": "ei_progress", "device_type": device_type,
+                "action": action, "stage": "done",
+            })
+
+        threading.Thread(target=run, daemon=True).start()
+
     @app.post("/classifier/ei/upload")
     def ei_upload(body: EIUploadBody):
-        try:
-            return _require_ei().upload(body.capture_ids)
-        except EIClientError as e:
-            raise HTTPException(status_code=502, detail=str(e))
+        ctrl = _require_ei()
+        if not ctrl.status().get(body.device_type):
+            raise HTTPException(status_code=409,
+                                 detail=f"device_type {body.device_type!r} isn't linked to Edge Impulse yet")
+        if ctrl.job_state().get(body.device_type):
+            raise HTTPException(status_code=409,
+                                 detail=f"a job is already running for {body.device_type!r}")
+        _run_ei_job(body.device_type, "upload",
+                    lambda on_progress: ctrl.upload(body.device_type, on_progress=on_progress))
+        return {"started": True}
+
+    @app.post("/classifier/ei/fetch_model")
+    def ei_fetch_model(body: EIFetchModelBody):
+        ctrl = _require_ei()
+        if not ctrl.status().get(body.device_type):
+            raise HTTPException(status_code=409,
+                                 detail=f"device_type {body.device_type!r} isn't linked to Edge Impulse yet")
+        if ctrl.job_state().get(body.device_type):
+            raise HTTPException(status_code=409,
+                                 detail=f"a job is already running for {body.device_type!r}")
+        _run_ei_job(body.device_type, "fetch",
+                    lambda on_progress: ctrl.fetch_model(body.device_type, on_progress=on_progress))
+        return {"started": True}
 
     return app

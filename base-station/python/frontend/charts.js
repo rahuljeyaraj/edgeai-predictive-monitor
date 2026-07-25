@@ -142,6 +142,7 @@ const Charts = (() => {
   let registryHandler = null;
   let perfHandler = null;
   let alertsHandler = null;
+  let classifierHandler = null;
   const dirty = new Set();
 
   function escapeAttr(str) {
@@ -296,6 +297,8 @@ const Charts = (() => {
         if (perfHandler) perfHandler(msg);
       } else if (msg.type === "telegram_subscribers") {
         if (alertsHandler) alertsHandler(msg);
+      } else if (msg.type === "ei_progress") {
+        if (classifierHandler) classifierHandler(msg);
       }
     };
     ws.onclose = () => setTimeout(connectWs, WS_RECONNECT_MS);
@@ -1115,10 +1118,11 @@ const Charts = (() => {
     });
   }
 
-  async function init(onRegistryPush, onPerfStats, onTelegramSubscribers) {
+  async function init(onRegistryPush, onPerfStats, onTelegramSubscribers, onEiProgress) {
     registryHandler = onRegistryPush || null;
     perfHandler = onPerfStats || null;
     alertsHandler = onTelegramSubscribers || null;
+    classifierHandler = onEiProgress || null;
     connectWs();
     wireWaterfallToggle();
     wireAnomalyLiveToggle();

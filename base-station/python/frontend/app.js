@@ -1383,7 +1383,8 @@ Charts.init((msg) => {
   renderSummary(state.lastNodes);
   if (editingNodeId === null && editingDeviceTypeNodeId === null) renderFleetList(state.lastNodes);
   if (openRecordNodeId) renderRecordDrawer();
-}, (msg) => Perf.handleMessage(msg), (msg) => Alerts.handleMessage(msg));
+}, (msg) => Perf.handleMessage(msg), (msg) => Alerts.handleMessage(msg),
+   (msg) => Classifier.handleMessage(msg));
 
 Perf.init();
 Alerts.init();

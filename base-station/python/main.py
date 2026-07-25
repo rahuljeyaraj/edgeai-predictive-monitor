@@ -50,6 +50,7 @@ from registry import Registry
 from status_color import color_for
 from wire_protocol import LED_MODE_TO_INT
 from gate import MotorStateGate
+from classifier import ClassifierRegistry
 from manager import PipelineManager
 from store import HistoryStore
 from perf import PerformanceMonitor
@@ -274,17 +275,41 @@ def main():
             "status": status.value,
         })
 
+    def on_classification(node_id: str, timestamp: float, result: dict) -> None:
+        # Same "push immediately, don't make the dashboard wait for the
+        # periodic /nodes poll" reasoning as on_score above.
+        broadcast_threadsafe(app, {
+            "type": "classification",
+            "node_id": node_id,
+            "timestamp": timestamp,
+            "label": result["label"],
+            "confidence": result["confidence"],
+            "scores": result["scores"],
+        })
+
+    # Hoisted above PipelineManager's construction (used by EIController
+    # too, below) -- classifier_registry reads the same <device_type>.tflite/
+    # .labels.json files EIController's fetch_model() writes there
+    # (pipeline/classifier.py never imports api/ei_controller.py, so it
+    # reads the shared directory directly rather than through that class).
+    ei_models_dir = os.path.join(args.data_dir, "ei_models")
+    ei_scaling_path = os.path.join(args.data_dir, "ei_scaling.json")
+    classifier_registry = ClassifierRegistry(ei_models_dir)
+
     gate_factory = build_gate_factory(args.gate_threshold, args.gate_debounce_frames)
     manager = PipelineManager(
         registry, gate_factory, perf_monitor=perf_monitor, history_store=history,
-        status_debounce_frames=args.status_debounce_frames, on_score=on_score)
+        status_debounce_frames=args.status_debounce_frames, on_score=on_score,
+        classifier_registry=classifier_registry, scaling_path=ei_scaling_path,
+        on_classification=on_classification)
 
     commissioning = CommissioningController(
         registry, models_dir, gate_factory, min_frames=args.min_commission_frames)
     captures_dir = os.path.join(args.data_dir, "captures")
     capture = CaptureController(registry, captures_dir, gate_factory)
     ei_controller = EIController(
-        registry, os.path.join(args.data_dir, "ei_projects.json"), captures_dir)
+        registry, os.path.join(args.data_dir, "ei_projects.json"), captures_dir, ei_models_dir,
+        ei_scaling_path)
 
     def on_frame(frame: SensorFrame) -> None:
         manager.route(frame)

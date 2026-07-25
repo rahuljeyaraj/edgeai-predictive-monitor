@@ -33,7 +33,7 @@ from gate import MotorStateGate
 from manager import PipelineManager
 from alert_store import AlertStore
 import ei_client
-from ei_client import EITotpRequiredError
+from ei_client import EIClientError, EITotpRequiredError
 from ei_controller import EIController
 
 NODE_ID = "node-1"
@@ -79,10 +79,15 @@ class FakeEiClient:
     lives in tests/ei_controller_test.py; this file only needs enough to
     confirm the routes themselves wire through correctly."""
 
-    def __init__(self, totp_code=None):
+    def __init__(self, totp_code=None, fail_job=None):
         self.uploads = []
+        self.calls = []
         self._totp_code = totp_code
         self._next_id = 100
+        # Job name ("generate_features"/"train"/"build_model") to make
+        # wait_for_job() raise for, so a route test can exercise the
+        # "ei_progress" error broadcast without a real failing HTTP call.
+        self._fail_job = fail_job
         self.batched = ei_client.batched
         self.timestamped_filename = ei_client.timestamped_filename
 
@@ -96,16 +101,49 @@ class FakeEiClient:
         self._next_id += 1
         return project_id, f"ei_key_{project_id}"
 
-    def create_impulse(self, api_key, project_id, input_dim):
+    def create_impulse(self, api_key, project_id, input_dim, axes):
         return 3
 
     def set_nn_config(self, api_key, project_id, learn_id, input_dim, num_classes):
         pass
 
+    def delete_all_samples(self, api_key, project_id):
+        self.calls.append(("delete_all_samples", api_key, project_id))
+        if self._fail_job == "delete_all_samples":
+            raise EIClientError("delete-all failed (faked)")
+
     def upload_samples(self, api_key, category, label, samples):
+        self.calls.append(("upload_samples", category, label, len(samples)))
         self.uploads.append(
             {"api_key": api_key, "category": category, "label": label, "samples": samples})
         return len(samples)
+
+    # Round B (S4 steps 5-9) -- fixed job ids per step name are enough for
+    # wait_for_job() below to know which one (if any) should fail; no real
+    # network, no real delay (poll_interval/timeout aren't accepted here at
+    # all -- EIController.train()/fetch_model() never pass them, they're
+    # ei_client.wait_for_job()'s own kwargs with defaults, faked away
+    # entirely here).
+    def generate_features(self, api_key, project_id):
+        return 1 if self._fail_job == "generate_features" else 201
+
+    def train(self, api_key, project_id):
+        return 1 if self._fail_job == "train" else 202
+
+    def build_model(self, api_key, project_id):
+        return 1 if self._fail_job == "build_model" else 203
+
+    def wait_for_job(self, api_key, project_id, job_id, on_poll=None):
+        if on_poll:
+            on_poll()
+        if job_id == 1:
+            raise EIClientError("job failed (faked)")
+
+    def download_model(self, api_key, project_id):
+        return b"fake-zip-bytes"
+
+    def extract_tflite(self, zip_bytes):
+        return b"fake-tflite-bytes"
 
 
 class ApiUnderTest:
@@ -115,7 +153,7 @@ class ApiUnderTest:
     registry/history state never leaks between tests."""
 
     def __init__(self, tmp_dir: str, node_id=NODE_ID, sensor_config=frozenset({SensorChannel.MIC}),
-                 min_frames=5, epochs=300, telegram_bot=None, ei_totp_code=None):
+                 min_frames=5, epochs=300, telegram_bot=None, ei_totp_code=None, ei_fail_job=None):
         registry_path = os.path.join(tmp_dir, "registry.json")
         self.registry = Registry(registry_path)
         self.registry.add(node_id, sensor_config=sensor_config)
@@ -128,10 +166,12 @@ class ApiUnderTest:
         self.captures_dir = os.path.join(tmp_dir, "captures")
         self.capture = CaptureController(self.registry, self.captures_dir, gate_factory)
         self.manager = PipelineManager(self.registry, gate_factory, history_store=self.history)
-        self.ei_client = FakeEiClient(totp_code=ei_totp_code)
+        self.ei_client = FakeEiClient(totp_code=ei_totp_code, fail_job=ei_fail_job)
+        self.ei_models_dir = os.path.join(tmp_dir, "ei_models")
+        self.ei_scaling_path = os.path.join(tmp_dir, "ei_scaling.json")
         self.ei = EIController(
             self.registry, os.path.join(tmp_dir, "ei_projects.json"), self.captures_dir,
-            client=self.ei_client)
+            self.ei_models_dir, self.ei_scaling_path, client=self.ei_client)
         self.app = create_app(self.registry, self.history, self.commissioning, self.capture,
                                manager=self.manager,
                                alert_store=self.alert_store, telegram_bot=telegram_bot, ei=self.ei)
@@ -582,6 +622,39 @@ def test_captures_rename_unknown_id_is_400(tmp_dir):
         api.stop()
 
 
+def test_captures_rename_bulk(tmp_dir):
+    # Classifier tab's "Edit label (N)" bulk action (docs/
+    # EDGE_IMPULSE_DASHBOARD_WORKFLOW_PLAN.md S8.7.1) -- one new label
+    # applied to every selected recording in a single call, best-effort
+    # against a mix of valid and unknown ids (same shape as /captures/delete).
+    api = ApiUnderTest(tmp_dir)
+    try:
+        for label in ("bearing_fault", "healthy"):
+            status, _ = api.request("POST", f"/nodes/{NODE_ID}/capture/start")
+            assert status == 200
+            api.capture.feed_frame(frame(NODE_ID))
+            status, _ = api.request("POST", f"/nodes/{NODE_ID}/capture/stop")
+            assert status == 200
+            status, body = api.request("POST", f"/nodes/{NODE_ID}/capture/save", {"label": label})
+            assert status == 200, (status, body)
+
+        status, body = api.request("GET", "/captures")
+        ids = [c["id"] for c in body["captures"]]
+        assert len(ids) == 2, body
+
+        status, body = api.request("POST", "/captures/rename_bulk",
+                                    {"ids": ids + ["healthy/does-not-exist.json"], "label": "Loose Mount"})
+        assert status == 200 and body == {"renamed": 2}, (status, body)
+
+        status, body = api.request("GET", "/captures")
+        assert status == 200 and len(body["captures"]) == 2, body
+        assert all(c["label"] == "loose_mount" for c in body["captures"]), body
+        print("POST /captures/rename_bulk relabels every selected recording in "
+              "one call, best-effort against an unknown id mixed in: PASS")
+    finally:
+        api.stop()
+
+
 def test_ei_status_reports_unlinked_by_default(tmp_dir):
     # Round A "Upload" (docs/EDGE_IMPULSE_DASHBOARD_WORKFLOW_PLAN.md S4) --
     # a node's device_type shows up in GET /classifier/ei/status as
@@ -593,7 +666,8 @@ def test_ei_status_reports_unlinked_by_default(tmp_dir):
 
         status, body = api.request("GET", "/classifier/ei/status")
         assert status == 200 and body == {
-            "device_types": {"motor001": False}, "project_ids": {}}, (status, body)
+            "device_types": {"motor001": False}, "project_ids": {},
+            "models": {"motor001": None}, "jobs": {}}, (status, body)
         print("GET /classifier/ei/status reports an assigned-but-unlinked device_type: PASS")
     finally:
         api.stop()
@@ -612,7 +686,8 @@ def test_ei_link_creates_project_then_upload_pushes_samples(tmp_dir):
 
         status, body = api.request("GET", "/classifier/ei/status")
         assert body == {"device_types": {"motor001": True},
-                         "project_ids": {"motor001": 100}}, body
+                         "project_ids": {"motor001": 100},
+                         "models": {"motor001": None}, "jobs": {}}, body
 
         status, _ = api.request("POST", f"/nodes/{NODE_ID}/capture/start")
         assert status == 200
@@ -621,17 +696,33 @@ def test_ei_link_creates_project_then_upload_pushes_samples(tmp_dir):
         assert status == 200
         status, body = api.request("POST", f"/nodes/{NODE_ID}/capture/save", {"label": "bearing_fault"})
         assert status == 200, (status, body)
-        status, body = api.request("GET", "/captures")
-        capture_id = body["captures"][0]["id"]
 
-        status, body = api.request("POST", "/classifier/ei/upload", {"capture_ids": [capture_id]})
-        assert status == 200, (status, body)
-        assert body["rejected"] == {}, body
-        counts = body["uploaded"]["motor001"]["bearing_fault"]
-        assert counts["training"] + counts["testing"] == 1, body
-        assert len(api.ei_client.uploads) == 1
-        print("POST /classifier/ei/link + /classifier/ei/upload push a "
-              "saved capture through to the (faked) Edge Impulse client: PASS")
+        # Upload runs as a background job now (S8.3 -- always every local
+        # recording for the device_type, wiping the project first), same
+        # "observe over /ws, not the REST response" shape as train/fetch.
+        with api.client.websocket_connect("/ws") as ws:
+            status, body = api.request("POST", "/classifier/ei/upload", {"device_type": "motor001"})
+            assert status == 200 and body == {"started": True}, (status, body)
+
+            stages = []
+            for _ in range(50):
+                message = ws.receive_json()
+                if message["type"] == "ei_progress" and message["device_type"] == "motor001" \
+                        and message["action"] == "upload":
+                    stages.append(message["stage"])
+                    if message["stage"] in ("done", "error"):
+                        break
+            assert stages[0] == "deleting", stages
+            assert "uploading" in stages, stages
+            assert stages[-1] == "done", stages
+
+        call_names = [c[0] for c in api.ei_client.calls]
+        assert call_names.index("delete_all_samples") < call_names.index("upload_samples"), call_names
+        assert len(api.ei_client.uploads) >= 1
+        print("POST /classifier/ei/link + /classifier/ei/upload wipe the EI "
+              "project then push every local recording for that device_type "
+              "through to the (faked) client, streaming deleting -> "
+              "uploading -> done over /ws: PASS")
     finally:
         api.stop()
 
@@ -650,7 +741,8 @@ def test_ei_link_totp_required_returns_400_marker(tmp_dir):
         assert status == 400 and body["error"] == {"totp_required": True}, (status, body)
 
         status, body = api.request("GET", "/classifier/ei/status")
-        assert body == {"device_types": {"motor001": False}, "project_ids": {}}, \
+        assert body == {"device_types": {"motor001": False}, "project_ids": {},
+                         "models": {"motor001": None}, "jobs": {}}, \
             "a failed link() must not report the device_type as linked"
         print("POST /classifier/ei/link surfaces a totp_required marker "
               "(not a generic error) when EI's login needs a 2FA code: PASS")
@@ -672,7 +764,8 @@ def test_ei_unlink_clears_project_and_allows_relink(tmp_dir):
         assert status == 200 and body == {"removed": True}, (status, body)
 
         status, body = api.request("GET", "/classifier/ei/status")
-        assert body == {"device_types": {"motor001": False}, "project_ids": {}}, body
+        assert body == {"device_types": {"motor001": False}, "project_ids": {},
+                         "models": {"motor001": None}, "jobs": {}}, body
 
         # Covers "I deleted the project in EI Studio, now what" -- unlinking
         # locally lets a fresh link() create a brand new project rather than
@@ -683,6 +776,122 @@ def test_ei_unlink_clears_project_and_allows_relink(tmp_dir):
         assert status == 200 and body["linked"] is True, (status, body)
         print("POST /classifier/ei/unlink clears the saved project so a "
               "device_type can be linked again: PASS")
+    finally:
+        api.stop()
+
+
+def test_ei_fetch_model_over_ws(tmp_dir):
+    # POST /classifier/ei/fetch_model starts a background job and returns
+    # {"started": True} immediately -- actual progress/completion arrives
+    # as "ei_progress" WS messages, same "observe over /ws, not the REST
+    # response" shape as commission/stop's training_progress. (Train, S4
+    # steps 5-6, no longer has a route -- S8.2 dropped it from the tab
+    # since training now happens in EI Studio itself; Fetch is the only
+    # glue left to pull the compiled model back down.)
+    api = ApiUnderTest(tmp_dir)
+    try:
+        status, body = api.request("POST", f"/nodes/{NODE_ID}/device_type", {"device_type": "motor001"})
+        assert status == 200, (status, body)
+        status, body = api.request("POST", "/classifier/ei/link",
+                                    {"device_type": "motor001", "username": "me@example.com",
+                                     "password": "hunter2"})
+        assert status == 200 and body["linked"] is True, (status, body)
+
+        # fetch_model() now derives the fetched model's class-label order
+        # from local captures (pipeline/classifier.py needs real label
+        # names, not just a count) -- needs at least one on disk first,
+        # same setup as test_ei_link_creates_project_then_upload_pushes_samples.
+        status, _ = api.request("POST", f"/nodes/{NODE_ID}/capture/start")
+        assert status == 200
+        api.capture.feed_frame(frame(NODE_ID))
+        status, _ = api.request("POST", f"/nodes/{NODE_ID}/capture/stop")
+        assert status == 200
+        status, body = api.request("POST", f"/nodes/{NODE_ID}/capture/save", {"label": "bearing_fault"})
+        assert status == 200, (status, body)
+
+        with api.client.websocket_connect("/ws") as ws:
+            status, body = api.request("POST", "/classifier/ei/fetch_model", {"device_type": "motor001"})
+            assert status == 200 and body == {"started": True}, (status, body)
+
+            stages = []
+            for _ in range(50):
+                message = ws.receive_json()
+                if message["type"] == "ei_progress" and message["device_type"] == "motor001" \
+                        and message["action"] == "fetch":
+                    stages.append(message["stage"])
+                    if message["stage"] == "done":
+                        break
+            assert stages == ["building", "building", "downloading", "done"], stages
+
+            status, body = api.request("GET", "/classifier/ei/status")
+            assert body["models"]["motor001"] is not None, \
+                "fetch_model must record a fetched-model timestamp once done"
+            model_path = os.path.join(api.ei_models_dir, "motor001.tflite")
+            assert os.path.isfile(model_path)
+            labels_path = os.path.join(api.ei_models_dir, "motor001.labels.json")
+            assert os.path.isfile(labels_path)
+        print("POST /classifier/ei/fetch_model runs its background job and "
+              "streams ei_progress over /ws through to done: PASS")
+    finally:
+        api.stop()
+
+
+def test_ei_upload_rejects_unlinked_device_type_synchronously(tmp_dir):
+    api = ApiUnderTest(tmp_dir)
+    try:
+        status, body = api.request("POST", f"/nodes/{NODE_ID}/device_type", {"device_type": "motor001"})
+        assert status == 200, (status, body)
+
+        status, body = api.request("POST", "/classifier/ei/upload", {"device_type": "motor001"})
+        assert status == 409, (status, body)
+        print("POST /classifier/ei/upload synchronously rejects an unlinked "
+              "device_type instead of starting a doomed background job: PASS")
+    finally:
+        api.stop()
+
+
+def test_ei_upload_job_failure_broadcasts_error_over_ws(tmp_dir):
+    # delete-all (upload's first step, S8.3) failing must abort before any
+    # sample is pushed -- otherwise a failed wipe followed by a successful
+    # upload could double up data in the project (S8.7.4).
+    api = ApiUnderTest(tmp_dir, ei_fail_job="delete_all_samples")
+    try:
+        status, body = api.request("POST", f"/nodes/{NODE_ID}/device_type", {"device_type": "motor001"})
+        assert status == 200, (status, body)
+        status, body = api.request("POST", "/classifier/ei/link",
+                                    {"device_type": "motor001", "username": "me@example.com",
+                                     "password": "hunter2"})
+        assert status == 200 and body["linked"] is True, (status, body)
+        status, _ = api.request("POST", f"/nodes/{NODE_ID}/capture/start")
+        assert status == 200
+        api.capture.feed_frame(frame(NODE_ID))
+        status, _ = api.request("POST", f"/nodes/{NODE_ID}/capture/stop")
+        assert status == 200
+        status, body = api.request("POST", f"/nodes/{NODE_ID}/capture/save", {"label": "bearing_fault"})
+        assert status == 200, (status, body)
+
+        with api.client.websocket_connect("/ws") as ws:
+            status, body = api.request("POST", "/classifier/ei/upload", {"device_type": "motor001"})
+            assert status == 200, (status, body)
+
+            error_message = None
+            for _ in range(50):
+                message = ws.receive_json()
+                if message["type"] == "ei_progress" and message["stage"] == "error":
+                    error_message = message
+                    break
+            assert error_message is not None, "expected an ei_progress error broadcast"
+            assert error_message["device_type"] == "motor001"
+            assert error_message["action"] == "upload"
+            assert "error" in error_message and error_message["error"]
+
+            status, body = api.request("GET", "/classifier/ei/status")
+            assert body["jobs"] == {}, \
+                "a failed job must still clear job_state(), not strand the device_type as busy"
+        assert api.ei_client.uploads == [], \
+            "a failed delete-all must abort before any sample is uploaded"
+        print("A failed EI delete-all broadcasts an ei_progress error over "
+              "/ws, clears job_state(), and uploads nothing: PASS")
     finally:
         api.stop()
 
@@ -819,10 +1028,14 @@ def main():
     test_decommission_discards_capture_session(tempfile.mkdtemp(dir=tmp_dir))
     test_captures_list_rename_delete(tempfile.mkdtemp(dir=tmp_dir))
     test_captures_rename_unknown_id_is_400(tempfile.mkdtemp(dir=tmp_dir))
+    test_captures_rename_bulk(tempfile.mkdtemp(dir=tmp_dir))
     test_ei_status_reports_unlinked_by_default(tempfile.mkdtemp(dir=tmp_dir))
     test_ei_link_creates_project_then_upload_pushes_samples(tempfile.mkdtemp(dir=tmp_dir))
     test_ei_link_totp_required_returns_400_marker(tempfile.mkdtemp(dir=tmp_dir))
     test_ei_unlink_clears_project_and_allows_relink(tempfile.mkdtemp(dir=tmp_dir))
+    test_ei_fetch_model_over_ws(tempfile.mkdtemp(dir=tmp_dir))
+    test_ei_upload_rejects_unlinked_device_type_synchronously(tempfile.mkdtemp(dir=tmp_dir))
+    test_ei_upload_job_failure_broadcasts_error_over_ws(tempfile.mkdtemp(dir=tmp_dir))
     test_history_endpoint_returns_recorded_scores(tempfile.mkdtemp(dir=tmp_dir))
     test_websocket_broadcast_reaches_connected_client(tempfile.mkdtemp(dir=tmp_dir))
     test_telegram_status_reports_not_configured_by_default(tempfile.mkdtemp(dir=tmp_dir))

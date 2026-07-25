@@ -1517,10 +1517,11 @@ body {
 }
 
 /* ---------------------------------------------------------------------
-   Classifier tab (docs/EDGE_IMPULSE_DASHBOARD_WORKFLOW_PLAN.md S3) --
-   recorded-sample table (reuses .perf-card/.perf-empty/.perf-chart__caption
-   from the perf/alerts pages for the panel chrome) + a placeholder Edge
-   Impulse card below it.
+   Classifier tab (docs/EDGE_IMPULSE_DASHBOARD_WORKFLOW_PLAN.md S8) -- one
+   card per asset class (.classifier-card, layered on .perf-card/
+   .perf-empty for chrome), each holding its own recordings table, a
+   Delete/Edit-label action bar driven by that table's own checkboxes, and
+   -- linked classes only -- Upload/Studio-link/Unlink/Fetch controls.
    --------------------------------------------------------------------- */
 
 .classifier-page {
@@ -1530,31 +1531,37 @@ body {
   gap: 16px;
 }
 
-.classifier-toolbar {
+.classifier-cards {
   display: flex;
-  align-items: center;
+  flex-direction: column;
   gap: 16px;
 }
 
-.classifier-toolbar__all {
+.classifier-card {
+  padding: 16px;
+  gap: 12px;
+}
+
+.classifier-card__actions {
   display: flex;
   align-items: center;
   gap: 8px;
-  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
-  font-size: 14px;
-  color: #94a3b8;
-  cursor: pointer;
 }
 
-.classifier-toolbar__count {
+.classifier-card__upload-progress {
   font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
   font-size: 14px;
-  color: #64748b;
-  flex: 1 1 auto;
+  color: #cbd5e1;
 }
 
-.classifier-table-card {
-  padding: 16px;
+.classifier-card__failures {
+  margin-top: 4px;
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 13px;
+  color: #fbbf24;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
 }
 
 .classifier-table__wrap {
@@ -1595,18 +1602,6 @@ body {
   color: #64748b;
 }
 
-.classifier-table__actions {
-  display: flex;
-  gap: 6px;
-  justify-content: flex-end;
-}
-
-.classifier-table__rename {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-}
-
 .classifier-table__rename-input {
   font: inherit;
   font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
@@ -1638,12 +1633,6 @@ body {
 
 .classifier-ei__row + .classifier-ei__row {
   margin-top: 10px;
-}
-
-.classifier-ei__actions {
-  margin-top: 14px;
-  padding-top: 14px;
-  border-top: 1px solid rgba(148, 163, 184, 0.15);
 }
 
 .classifier-ei__type {
@@ -1696,16 +1685,8 @@ body {
   width: 100%;
 }
 
-.classifier-ei__result {
-  margin-top: 12px;
+.classifier-ei__model-status {
   font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
   font-size: 13px;
-  color: #cbd5e1;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.classifier-ei__warning {
-  color: #fbbf24;
+  color: #94a3b8;
 }

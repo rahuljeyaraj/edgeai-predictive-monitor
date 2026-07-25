@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """
 EIController verification (api/ei_controller.py, docs/
-EDGE_IMPULSE_DASHBOARD_WORKFLOW_PLAN.md S4): link() idempotency,
-upload()'s device_type/link-state rejection rules, the
-standardize-with-node-baseline-vs-raw-fallback branch (the train/serve
-skew this round exists to close -- see EIController._standardize's
-docstring), and the contiguous-tail train/test split -- all against a
-FakeEiClient (dependency-injected, same "hand-rolled fake, no mock
-library" convention as api_test.py's FakeTelegramBot), no real network.
+EDGE_IMPULSE_DASHBOARD_WORKFLOW_PLAN.md S4/S8): link() idempotency,
+upload()'s device_type-scoped "always everything" gather, the pooled
+per-device-type scalar-tail normalization (S8.4 -- replaces the old
+per-node commissioning-baseline approach), the delete-before-upload
+ordering and deleting/uploading progress reporting (S8.3/8.5), and the
+contiguous-tail train/test split -- all against a FakeEiClient
+(dependency-injected, same "hand-rolled fake, no mock library" convention
+as api_test.py's FakeTelegramBot), no real network.
 
 Run with PYTHONPATH covering base-station/python/ingestion, base-station/python/registry, base-station/python/pipeline, base-station/python/api:
     PYTHONPATH=base-station/python/ingestion:base-station/python/registry:base-station/python/pipeline:base-station/python/api \\
@@ -16,11 +17,13 @@ Run with PYTHONPATH covering base-station/python/ingestion, base-station/python/
 import os
 import sys
 import tempfile
+import time
 
 import ei_client
-from ei_client import EITotpRequiredError
+from ei_client import EIClientError, EITotpRequiredError
 from ei_controller import EIController, EIControllerError
 from ei_projects import get_project
+from ei_scaling import get_scaling
 from capture import CaptureSession
 from gate import MotorStateGate
 from registry import Registry, SensorChannel
@@ -35,15 +38,24 @@ MIC_SCALARS = {"rms_mic": 1.0, "kurtosis_mic": 1.0, "std_mic": 1.0,
 
 class FakeEiClient:
     """Duck-types ei_client's module-level API -- login/create_project/
-    create_impulse/set_nn_config/upload_samples are faked and recorded;
-    batched()/timestamped_filename() are pure helpers with no network, so
-    delegated straight to the real ei_client rather than reimplemented."""
+    create_impulse/set_nn_config/upload_samples/delete_all_samples/
+    generate_features/train/build_model/wait_for_job/download_model/
+    extract_tflite are faked and recorded; batched()/timestamped_filename()
+    are pure helpers with no network, so delegated straight to the real
+    ei_client rather than reimplemented. upload_samples() records into both
+    `self.uploads` (full sample payloads, for content assertions) AND
+    `self.calls` (just the call name, for ordering assertions against
+    delete_all_samples -- S8.3's "wipe, then upload" contract)."""
 
-    def __init__(self, totp_code=None):
+    def __init__(self, totp_code=None, fail_job=None):
         self.calls = []
         self.uploads = []
         self._totp_code = totp_code
         self._next_id = 100
+        # Job name ("generate_features"/"train"/"build_model") to make
+        # wait_for_job() raise for -- lets tests exercise EIController's
+        # error path without a real failing HTTP call.
+        self._fail_job = fail_job
         self.batched = ei_client.batched
         self.timestamped_filename = ei_client.timestamped_filename
 
@@ -59,18 +71,66 @@ class FakeEiClient:
         self._next_id += 1
         return project_id, f"ei_key_{project_id}"
 
-    def create_impulse(self, api_key, project_id, input_dim):
-        self.calls.append(("create_impulse", api_key, project_id, input_dim))
+    def create_impulse(self, api_key, project_id, input_dim, axes):
+        self.calls.append(("create_impulse", api_key, project_id, input_dim, axes))
         return 3
 
     def set_nn_config(self, api_key, project_id, learn_id, input_dim, num_classes):
         self.calls.append(
             ("set_nn_config", api_key, project_id, learn_id, input_dim, num_classes))
 
+    def delete_all_samples(self, api_key, project_id):
+        self.calls.append(("delete_all_samples", api_key, project_id))
+
     def upload_samples(self, api_key, category, label, samples):
+        self.calls.append(("upload_samples", category, label, len(samples)))
         self.uploads.append(
             {"api_key": api_key, "category": category, "label": label, "samples": samples})
         return len(samples)
+
+    def generate_features(self, api_key, project_id):
+        self.calls.append(("generate_features", api_key, project_id))
+        return 201
+
+    def train(self, api_key, project_id):
+        self.calls.append(("train", api_key, project_id))
+        return 202
+
+    def build_model(self, api_key, project_id):
+        self.calls.append(("build_model", api_key, project_id))
+        return 203
+
+    def wait_for_job(self, api_key, project_id, job_id, on_poll=None):
+        self.calls.append(("wait_for_job", api_key, project_id, job_id))
+        if on_poll:
+            on_poll()
+        job_name = {201: "generate_features", 202: "train", 203: "build_model"}.get(job_id)
+        if job_name == self._fail_job:
+            raise EIClientError(f"job {job_id} failed (faked)")
+
+    def download_model(self, api_key, project_id):
+        self.calls.append(("download_model", api_key, project_id))
+        return b"fake-zip-bytes"
+
+    def extract_tflite(self, zip_bytes):
+        self.calls.append(("extract_tflite", zip_bytes))
+        return b"fake-tflite-bytes"
+
+
+class SlowFakeEiClient(FakeEiClient):
+    """Adds a fixed per-call delay to upload_samples() -- simulates real
+    network/EI-server latency per HTTP round-trip, so a test can tell
+    concurrent batch dispatch (S8's fix for real-account uploads being
+    "very slow") apart from serial one-batch-at-a-time dispatch by wall
+    clock time, without needing a real network."""
+
+    def __init__(self, delay_s, **kwargs):
+        super().__init__(**kwargs)
+        self._delay_s = delay_s
+
+    def upload_samples(self, api_key, category, label, samples):
+        time.sleep(self._delay_s)
+        return super().upload_samples(api_key, category, label, samples)
 
 
 def frame(node_id, mic_bins):
@@ -80,6 +140,16 @@ def frame(node_id, mic_bins):
 
 def running_frame(node_id):
     return frame(node_id, tuple(3.0 + 0.001 * i for i in range(DIM)))  # RMS well over threshold
+
+
+def scalar_frame(node_id, scalar_value):
+    """Like running_frame(), but every scalar column is set to
+    scalar_value instead of the fixed MIC_SCALARS -- lets a test control
+    exactly what a pooled mu/sigma should come out to."""
+    bins = tuple(3.0 + 0.001 * i for i in range(DIM))
+    scalars = {name: scalar_value for name in MIC_SCALARS}
+    return SensorFrame(node_id=node_id, source=FrameSource.SPI, timestamp=0.0,
+                        bins={"mic": bins}, scalars=scalars)
 
 
 def new_gate():
@@ -96,9 +166,27 @@ def save_capture(registry, captures_dir, node_id, label, count=3):
     return os.path.relpath(path, captures_dir).replace(os.sep, "/")
 
 
+def save_capture_with_scalar(registry, captures_dir, node_id, label, scalar_value, count=4):
+    session = CaptureSession(registry, captures_dir, node_id, new_gate())
+    session.start()
+    for _ in range(count):
+        session.feed_frame(scalar_frame(node_id, scalar_value))
+    session.stop()
+    path = session.save(label)
+    return os.path.relpath(path, captures_dir).replace(os.sep, "/")
+
+
 def decode_csv(csv_bytes):
-    lines = csv_bytes.decode("utf-8").strip().split("\n")[1:]  # drop header row
-    return tuple(float(line.split(",")[1]) for line in lines)
+    # Wide single-row format -- one header of real axis names, one data
+    # row -- mirrors _to_csv()'s real shape (Edge Impulse's documented
+    # "single, multi-axis reading" CSV). Header content isn't checked
+    # here (see test_link_passes_real_axis_names_to_create_impulse for
+    # that), only that it lines up 1:1 with the data row.
+    lines = csv_bytes.decode("utf-8").strip().split("\n")
+    assert len(lines) == 2, f"expected 1 header row + 1 data row, got {len(lines)} lines"
+    header, data = lines[0].split(","), lines[1].split(",")
+    assert len(header) == len(data), (header, data)
+    return tuple(float(v) for v in data)
 
 
 def new_env():
@@ -106,15 +194,17 @@ def new_env():
     registry = Registry(os.path.join(tmp_dir, "registry.json"))
     projects_path = os.path.join(tmp_dir, "ei_projects.json")
     captures_dir = os.path.join(tmp_dir, "captures")
-    return registry, projects_path, captures_dir
+    models_dir = os.path.join(tmp_dir, "ei_models")
+    scaling_path = os.path.join(tmp_dir, "ei_scaling.json")
+    return registry, projects_path, captures_dir, models_dir, scaling_path
 
 
 def test_link_creates_project_on_first_call():
-    registry, projects_path, captures_dir = new_env()
+    registry, projects_path, captures_dir, models_dir, scaling_path = new_env()
     registry.add(NODE_A, sensor_config=frozenset({SensorChannel.MIC}))
     registry.set_device_type(NODE_A, "motor001")
     client = FakeEiClient()
-    controller = EIController(registry, projects_path, captures_dir, client=client)
+    controller = EIController(registry, projects_path, captures_dir, models_dir, scaling_path, client=client)
 
     result = controller.link("motor001", "me@example.com", "hunter2")
 
@@ -126,12 +216,32 @@ def test_link_creates_project_on_first_call():
     print("link() creates project+impulse+NN-config on first call: PASS")
 
 
-def test_link_is_idempotent():
-    registry, projects_path, captures_dir = new_env()
+def test_link_passes_real_axis_names_to_create_impulse():
+    registry, projects_path, captures_dir, models_dir, scaling_path = new_env()
     registry.add(NODE_A, sensor_config=frozenset({SensorChannel.MIC}))
     registry.set_device_type(NODE_A, "motor001")
     client = FakeEiClient()
-    controller = EIController(registry, projects_path, captures_dir, client=client)
+    controller = EIController(registry, projects_path, captures_dir, models_dir, scaling_path, client=client)
+
+    controller.link("motor001", "me@example.com", "hunter2")
+
+    create_call = next(c for c in client.calls if c[0] == "create_impulse")
+    axes = create_call[4]
+    assert len(axes) == DIM + 6, axes
+    assert axes[0] == "mic_bin0", axes[0]
+    assert axes[DIM - 1] == f"mic_bin{DIM - 1}", axes[DIM - 1]
+    assert axes[DIM:] == ["mic_rms", "mic_kurtosis", "mic_std", "mic_peak",
+                           "mic_crest_factor", "mic_skewness"], axes[DIM:]
+    print("link() passes real per-column axis names (mic_binN, mic_rms, ...) "
+          "to create_impulse(), not generic feature_N ones: PASS")
+
+
+def test_link_is_idempotent():
+    registry, projects_path, captures_dir, models_dir, scaling_path = new_env()
+    registry.add(NODE_A, sensor_config=frozenset({SensorChannel.MIC}))
+    registry.set_device_type(NODE_A, "motor001")
+    client = FakeEiClient()
+    controller = EIController(registry, projects_path, captures_dir, models_dir, scaling_path, client=client)
 
     first = controller.link("motor001", "me@example.com", "hunter2")
     second = controller.link("motor001", "someone-else@example.com", "different")
@@ -142,9 +252,9 @@ def test_link_is_idempotent():
 
 
 def test_link_raises_for_device_type_with_no_node():
-    registry, projects_path, captures_dir = new_env()
+    registry, projects_path, captures_dir, models_dir, scaling_path = new_env()
     client = FakeEiClient()
-    controller = EIController(registry, projects_path, captures_dir, client=client)
+    controller = EIController(registry, projects_path, captures_dir, models_dir, scaling_path, client=client)
 
     try:
         controller.link("ghost_type", "me@example.com", "hunter2")
@@ -156,11 +266,11 @@ def test_link_raises_for_device_type_with_no_node():
 
 
 def test_link_propagates_totp_required():
-    registry, projects_path, captures_dir = new_env()
+    registry, projects_path, captures_dir, models_dir, scaling_path = new_env()
     registry.add(NODE_A, sensor_config=frozenset({SensorChannel.MIC}))
     registry.set_device_type(NODE_A, "motor001")
     client = FakeEiClient(totp_code="654321")
-    controller = EIController(registry, projects_path, captures_dir, client=client)
+    controller = EIController(registry, projects_path, captures_dir, models_dir, scaling_path, client=client)
 
     try:
         controller.link("motor001", "me@example.com", "hunter2")
@@ -173,11 +283,11 @@ def test_link_propagates_totp_required():
 
 
 def test_unlink_clears_project_and_allows_relink():
-    registry, projects_path, captures_dir = new_env()
+    registry, projects_path, captures_dir, models_dir, scaling_path = new_env()
     registry.add(NODE_A, sensor_config=frozenset({SensorChannel.MIC}))
     registry.set_device_type(NODE_A, "motor001")
     client = FakeEiClient()
-    controller = EIController(registry, projects_path, captures_dir, client=client)
+    controller = EIController(registry, projects_path, captures_dir, models_dir, scaling_path, client=client)
     first = controller.link("motor001", "me@example.com", "hunter2")
 
     result = controller.unlink("motor001")
@@ -197,13 +307,13 @@ def test_unlink_clears_project_and_allows_relink():
 
 
 def test_status_reflects_linked_device_types():
-    registry, projects_path, captures_dir = new_env()
+    registry, projects_path, captures_dir, models_dir, scaling_path = new_env()
     registry.add(NODE_A, sensor_config=frozenset({SensorChannel.MIC}))
     registry.set_device_type(NODE_A, "motor001")
     registry.add(NODE_B, sensor_config=frozenset({SensorChannel.MIC}))
     registry.set_device_type(NODE_B, "pump002")
     client = FakeEiClient()
-    controller = EIController(registry, projects_path, captures_dir, client=client)
+    controller = EIController(registry, projects_path, captures_dir, models_dir, scaling_path, client=client)
 
     controller.link("motor001", "me@example.com", "hunter2")
 
@@ -218,121 +328,374 @@ def test_status_reflects_linked_device_types():
     print("link() names the EI project 'edgeai-predictive-monitor-<device_type>': PASS")
 
 
-def test_upload_standardizes_using_node_baseline():
-    registry, projects_path, captures_dir = new_env()
+def test_upload_standardizes_using_pooled_device_type_baseline():
+    # Two DIFFERENT nodes, same device_type -- proves the baseline is
+    # pooled per-device-type (S8.4), not per-node the way it used to be.
+    # Each label's scalar value is homogeneous across its own 4 frames, so
+    # which single frame the 80/20 split shaves off as "test" can't shift
+    # that label's contribution to the pooled train-only fit -- the pooled
+    # mean/stdev below is fully deterministic.
+    registry, projects_path, captures_dir, models_dir, scaling_path = new_env()
     registry.add(NODE_A, sensor_config=frozenset({SensorChannel.MIC}))
     registry.set_device_type(NODE_A, "motor001")
-    entry = registry.get(NODE_A)
-    entry.scalar_mu = (0.5,) * 6
-    entry.scalar_sigma = (2.0,) * 6  # (1.0 - 0.5) / 2.0 == 0.25 expected tail
+    registry.add(NODE_B, sensor_config=frozenset({SensorChannel.MIC}))
+    registry.set_device_type(NODE_B, "motor001")
     client = FakeEiClient()
-    controller = EIController(registry, projects_path, captures_dir, client=client)
+    controller = EIController(registry, projects_path, captures_dir, models_dir, scaling_path, client=client)
     controller.link("motor001", "me@example.com", "hunter2")
-    capture_id = save_capture(registry, captures_dir, NODE_A, "bearing_fault", count=3)
+    save_capture_with_scalar(registry, captures_dir, NODE_A, "healthy", 1.0, count=4)
+    save_capture_with_scalar(registry, captures_dir, NODE_B, "bearing_fault", 5.0, count=4)
 
-    result = controller.upload([capture_id])
+    result = controller.upload("motor001")
 
-    assert result["warnings"] == [], result["warnings"]
-    assert result["rejected"] == {}
+    assert result["rejected"] == {}, result
+    # train-only pool: 3x healthy@1.0 + 3x bearing_fault@5.0 -> mean 3.0,
+    # population stdev 2.0, on every one of the 6 scalar columns.
+    scaling = get_scaling(scaling_path, "motor001")
+    assert scaling["spectral_dim"] == DIM, scaling
+    assert all(abs(m - 3.0) < 1e-9 for m in scaling["mu"]), scaling
+    assert all(abs(s - 2.0) < 1e-9 for s in scaling["sigma"]), scaling
+
+    all_samples = [s for u in client.uploads for s in u["samples"]]
+    assert len(all_samples) == 8, all_samples
+    for entry in client.uploads:
+        expected_tail = -1.0 if entry["label"] == "healthy" else 1.0
+        for _filename, csv_bytes in entry["samples"]:
+            tail = decode_csv(csv_bytes)[DIM:]
+            assert all(abs(v - expected_tail) < 1e-9 for v in tail), (entry["label"], tail)
+    print("upload() standardizes the scalar tail against a pooled "
+          "per-device-type baseline (train-only, across every node/label), "
+          "not a per-node one: PASS")
+
+
+def test_upload_only_includes_captures_for_the_given_device_type():
+    registry, projects_path, captures_dir, models_dir, scaling_path = new_env()
+    registry.add(NODE_A, sensor_config=frozenset({SensorChannel.MIC}))
+    registry.set_device_type(NODE_A, "motor001")
+    registry.add(NODE_B, sensor_config=frozenset({SensorChannel.MIC}))
+    registry.set_device_type(NODE_B, "pump002")
+    client = FakeEiClient()
+    controller = EIController(registry, projects_path, captures_dir, models_dir, scaling_path, client=client)
+    controller.link("motor001", "me@example.com", "hunter2")
+    save_capture(registry, captures_dir, NODE_A, "bearing_fault", count=2)
+    save_capture(registry, captures_dir, NODE_B, "bearing_fault", count=2)  # pump002 -- must stay out
+
+    result = controller.upload("motor001")
+
     counts = result["uploaded"]["motor001"]["bearing_fault"]
-    assert counts["training"] + counts["testing"] == 3
-    all_samples = [s for u in client.uploads for s in u["samples"]]
-    assert len(all_samples) == 3
-    for _filename, csv_bytes in all_samples:
-        vector = decode_csv(csv_bytes)
-        assert len(vector) == DIM + 6
-        tail = vector[DIM:]
-        assert all(abs(v - 0.25) < 1e-9 for v in tail), tail
-    print("upload() standardizes the scalar tail against the node's commissioned baseline: PASS")
-
-
-def test_upload_falls_back_to_raw_when_uncommissioned():
-    registry, projects_path, captures_dir = new_env()
-    registry.add(NODE_A, sensor_config=frozenset({SensorChannel.MIC}))
-    registry.set_device_type(NODE_A, "motor001")
-    # No scalar_mu/scalar_sigma set -- node was never commissioned.
-    client = FakeEiClient()
-    controller = EIController(registry, projects_path, captures_dir, client=client)
-    controller.link("motor001", "me@example.com", "hunter2")
-    capture_id = save_capture(registry, captures_dir, NODE_A, "bearing_fault", count=3)
-
-    result = controller.upload([capture_id])
-
-    assert len(result["warnings"]) == 1, result["warnings"]
-    assert "never commissioned" in result["warnings"][0] or "no commissioned baseline" in result["warnings"][0]
-    all_samples = [s for u in client.uploads for s in u["samples"]]
-    for _filename, csv_bytes in all_samples:
-        tail = decode_csv(csv_bytes)[DIM:]
-        assert all(v == 1.0 for v in tail), tail  # raw MIC_SCALARS value, untouched
-    print("upload() falls back to a raw scalar tail (with a warning) for an "
-          "uncommissioned node, instead of blocking: PASS")
-
-
-def test_upload_rejects_capture_with_no_device_type():
-    registry, projects_path, captures_dir = new_env()
-    registry.add(NODE_A, sensor_config=frozenset({SensorChannel.MIC}))
-    # device_type deliberately left unset.
-    client = FakeEiClient()
-    controller = EIController(registry, projects_path, captures_dir, client=client)
-    capture_id = save_capture(registry, captures_dir, NODE_A, "bearing_fault", count=1)
-
-    result = controller.upload([capture_id])
-
-    assert capture_id in result["rejected"]
-    assert result["uploaded"] == {}
-    assert client.uploads == []
-    print("upload() rejects a capture whose node has no device_type: PASS")
-
-
-def test_upload_rejects_capture_for_unlinked_device_type():
-    registry, projects_path, captures_dir = new_env()
-    registry.add(NODE_A, sensor_config=frozenset({SensorChannel.MIC}))
-    registry.set_device_type(NODE_A, "motor001")
-    client = FakeEiClient()
-    controller = EIController(registry, projects_path, captures_dir, client=client)
-    # link() deliberately never called for motor001.
-    capture_id = save_capture(registry, captures_dir, NODE_A, "bearing_fault", count=1)
-
-    result = controller.upload([capture_id])
-
-    assert capture_id in result["rejected"]
-    assert "linked" in result["rejected"][capture_id]
-    print("upload() rejects a capture for a device_type with no EI project yet: PASS")
+    assert counts["training"] + counts["testing"] == 2, counts
+    print("upload() only pools local recordings for the requested device_type: PASS")
 
 
 def test_upload_pools_same_label_across_captures_before_splitting():
-    registry, projects_path, captures_dir = new_env()
+    registry, projects_path, captures_dir, models_dir, scaling_path = new_env()
     registry.add(NODE_A, sensor_config=frozenset({SensorChannel.MIC}))
     registry.set_device_type(NODE_A, "motor001")
     client = FakeEiClient()
-    controller = EIController(registry, projects_path, captures_dir, client=client)
+    controller = EIController(registry, projects_path, captures_dir, models_dir, scaling_path, client=client)
     controller.link("motor001", "me@example.com", "hunter2")
-    id_1 = save_capture(registry, captures_dir, NODE_A, "bearing_fault", count=2)
-    id_2 = save_capture(registry, captures_dir, NODE_A, "bearing_fault", count=2)
+    save_capture(registry, captures_dir, NODE_A, "bearing_fault", count=2)
+    save_capture(registry, captures_dir, NODE_A, "bearing_fault", count=2)
 
-    result = controller.upload([id_1, id_2])
+    result = controller.upload("motor001")
 
     counts = result["uploaded"]["motor001"]["bearing_fault"]
     # 4 pooled vectors, test_fraction=0.2 -> n_test=max(1, round(4*0.2))=1.
     assert counts == {"training": 3, "testing": 1}, counts
-    print("upload() pools every selected capture sharing a label before the "
+    print("upload() pools every local capture sharing a label before the "
           "contiguous train/test split, not one split per file: PASS")
+
+
+def test_upload_wipes_project_before_uploading_and_reports_progress():
+    registry, projects_path, captures_dir, models_dir, scaling_path = new_env()
+    registry.add(NODE_A, sensor_config=frozenset({SensorChannel.MIC}))
+    registry.set_device_type(NODE_A, "motor001")
+    client = FakeEiClient()
+    controller = EIController(registry, projects_path, captures_dir, models_dir, scaling_path, client=client)
+    controller.link("motor001", "me@example.com", "hunter2")
+    save_capture(registry, captures_dir, NODE_A, "bearing_fault", count=3)
+    ticks = []
+
+    result = controller.upload(
+        "motor001", on_progress=lambda stage, **extra: ticks.append((stage, extra)))
+
+    assert ticks[0] == ("deleting", {}), ticks
+    uploading_ticks = [t for t in ticks if t[0] == "uploading"]
+    assert uploading_ticks, ticks
+    last_extra = uploading_ticks[-1][1]
+    assert last_extra["uploaded"] == last_extra["total"] == 3, uploading_ticks
+    assert last_extra["failures"] == [], uploading_ticks
+    assert result["failures"] == []
+
+    call_names = [c[0] for c in client.calls]
+    assert call_names.index("delete_all_samples") < call_names.index("upload_samples"), call_names
+    assert controller.job_state() == {}, "job must be cleared once upload() returns"
+    print("upload() deletes existing project data before uploading, and "
+          "reports deleting -> uploading(uploaded/total/failures) progress: PASS")
+
+
+def test_upload_sends_batches_concurrently():
+    registry, projects_path, captures_dir, models_dir, scaling_path = new_env()
+    registry.add(NODE_A, sensor_config=frozenset({SensorChannel.MIC}))
+    registry.set_device_type(NODE_A, "motor001")
+    client = SlowFakeEiClient(delay_s=0.3)
+    controller = EIController(registry, projects_path, captures_dir, models_dir, scaling_path, client=client)
+    controller.link("motor001", "me@example.com", "hunter2")
+    # 60 frames, one label -> _split gives 48 train / 12 test; batched at
+    # UPLOAD_BATCH_SIZE=25 makes training 2 batches + testing 1 batch.
+    save_capture(registry, captures_dir, NODE_A, "bearing_fault", count=60)
+
+    start = time.monotonic()
+    result = controller.upload("motor001")
+    elapsed = time.monotonic() - start
+
+    counts = result["uploaded"]["motor001"]["bearing_fault"]
+    assert counts["training"] + counts["testing"] == 60, counts
+    # Serial (one HTTP round-trip at a time, the pre-fix behavior real
+    # users hit as "very slow for this small data") would take
+    # >= 3 batches * 0.3s = 0.9s. Concurrent dispatch (S8's fix, up to
+    # _UPLOAD_CONCURRENCY in flight per label/category) keeps the 2
+    # training batches running together, so the whole upload finishes
+    # well under that.
+    assert elapsed < 0.75, f"batches ran one-at-a-time, not concurrently: {elapsed:.2f}s"
+    print("upload() sends a label/category's batches concurrently, not "
+          "one HTTP round-trip at a time: PASS")
+
+
+def test_upload_raises_for_unlinked_device_type():
+    registry, projects_path, captures_dir, models_dir, scaling_path = new_env()
+    registry.add(NODE_A, sensor_config=frozenset({SensorChannel.MIC}))
+    registry.set_device_type(NODE_A, "motor001")
+    client = FakeEiClient()
+    controller = EIController(registry, projects_path, captures_dir, models_dir, scaling_path, client=client)
+    # link() deliberately never called for motor001.
+    save_capture(registry, captures_dir, NODE_A, "bearing_fault", count=1)
+
+    try:
+        controller.upload("motor001")
+        raise AssertionError("expected EIControllerError")
+    except EIControllerError:
+        pass
+    assert client.calls == [] and client.uploads == [], "must fail before making any EI call"
+    print("upload() rejects a device_type with no linked EI project: PASS")
+
+
+def test_upload_raises_when_no_local_recordings():
+    registry, projects_path, captures_dir, models_dir, scaling_path = new_env()
+    registry.add(NODE_A, sensor_config=frozenset({SensorChannel.MIC}))
+    registry.set_device_type(NODE_A, "motor001")
+    client = FakeEiClient()
+    controller = EIController(registry, projects_path, captures_dir, models_dir, scaling_path, client=client)
+    controller.link("motor001", "me@example.com", "hunter2")
+    # No captures saved at all.
+
+    try:
+        controller.upload("motor001")
+        raise AssertionError("expected EIControllerError")
+    except EIControllerError:
+        pass
+    print("upload() rejects a device_type with no local recordings: PASS")
+
+
+def test_upload_rejects_concurrent_job_for_same_device_type():
+    registry, projects_path, captures_dir, models_dir, scaling_path = new_env()
+    registry.add(NODE_A, sensor_config=frozenset({SensorChannel.MIC}))
+    registry.set_device_type(NODE_A, "motor001")
+    client = FakeEiClient()
+    controller = EIController(registry, projects_path, captures_dir, models_dir, scaling_path, client=client)
+    controller.link("motor001", "me@example.com", "hunter2")
+    save_capture(registry, captures_dir, NODE_A, "bearing_fault", count=1)
+    controller._active_jobs["motor001"] = "fetch"  # simulate a fetch already in flight
+    calls_before = len(client.calls)
+
+    try:
+        controller.upload("motor001")
+        raise AssertionError("expected EIControllerError")
+    except EIControllerError:
+        pass
+    assert len(client.calls) == calls_before, \
+        "must reject before starting a second job for the same device_type"
+    print("upload() rejects a device_type that already has a job running: PASS")
+
+
+def test_train_runs_generate_features_then_train_in_order():
+    registry, projects_path, captures_dir, models_dir, scaling_path = new_env()
+    registry.add(NODE_A, sensor_config=frozenset({SensorChannel.MIC}))
+    registry.set_device_type(NODE_A, "motor001")
+    client = FakeEiClient()
+    controller = EIController(registry, projects_path, captures_dir, models_dir, scaling_path, client=client)
+    controller.link("motor001", "me@example.com", "hunter2")
+    stages = []
+
+    result = controller.train("motor001", on_progress=stages.append)
+
+    assert result == {"trained": True}
+    call_names = [c[0] for c in client.calls if c[0] in ("generate_features", "train", "wait_for_job")]
+    assert call_names == ["generate_features", "wait_for_job", "train", "wait_for_job"], call_names
+    assert stages == ["generating_features", "generating_features", "training", "training"], stages
+    assert controller.job_state() == {}, "job must be cleared once train() returns"
+    print("train() runs generate_features -> wait -> train -> wait, in order, "
+          "reporting each stage via on_progress: PASS")
+
+
+def test_train_raises_for_unlinked_device_type():
+    registry, projects_path, captures_dir, models_dir, scaling_path = new_env()
+    client = FakeEiClient()
+    controller = EIController(registry, projects_path, captures_dir, models_dir, scaling_path, client=client)
+
+    try:
+        controller.train("ghost_type")
+        raise AssertionError("expected EIControllerError")
+    except EIControllerError:
+        pass
+    assert client.calls == [], "must fail before making any EI call"
+    print("train() rejects a device_type with no linked EI project: PASS")
+
+
+def test_train_propagates_job_failure_and_clears_active_job():
+    registry, projects_path, captures_dir, models_dir, scaling_path = new_env()
+    registry.add(NODE_A, sensor_config=frozenset({SensorChannel.MIC}))
+    registry.set_device_type(NODE_A, "motor001")
+    client = FakeEiClient(fail_job="train")
+    controller = EIController(registry, projects_path, captures_dir, models_dir, scaling_path, client=client)
+    controller.link("motor001", "me@example.com", "hunter2")
+
+    try:
+        controller.train("motor001")
+        raise AssertionError("expected EIClientError")
+    except EIClientError:
+        pass
+    assert controller.job_state() == {}, \
+        "a failed job must still clear _active_jobs (the finally: block), not strand it"
+    print("train() propagates a failed EI job and still clears job_state(): PASS")
+
+
+def test_train_rejects_concurrent_job_for_same_device_type():
+    registry, projects_path, captures_dir, models_dir, scaling_path = new_env()
+    registry.add(NODE_A, sensor_config=frozenset({SensorChannel.MIC}))
+    registry.set_device_type(NODE_A, "motor001")
+    client = FakeEiClient()
+    controller = EIController(registry, projects_path, captures_dir, models_dir, scaling_path, client=client)
+    controller.link("motor001", "me@example.com", "hunter2")
+    controller._active_jobs["motor001"] = "fetch"  # simulate a fetch already in flight
+    calls_before = len(client.calls)
+
+    try:
+        controller.train("motor001")
+        raise AssertionError("expected EIControllerError")
+    except EIControllerError:
+        pass
+    assert len(client.calls) == calls_before, \
+        "must reject before starting a second job for the same device_type"
+    print("train() rejects a device_type that already has a job running: PASS")
+
+
+def test_fetch_model_builds_downloads_and_saves_tflite_file():
+    registry, projects_path, captures_dir, models_dir, scaling_path = new_env()
+    registry.add(NODE_A, sensor_config=frozenset({SensorChannel.MIC}))
+    registry.set_device_type(NODE_A, "motor001")
+    save_capture(registry, captures_dir, NODE_A, "bearing")
+    save_capture(registry, captures_dir, NODE_A, "healthy")
+    client = FakeEiClient()
+    controller = EIController(registry, projects_path, captures_dir, models_dir, scaling_path, client=client)
+    controller.link("motor001", "me@example.com", "hunter2")
+    stages = []
+
+    result = controller.fetch_model("motor001", on_progress=stages.append)
+
+    expected_path = os.path.join(models_dir, "motor001.tflite")
+    assert result == {"fetched": True, "model_path": expected_path}, result
+    assert os.path.isfile(expected_path)
+    with open(expected_path, "rb") as f:
+        assert f.read() == b"fake-tflite-bytes"
+    assert controller.labels_for("motor001") == ["bearing", "healthy"], controller.labels_for("motor001")
+    call_names = [c[0] for c in client.calls
+                  if c[0] in ("build_model", "wait_for_job", "download_model", "extract_tflite")]
+    assert call_names == ["build_model", "wait_for_job", "download_model", "extract_tflite"], call_names
+    assert stages == ["building", "building", "downloading"], stages
+    assert controller.model_status()["motor001"] is not None
+    print("fetch_model() builds -> waits -> downloads -> extracts -> saves "
+          "<models_dir>/<device_type>.tflite: PASS")
+
+
+def test_fetch_model_raises_for_unlinked_device_type():
+    registry, projects_path, captures_dir, models_dir, scaling_path = new_env()
+    client = FakeEiClient()
+    controller = EIController(registry, projects_path, captures_dir, models_dir, scaling_path, client=client)
+
+    try:
+        controller.fetch_model("ghost_type")
+        raise AssertionError("expected EIControllerError")
+    except EIControllerError:
+        pass
+    assert client.calls == [], "must fail before making any EI call"
+    print("fetch_model() rejects a device_type with no linked EI project: PASS")
+
+
+def test_model_status_reports_none_before_any_fetch():
+    registry, projects_path, captures_dir, models_dir, scaling_path = new_env()
+    registry.add(NODE_A, sensor_config=frozenset({SensorChannel.MIC}))
+    registry.set_device_type(NODE_A, "motor001")
+    client = FakeEiClient()
+    controller = EIController(registry, projects_path, captures_dir, models_dir, scaling_path, client=client)
+
+    assert controller.model_status() == {"motor001": None}
+    print("model_status() reports None for a device_type with no fetched model yet: PASS")
+
+
+def test_labels_for_reports_none_before_any_fetch():
+    registry, projects_path, captures_dir, models_dir, scaling_path = new_env()
+    controller = EIController(registry, projects_path, captures_dir, models_dir, scaling_path, client=FakeEiClient())
+    assert controller.labels_for("motor001") is None
+    print("labels_for() reports None for a device_type with no fetched model yet: PASS")
+
+
+def test_fetch_model_rejects_device_type_with_no_local_recordings():
+    registry, projects_path, captures_dir, models_dir, scaling_path = new_env()
+    registry.add(NODE_A, sensor_config=frozenset({SensorChannel.MIC}))
+    registry.set_device_type(NODE_A, "motor001")
+    client = FakeEiClient()
+    controller = EIController(registry, projects_path, captures_dir, models_dir, scaling_path, client=client)
+    controller.link("motor001", "me@example.com", "hunter2")
+
+    try:
+        controller.fetch_model("motor001")
+        raise AssertionError("expected EIControllerError")
+    except EIControllerError as e:
+        assert "no local recordings" in str(e), e
+    assert controller.model_status()["motor001"] is None, \
+        "must not save a .tflite file when labels can't be determined"
+    print("fetch_model() rejects a linked device_type with no local recordings "
+          "(can't determine class labels): PASS")
 
 
 def main():
     test_link_creates_project_on_first_call()
+    test_link_passes_real_axis_names_to_create_impulse()
     test_link_is_idempotent()
     test_link_raises_for_device_type_with_no_node()
     test_link_propagates_totp_required()
     test_unlink_clears_project_and_allows_relink()
     test_status_reflects_linked_device_types()
-    test_upload_standardizes_using_node_baseline()
-    test_upload_falls_back_to_raw_when_uncommissioned()
-    test_upload_rejects_capture_with_no_device_type()
-    test_upload_rejects_capture_for_unlinked_device_type()
+    test_upload_standardizes_using_pooled_device_type_baseline()
+    test_upload_only_includes_captures_for_the_given_device_type()
     test_upload_pools_same_label_across_captures_before_splitting()
-    print("RESULT: PASS - EIController links/uploads correctly against a "
-          "faked ei_client, with no real network")
+    test_upload_wipes_project_before_uploading_and_reports_progress()
+    test_upload_sends_batches_concurrently()
+    test_upload_raises_for_unlinked_device_type()
+    test_upload_raises_when_no_local_recordings()
+    test_upload_rejects_concurrent_job_for_same_device_type()
+    test_train_runs_generate_features_then_train_in_order()
+    test_train_raises_for_unlinked_device_type()
+    test_train_propagates_job_failure_and_clears_active_job()
+    test_train_rejects_concurrent_job_for_same_device_type()
+    test_fetch_model_builds_downloads_and_saves_tflite_file()
+    test_fetch_model_raises_for_unlinked_device_type()
+    test_fetch_model_rejects_device_type_with_no_local_recordings()
+    test_model_status_reports_none_before_any_fetch()
+    test_labels_for_reports_none_before_any_fetch()
+    print("RESULT: PASS - EIController links/uploads/trains/fetches correctly "
+          "against a faked ei_client, with no real network")
 
 
 if __name__ == "__main__":

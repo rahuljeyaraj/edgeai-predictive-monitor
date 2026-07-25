@@ -93,6 +93,18 @@ class RegistryEntry:
     last_seen: Optional[float] = None
     last_commissioned: Optional[float] = None
     last_anomaly_score: Optional[float] = None
+    # Latest Edge Impulse fault-classifier result, written alongside
+    # last_anomaly_score on every gated frame once device_type has a
+    # fetched model (pipeline/manager.py) -- {label, confidence, scores,
+    # ts}. None if no classifier model is loaded for this node's
+    # device_type; unlike last_anomaly_score there's no per-node "not
+    # commissioned yet" gate, since the classifier isn't tied to
+    # commissioning at all (docs/EDGE_IMPULSE_DASHBOARD_WORKFLOW_PLAN.md
+    # S1: "no device_type, or type has no model -> anomaly score only").
+    # Plain dict, JSON-safe as-is (asdict()/dataclasses round-trip it with
+    # no special handling, unlike scalar_mu/sigma's tuple-restoration
+    # below).
+    last_classification: Optional[dict] = None
     # Per-node anomaly-score thresholds, calibrated from this node's own
     # healthy baseline at commissioning (pipeline/commissioning.py). None
     # until commissioned -- inference falls back to the process-wide
@@ -514,5 +526,17 @@ class Registry:
         with self._lock_for(node_id):
             entry = self.get(node_id)
             entry.last_anomaly_score = score
+            self._save()
+            return entry
+
+    def record_classification(self, node_id: str, result: dict) -> RegistryEntry:
+        """Latest fault-classifier result, written on every gated frame a
+        classifier model actually scored (pipeline/manager.py's
+        MotorPipeline.handle_frame(), alongside record_anomaly_score()
+        above) -- same "Fleet card reads this without per-node history
+        polling" shape."""
+        with self._lock_for(node_id):
+            entry = self.get(node_id)
+            entry.last_classification = result
             self._save()
             return entry

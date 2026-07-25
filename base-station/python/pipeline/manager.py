@@ -21,16 +21,21 @@ from typing import TYPE_CHECKING, Callable, Dict, FrozenSet, Optional
 from sensor_frame import SensorFrame
 from registry import (Registry, RegistryEntry, SensorChannel, NodeNotFoundError,
                        NodeStatus)
-from features import scalar_dim_for
-from gate import MotorStateGate
+from features import build_feature_vector, scalar_dim_for, standardize_scalars
+from ei_scaling import get_scaling
+from gate import MotorState, MotorStateGate
 from inference import InferenceError, InferencePipeline
 
 if TYPE_CHECKING:
     # Type-only -- manager.py has no runtime dependency on monitoring/ or
     # history/, so callers that don't need perf tracking or scoring (e.g.
     # earlier milestones' tests) don't need those packages on PYTHONPATH.
+    # Same for classifier.py's ClassifierRegistry: manager.py only ever
+    # calls .get() on an instance main.py already constructed, never
+    # constructs one itself (unlike InferencePipeline above).
     from perf import PerformanceMonitor
     from store import HistoryStore
+    from classifier import ClassifierRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -117,7 +122,10 @@ class MotorPipeline:
     def __init__(self, node_id: str, registry: Registry,
                  gate_factory: Callable[[], MotorStateGate],
                  debounce_frames: int, history_store: Optional["HistoryStore"],
-                 on_score: Optional[Callable[[str, float, float, NodeStatus], None]] = None):
+                 on_score: Optional[Callable[[str, float, float, NodeStatus], None]] = None,
+                 classifier_registry: Optional["ClassifierRegistry"] = None,
+                 scaling_path: Optional[str] = None,
+                 on_classification: Optional[Callable[[str, float, dict], None]] = None):
         self.node_id = node_id
         self.frame_count = 0
         self._registry = registry
@@ -125,6 +133,19 @@ class MotorPipeline:
         self._debounce_frames = debounce_frames
         self._history_store = history_store
         self._on_score = on_score
+        self._classifier_registry = classifier_registry
+        self._scaling_path = scaling_path
+        self._on_classification = on_classification
+        # Independent of self._inference's own internal gate below --
+        # the classifier runs "in parallel with the autoencoder ... both
+        # always-on independently whenever a model exists for that node's
+        # device type" (docs/EDGE_IMPULSE_DASHBOARD_WORKFLOW_PLAN.md S6),
+        # i.e. it must not require this node to ever have been commissioned
+        # (self._inference stays None until it has). Two gate instances
+        # debouncing the same frames independently is a little duplicated
+        # state, but far simpler than threading a shared gate through
+        # InferencePipeline's constructor just to avoid it.
+        self._classification_gate = gate_factory()
         self._inference: Optional[InferencePipeline] = None
         self._commissioned_at: Optional[float] = None
         self._paused_since_last_frame = False
@@ -144,6 +165,9 @@ class MotorPipeline:
             return
 
         entry = self._registry.get(self.node_id)
+
+        self._maybe_classify(frame, entry)
+
         if not entry.model_path:
             return  # not commissioned yet -- nothing to score
 
@@ -200,6 +224,57 @@ class MotorPipeline:
                 # already runs per gated frame).
                 self._on_score(self.node_id, frame.timestamp, score, self._inference.status)
 
+    def _maybe_classify(self, frame: SensorFrame, entry: RegistryEntry) -> None:
+        """Fault classification (docs/EDGE_IMPULSE_FAULT_CLASSIFICATION_PLAN.md
+        S4 T5): a no-op unless classifier_registry was wired in AND
+        entry.device_type has a fetched model -- "no device_type, or type
+        has no model -> anomaly score only" (docs/
+        EDGE_IMPULSE_DASHBOARD_WORKFLOW_PLAN.md S1). Deliberately runs
+        ahead of the `not entry.model_path` early-return above: this must
+        work for a node that's never been commissioned at all, not only
+        ones with a trained autoencoder."""
+        if self._classifier_registry is None or not entry.device_type:
+            return
+        classifier = self._classifier_registry.get(entry.device_type)
+        if classifier is None:
+            return
+        if self._classification_gate.update(frame) != MotorState.RUNNING:
+            return
+
+        scaling = get_scaling(self._scaling_path, entry.device_type) if self._scaling_path else None
+        if scaling is None:
+            # Upload() (api/ei_controller.py) always fits+saves this before
+            # a model becomes fetchable, so reaching this means the scaling
+            # store was removed/pointed elsewhere independently of the
+            # model file -- skip rather than classify against an
+            # unstandardized vector, which would silently produce garbage
+            # confidences (docs/EDGE_IMPULSE_DASHBOARD_WORKFLOW_PLAN.md S8.4).
+            logger.warning(
+                "device_type %r has a fetched classifier model but no scalar-tail "
+                "baseline in ei_scaling.json -- skipping classification for node %r",
+                entry.device_type, self.node_id)
+            return
+
+        # scaling["spectral_dim"] (the EI baseline's own recorded value at
+        # fit time), not a freshly-recomputed one -- ties standardization
+        # to exactly what the baseline was fit against.
+        vector, _ = build_feature_vector(frame, entry.sensor_config, entry.input_dim)
+        vector = standardize_scalars(vector, scaling["spectral_dim"],
+                                      tuple(scaling["mu"]), tuple(scaling["sigma"]))
+        try:
+            scores = classifier.classify(vector)
+        except ValueError:
+            logger.exception(
+                "classification failed for node %r (device_type %r) -- label list is "
+                "likely stale for the currently-loaded model", self.node_id, entry.device_type)
+            return
+
+        label = max(scores, key=scores.get)
+        result = {"label": label, "confidence": scores[label], "scores": scores, "ts": frame.timestamp}
+        self._registry.record_classification(self.node_id, result)
+        if self._on_classification is not None:
+            self._on_classification(self.node_id, frame.timestamp, result)
+
 
 class PipelineManager:
     """One instance owns all per-motor pipelines for this process.
@@ -209,13 +284,19 @@ class PipelineManager:
                  perf_monitor: Optional["PerformanceMonitor"] = None,
                  history_store: Optional["HistoryStore"] = None,
                  status_debounce_frames: int = _DEFAULT_STATUS_DEBOUNCE_FRAMES,
-                 on_score: Optional[Callable[[str, float, float, NodeStatus], None]] = None):
+                 on_score: Optional[Callable[[str, float, float, NodeStatus], None]] = None,
+                 classifier_registry: Optional["ClassifierRegistry"] = None,
+                 scaling_path: Optional[str] = None,
+                 on_classification: Optional[Callable[[str, float, dict], None]] = None):
         self._registry = registry
         self._gate_factory = gate_factory
         self._perf_monitor = perf_monitor
         self._history_store = history_store
         self._status_debounce_frames = status_debounce_frames
         self._on_score = on_score
+        self._classifier_registry = classifier_registry
+        self._scaling_path = scaling_path
+        self._on_classification = on_classification
         self._pipelines: Dict[str, MotorPipeline] = {}
 
     def route(self, frame: SensorFrame) -> Optional[MotorPipeline]:
@@ -225,7 +306,8 @@ class PipelineManager:
                 pipeline = MotorPipeline(
                     frame.node_id, self._registry, self._gate_factory,
                     self._status_debounce_frames, self._history_store,
-                    on_score=self._on_score)
+                    on_score=self._on_score, classifier_registry=self._classifier_registry,
+                    scaling_path=self._scaling_path, on_classification=self._on_classification)
                 self._pipelines[frame.node_id] = pipeline
                 sensor_config, input_dim = _infer_sensor_config_and_dim(frame)
                 self._registry.add(frame.node_id, sensor_config=sensor_config, input_dim=input_dim)

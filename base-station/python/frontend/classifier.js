@@ -1,54 +1,51 @@
 "use strict";
 /*
- * Classifier tab (docs/EDGE_IMPULSE_DASHBOARD_WORKFLOW_PLAN.md S3) -- table
- * of every locally-saved capture (pipeline/capture.py's Record drawer
- * output, GET /captures), with select/rename/delete on-disk management.
+ * Classifier tab -- docs/EDGE_IMPULSE_DASHBOARD_WORKFLOW_PLAN.md S8 (the
+ * 2026-07-25 UI reshape; supersedes S3/S4's single-table + separate-panel
+ * shape). One card per asset class (device_type), each self-contained:
+ * a Linked/Not-linked header, a Delete(N)/Edit-label(N) action bar driven
+ * by the card's own row checkboxes, its recordings table, and -- linked
+ * only -- an "Upload all" action (S8.3: always every local recording for
+ * that class, never a selection) plus a Studio link/Unlink/Fetch-trained-
+ * model row. Orphaned device types (a capture's device_type no longer on
+ * any fleet node) get their own de-emphasized delete-only card, unchanged
+ * from the original S3 design.
  *
- * On-disk side: list, select, rename (moves a batch into a different
- * label bucket via POST /captures/rename), delete (POST /captures/delete).
+ * Upload wipes the EI project first, then re-fits and re-uploads
+ * everything (S8.3/8.4 -- backend now owns the whole pooled-normalization
+ * story, this module just renders progress); it runs as a background job
+ * like Train/Fetch always have, streaming "ei_progress" over the shared
+ * /ws connection (handleMessage below, wired into Charts.init's 4th
+ * callback in app.js) with an inline two-stage readout (deleting ->
+ * uploading N/M, with any failures listed) instead of an alert(). Round
+ * B's Train button is gone from this tab per S8.2 (training now happens
+ * in EI Studio itself; Fetch is the only glue left) -- the backend route
+ * for it no longer exists either.
  *
- * The Edge Impulse panel (S4's "Upload" round) is now wired: one row per
- * device type with a linked/not-linked state (GET /classifier/ei/status),
- * a login form per row that creates that type's EI project on first use
- * (POST /classifier/ei/link -- username/password, not a static API key,
- * since project *creation* needs account-level auth; see docs/
- * EDGE_IMPULSE_DASHBOARD_WORKFLOW_PLAN.md S0), and "Upload selected" (POST
- * /classifier/ei/upload). Deliberately "linked", not "connected" -- in EI's
- * own vocabulary "connected" means a device is live on the ingestion
- * WebSocket streaming data for inference, which this isn't. Train/Fetch
- * trained model stay disabled placeholders -- S4 steps 5-9, a follow-up
- * round (async job + WS log streaming, a different shape from this
- * round's request/response calls).
- *
- * Same module shape as perf.js/alerts.js: owns its own data (fetches
- * /captures itself rather than reading another module's state), no shared
- * WebSocket wiring needed since nothing here is a live telemetry stream --
- * a plain refetch after every mutation is enough.
+ * Same module shape as perf.js/alerts.js otherwise: owns its own data
+ * (fetches /captures itself rather than reading another module's state).
  */
 
 const Classifier = (() => {
   // Same trash glyph as the Fleet tab's decommission button (app.js's
   // ICON_TRASH) -- duplicated here rather than read off `window` so this
-  // module stays self-contained regardless of script load order (same
-  // "each module owns its own small helpers" precedent as alerts.js/
-  // charts.js each defining their own escapeAttr). A crisp vector path
-  // instead of the emoji glyphs (✎/🗑) used in the first round, which
-  // rendered pixelated and, for the pencil, pointing the wrong way.
+  // module stays self-contained regardless of script load order.
   const ICON_TRASH = '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>';
-  const ICON_PENCIL = '<svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04a1 1 0 0 0 0-1.41l-2.34-2.34a1 1 0 0 0-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg>';
 
   const state = {
     captures: [],           // [{id, node_id, device_type, label, timestamp, frame_count}]
-    selected: new Set(),    // capture ids
+    selected: new Set(),    // capture ids -- global set, each card filters to its own rows
     eiStatus: {},           // {device_type: linked(bool)}
     eiProjectIds: {},       // {device_type: EI project_id}, for the Studio link
+    eiModels: {},           // {device_type: fetched-model mtime(epoch s) | null}
+    eiJobs: {},             // {device_type: "fetch"|"upload"} for whichever are currently running (survives a refresh)
+    eiJobStage: {},         // {device_type: last "ei_progress" stage string} -- fetch only
+    eiUploadProgress: {},   // {device_type: {stage, uploaded, total, failures}} -- upload only, live-WS-only
+    eiJobErrors: {},        // {device_type: last error message}, cleared on the next job start for that type
     fleetAssetClasses: [],  // GET /device_types -- classes currently assigned to a live node
     linking: null,          // device_type currently showing its login form, or null
     linkForm: { username: "", password: "", totp: "", needsTotp: false, error: null, busy: false },
-    uploadResult: null,     // last POST /classifier/ei/upload response, or null
   };
-  let editingId = null;
-  let editValue = "";
 
   function escapeHtmlLocal(str) {
     return String(str)
@@ -101,94 +98,11 @@ const Classifier = (() => {
   }
 
   // ---------------------------------------------------------------------
-  // Samples table
-  // ---------------------------------------------------------------------
-
-  function sampleRowHtml(entry) {
-    const isEditing = editingId === entry.id;
-    const checked = state.selected.has(entry.id);
-    const recorded = entry.timestamp
-      ? new Date(entry.timestamp * 1000).toLocaleString() : "–";
-
-    const labelCell = isEditing
-      ? `<span class="classifier-table__rename">
-          <input type="text" class="classifier-table__rename-input" value="${escapeAttr(editValue)}"
-                 data-action="rename_input" autocomplete="off">
-          <button type="button" class="btn-icon" data-action="rename_confirm" title="Save">✓</button>
-          <button type="button" class="btn-icon" data-action="rename_cancel" title="Cancel">✕</button>
-        </span>`
-      : escapeHtmlLocal(entry.label);
-
-    return `<tr class="classifier-table__row" data-id="${escapeAttr(entry.id)}">
-      <td><input type="checkbox" data-action="select" ${checked ? "checked" : ""}></td>
-      <td>${escapeHtmlLocal(entry.node_id || "–")}</td>
-      <td>${entry.device_type ? escapeHtmlLocal(entry.device_type) : `<span class="classifier-table__muted">unset</span>`}</td>
-      <td>${labelCell}</td>
-      <td>${entry.frame_count}</td>
-      <td>${recorded}</td>
-      <td class="classifier-table__actions">
-        ${isEditing ? "" : `<button type="button" class="btn-icon" data-action="rename" title="Rename label" aria-label="Rename label">${ICON_PENCIL}</button>`}
-        <button type="button" class="btn-icon btn-icon--danger" data-action="delete" title="Delete" aria-label="Delete">${ICON_TRASH}</button>
-      </td>
-    </tr>`;
-  }
-
-  function toolbarHtml() {
-    const total = state.captures.length;
-    const selectedCount = state.selected.size;
-    const allSelected = total > 0 && selectedCount === total;
-    return `<div class="classifier-toolbar">
-      <label class="classifier-toolbar__all">
-        <input type="checkbox" data-action="select_all" ${allSelected ? "checked" : ""} ${total === 0 ? "disabled" : ""}>
-        Select all
-      </label>
-      <span class="classifier-toolbar__count">${selectedCount} selected</span>
-      <button type="button" class="btn-label" data-action="delete_selected" ${selectedCount === 0 ? "disabled" : ""}>
-        Delete selected
-      </button>
-    </div>`;
-  }
-
-  function renderSamples() {
-    const el = document.getElementById("classifier-samples");
-    if (!el) return;
-
-    if (state.captures.length === 0) {
-      el.innerHTML = `<div class="perf-card">
-        <div class="perf-empty">No recordings yet. Use Record on a node in the Fleet tab to save labeled samples.</div>
-      </div>`;
-      return;
-    }
-
-    el.innerHTML = `<div class="perf-card classifier-table-card">
-      ${toolbarHtml()}
-      <div class="classifier-table__wrap">
-        <table class="classifier-table">
-          <thead>
-            <tr>
-              <th></th><th>Device</th><th>Asset class</th><th>Label</th><th>Frames</th><th>Recorded</th><th></th>
-            </tr>
-          </thead>
-          <tbody>${state.captures.map(sampleRowHtml).join("")}</tbody>
-        </table>
-      </div>
-    </div>`;
-
-    if (editingId !== null) {
-      const input = el.querySelector(".classifier-table__rename-input");
-      if (input) {
-        input.focus();
-        input.setSelectionRange(input.value.length, input.value.length);
-      }
-    }
-  }
-
-  // ---------------------------------------------------------------------
-  // Edge Impulse panel -- one row per device type (S4 "Upload" round).
+  // Card helpers
   // ---------------------------------------------------------------------
 
   function deviceTypesInView() {
-    // "live" rows: asset classes GET /device_types says some node
+    // "live" cards: asset classes GET /device_types says some node
     // currently has, unioned with anything /classifier/ei/status already
     // knows about (covers a class that's linked but whose last node
     // was just reassigned/decommissioned -- the EI project is still real,
@@ -197,17 +111,21 @@ const Classifier = (() => {
     // "orphaned": a saved recording's device_type that isn't in either of
     // those -- the asset class was renamed/unset on its node (Fleet tab's
     // pill) after the recording was saved, capture.py freezes device_type
-    // onto the JSON at save time and never updates it retroactively. A
-    // "Link" button pointing at a class no node has anymore is a dead
-    // end (api/ei_controller.py's link() needs a live node to read
-    // input_dim from and will just 400) -- these get a delete-only row
-    // instead, since removing the stale recordings is the only real fix.
+    // onto the JSON at save time and never updates it retroactively.
     const live = new Set(state.fleetAssetClasses);
     Object.keys(state.eiStatus).forEach((t) => live.add(t));
     const captureTypes = new Set();
     state.captures.forEach((c) => { if (c.device_type) captureTypes.add(c.device_type); });
     const orphaned = Array.from(captureTypes).filter((t) => !live.has(t));
     return { live: Array.from(live).sort(), orphaned: orphaned.sort() };
+  }
+
+  function capturesFor(deviceType) {
+    return state.captures.filter((c) => c.device_type === deviceType);
+  }
+
+  function selectedCountFor(captures) {
+    return captures.filter((c) => state.selected.has(c.id)).length;
   }
 
   function linkFormHtml(deviceType) {
@@ -232,104 +150,168 @@ const Classifier = (() => {
     return `https://studio.edgeimpulse.com/studio/${projectId}`;
   }
 
-  function eiRowHtml(deviceType) {
-    const linked = !!state.eiStatus[deviceType];
-    const isLinking = state.linking === deviceType;
-    const projectId = state.eiProjectIds[deviceType];
-    return `<div class="classifier-ei__row">
-        <span class="classifier-ei__type">${escapeHtmlLocal(deviceType)}</span>
-        <span class="classifier-ei__pill ${linked ? "classifier-ei__pill--linked" : ""}">
-          ${linked ? "Linked" : "Not linked"}
-        </span>
-        ${linked && projectId ? `<a class="btn-label" href="${eiStudioUrl(projectId)}"
-          target="_blank" rel="noopener noreferrer">Open in Edge Impulse</a>` : ""}
-        ${linked ? `<button type="button" class="btn-text" data-action="ei_unlink"
-          data-type="${escapeAttr(deviceType)}">Unlink</button>` : ""}
-        ${linked || isLinking ? "" : `<button type="button" class="btn-label"
-          data-action="ei_link_start" data-type="${escapeAttr(deviceType)}">Link</button>`}
-      </div>
-      ${isLinking ? linkFormHtml(deviceType) : ""}`;
+  // Fetch (S4 steps 8-9) stage labels -- keyed by the "stage" field on the
+  // "ei_progress" WS broadcast. Falls back to a bare "Fetching…" for a job
+  // whose only known state is the server's job_state() action (e.g. right
+  // after a page refresh, before any WS tick has arrived yet).
+  const EI_STAGE_LABELS = {
+    building: "Building model…",
+    downloading: "Downloading model…",
+  };
+
+  function fetchButtonLabel(deviceType) {
+    if (state.eiJobs[deviceType] !== "fetch") return "Fetch trained model";
+    const stage = state.eiJobStage[deviceType];
+    return (stage && EI_STAGE_LABELS[stage]) || "Fetching…";
   }
 
-  function orphanedRowHtml(deviceType) {
-    const count = state.captures.filter((c) => c.device_type === deviceType).length;
+  function modelStatusHtml(deviceType) {
+    const fetchedAt = state.eiModels[deviceType];
+    if (!fetchedAt) return `<span class="classifier-table__muted">No model fetched yet</span>`;
+    return `Model fetched ${escapeHtmlLocal(new Date(fetchedAt * 1000).toLocaleString())}`;
+  }
+
+  function tableHtml(deviceType, captures) {
+    if (captures.length === 0) {
+      return `<div class="perf-empty">No recordings yet for this asset class.</div>`;
+    }
+    const allSelected = captures.every((c) => state.selected.has(c.id));
+    const rows = captures.map((entry) => {
+      const checked = state.selected.has(entry.id);
+      const recorded = entry.timestamp
+        ? new Date(entry.timestamp * 1000).toLocaleString() : "–";
+      return `<tr class="classifier-table__row" data-id="${escapeAttr(entry.id)}">
+        <td><input type="checkbox" data-action="select" ${checked ? "checked" : ""}></td>
+        <td>${escapeHtmlLocal(entry.node_id || "–")}</td>
+        <td>${escapeHtmlLocal(entry.label)}</td>
+        <td>${entry.frame_count}</td>
+        <td>${recorded}</td>
+      </tr>`;
+    }).join("");
+    return `<div class="classifier-table__wrap">
+      <table class="classifier-table">
+        <thead>
+          <tr>
+            <th><input type="checkbox" data-action="select_all" data-type="${escapeAttr(deviceType)}" ${allSelected ? "checked" : ""}></th>
+            <th>Node</th><th>Label</th><th>Frames</th><th>Recorded</th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>`;
+  }
+
+  function actionsBarHtml(deviceType, captures) {
+    const n = selectedCountFor(captures);
+    return `<div class="classifier-card__actions">
+      <button type="button" class="btn-label" data-action="delete_selected"
+              data-type="${escapeAttr(deviceType)}" ${n === 0 ? "disabled" : ""}>Delete (${n})</button>
+      <button type="button" class="btn-label" data-action="edit_label_selected"
+              data-type="${escapeAttr(deviceType)}" ${n === 0 ? "disabled" : ""}>Edit label (${n})</button>
+    </div>`;
+  }
+
+  function uploadProgressHtml(deviceType) {
+    const p = state.eiUploadProgress[deviceType];
+    if (!p) return "";
+    const line = p.stage === "deleting"
+      ? "Deleting existing project data…"
+      : `Uploading… ${p.uploaded} / ${p.total}`;
+    const failures = (p.failures || []).length
+      ? `<div class="classifier-card__failures">
+          ${p.failures.map((f) => `<div>${escapeHtmlLocal(f)}</div>`).join("")}
+        </div>`
+      : "";
+    return `<div class="classifier-card__upload-progress">${escapeHtmlLocal(line)}</div>${failures}`;
+  }
+
+  function cardHeaderHtml(deviceType, linked) {
     return `<div class="classifier-ei__row">
       <span class="classifier-ei__type">${escapeHtmlLocal(deviceType)}</span>
-      <span class="classifier-ei__pill classifier-ei__pill--orphaned">Not in fleet anymore</span>
-      <button type="button" class="btn-icon btn-icon--danger" data-action="ei_delete_orphaned"
-              data-type="${escapeAttr(deviceType)}"
-              title="Delete ${count} recording(s) saved under this class"
-              aria-label="Delete recordings for ${escapeAttr(deviceType)}">${ICON_TRASH}</button>
+      <span class="classifier-ei__pill ${linked ? "classifier-ei__pill--linked" : ""}">
+        ${linked ? "Linked" : "Not linked"}
+      </span>
     </div>`;
   }
 
-  function uploadResultHtml(result) {
-    const lines = [];
-    Object.entries(result.uploaded || {}).forEach(([deviceType, byLabel]) => {
-      Object.entries(byLabel).forEach(([label, counts]) => {
-        lines.push(`${escapeHtmlLocal(deviceType)} / ${escapeHtmlLocal(label)}: `
-          + `${counts.training} training + ${counts.testing} testing`);
-      });
-    });
-    const notes = [...(result.warnings || []), ...Object.values(result.rejected || {})];
-    if (lines.length === 0 && notes.length === 0) return "";
-    return `<div class="classifier-ei__result">
-      ${lines.map((l) => `<div>${l}</div>`).join("")}
-      ${notes.map((n) => `<div class="classifier-ei__warning">${escapeHtmlLocal(n)}</div>`).join("")}
-    </div>`;
+  function notLinkedFooterHtml(deviceType) {
+    const isLinking = state.linking === deviceType;
+    return `<div class="classifier-ei__row">
+      ${isLinking ? "" : `<button type="button" class="btn-label"
+        data-action="ei_link_start" data-type="${escapeAttr(deviceType)}">Link to Edge Impulse</button>`}
+    </div>
+    ${isLinking ? linkFormHtml(deviceType) : ""}`;
   }
 
-  function renderEi() {
-    const el = document.getElementById("classifier-ei");
-    if (!el) return;
-    const selectedCount = state.selected.size;
-    const { live, orphaned } = deviceTypesInView();
-    const selectedTypes = new Set(state.captures
-      .filter((c) => state.selected.has(c.id) && c.device_type)
-      .map((c) => c.device_type));
-    const missing = Array.from(selectedTypes).filter((t) => !state.eiStatus[t]);
-    // A missing type this selection needs might be linkable (show up
-    // on Fleet, just never linked yet) or orphaned (no node has it
-    // anymore -- there's no "Link" button to point at, only delete).
-    // Conflating the two would tell the operator to "Link" a class
-    // that has no Link button anywhere on this panel.
-    const missingLinkable = missing.filter((t) => !orphaned.includes(t));
-    const missingOrphaned = missing.filter((t) => orphaned.includes(t));
-    const uploadDisabled = selectedCount === 0 || missing.length > 0;
-    let uploadTitle = "";
-    if (missingLinkable.length > 0) uploadTitle = `Link ${missingLinkable.join(", ")} first`;
-    else if (missingOrphaned.length > 0) {
-      uploadTitle = `${missingOrphaned.join(", ")} no longer exists in the fleet -- delete those recordings instead`;
-    }
-
-    el.innerHTML = `<div class="perf-card">
-      <div class="alerts-connect__title">Edge Impulse</div>
-      <div class="perf-chart__caption">
-        Push selected recordings to Edge Impulse for classifier training, and pull a
-        trained model back down.
+  function linkedFooterHtml(deviceType, captures) {
+    const projectId = state.eiProjectIds[deviceType];
+    const jobRunning = !!state.eiJobs[deviceType];
+    const isUploading = state.eiJobs[deviceType] === "upload";
+    const error = state.eiJobErrors[deviceType];
+    return `
+      <div class="classifier-ei__row">
+        ${isUploading ? uploadProgressHtml(deviceType) : `<button type="button" class="btn-label btn-label--ready"
+          data-action="ei_upload" data-type="${escapeAttr(deviceType)}"
+          ${jobRunning || captures.length === 0 ? "disabled" : ""}>
+          Upload all (${captures.length})
+        </button>`}
       </div>
-      ${live.length === 0 && orphaned.length === 0
-        ? `<div class="perf-empty">No asset classes assigned yet -- set one on a node in the Fleet tab first.</div>`
-        : live.map(eiRowHtml).join("") + orphaned.map(orphanedRowHtml).join("")}
-      <div class="classifier-ei__row classifier-ei__actions">
-        <button type="button" class="btn-label btn-label--ready" data-action="ei_upload"
-                ${uploadDisabled ? "disabled" : ""} title="${escapeAttr(uploadTitle)}">
-          Upload selected (${selectedCount})
+      <div class="classifier-ei__row">
+        ${projectId ? `<a class="btn-label" href="${eiStudioUrl(projectId)}"
+          target="_blank" rel="noopener noreferrer">Open in Edge Impulse Studio ↗</a>` : ""}
+        <button type="button" class="btn-text" data-action="ei_unlink" data-type="${escapeAttr(deviceType)}">Unlink</button>
+      </div>
+      <div class="classifier-ei__row">
+        <span class="classifier-ei__model-status">${modelStatusHtml(deviceType)}</span>
+        <button type="button" class="btn-label" data-action="ei_fetch_model"
+                data-type="${escapeAttr(deviceType)}" ${jobRunning ? "disabled" : ""}
+                title="Build + download the trained TFLite model">
+          ${fetchButtonLabel(deviceType)}
         </button>
-        <button type="button" class="btn-label" disabled>Train</button>
-        <button type="button" class="btn-label" disabled>Fetch trained model</button>
       </div>
-      ${state.uploadResult ? uploadResultHtml(state.uploadResult) : ""}
+      ${error ? `<div class="classifier-ei__row classifier-ei__error">${escapeHtmlLocal(error)}</div>` : ""}`;
+  }
+
+  function deviceTypeCardHtml(deviceType) {
+    const linked = !!state.eiStatus[deviceType];
+    const captures = capturesFor(deviceType);
+    return `<div class="perf-card classifier-card">
+      ${cardHeaderHtml(deviceType, linked)}
+      ${actionsBarHtml(deviceType, captures)}
+      ${tableHtml(deviceType, captures)}
+      ${linked ? linkedFooterHtml(deviceType, captures) : notLinkedFooterHtml(deviceType)}
+    </div>`;
+  }
+
+  function orphanedCardHtml(deviceType) {
+    const count = state.captures.filter((c) => c.device_type === deviceType).length;
+    return `<div class="perf-card classifier-card">
+      <div class="classifier-ei__row">
+        <span class="classifier-ei__type">${escapeHtmlLocal(deviceType)}</span>
+        <span class="classifier-ei__pill classifier-ei__pill--orphaned">Not in fleet anymore</span>
+        <button type="button" class="btn-icon btn-icon--danger" data-action="ei_delete_orphaned"
+                data-type="${escapeAttr(deviceType)}"
+                title="Delete ${count} recording(s) saved under this class"
+                aria-label="Delete recordings for ${escapeAttr(deviceType)}">${ICON_TRASH}</button>
+      </div>
     </div>`;
   }
 
   function render() {
-    renderSamples();
-    renderEi();
+    const el = document.getElementById("classifier-cards");
+    if (!el) return;
+    const { live, orphaned } = deviceTypesInView();
+    if (live.length === 0 && orphaned.length === 0) {
+      el.innerHTML = `<div class="perf-card">
+        <div class="perf-empty">No asset classes assigned yet -- set one on a node in the Fleet tab first.</div>
+      </div>`;
+      return;
+    }
+    el.innerHTML = live.map(deviceTypeCardHtml).join("") + orphaned.map(orphanedCardHtml).join("");
   }
 
   // ---------------------------------------------------------------------
-  // Actions
+  // Data refresh
   // ---------------------------------------------------------------------
 
   async function refreshCaptures() {
@@ -350,6 +332,13 @@ const Classifier = (() => {
       const body = await res.json();
       state.eiStatus = body.device_types || {};
       state.eiProjectIds = body.project_ids || {};
+      state.eiModels = body.models || {};
+      // Server-reported job state wins over anything stale left locally
+      // from a page load before a job's "done"/"error" broadcast arrived
+      // (e.g. a refresh mid-job) -- GET /classifier/ei/status is the
+      // source of truth, WS "ei_progress" ticks are the live overlay on
+      // top of it between polls.
+      state.eiJobs = body.jobs || {};
     } catch (err) {
       console.error("Failed to fetch /classifier/ei/status", err);
     }
@@ -370,6 +359,10 @@ const Classifier = (() => {
     render();
   }
 
+  // ---------------------------------------------------------------------
+  // Local (on-disk) actions
+  // ---------------------------------------------------------------------
+
   async function deleteIds(ids) {
     if (ids.length === 0) return;
     const label = ids.length === 1 ? "this recording" : `${ids.length} recordings`;
@@ -382,14 +375,36 @@ const Classifier = (() => {
     await refresh();
   }
 
-  async function confirmRename(id) {
-    const newLabel = editValue.trim();
-    editingId = null;
-    if (!newLabel) { render(); return; }
+  function deleteSelectedForCard(deviceType) {
+    const ids = capturesFor(deviceType).filter((c) => state.selected.has(c.id)).map((c) => c.id);
+    return deleteIds(ids);
+  }
+
+  async function editLabelForCard(deviceType) {
+    const ids = capturesFor(deviceType).filter((c) => state.selected.has(c.id)).map((c) => c.id);
+    if (ids.length === 0) return;
+    const label = window.prompt(`New label for ${ids.length} recording(s):`, "");
+    if (!label || !label.trim()) return;
     try {
-      await postJson("/captures/rename", { id, label: newLabel });
+      await postJson("/captures/rename_bulk", { ids, label: label.trim() });
     } catch (err) {
       alert(`Rename failed: ${err.message}`);
+    }
+    await refresh();
+  }
+
+  async function deleteOrphanedType(deviceType) {
+    const ids = state.captures.filter((c) => c.device_type === deviceType).map((c) => c.id);
+    if (ids.length === 0) return;
+    const label = ids.length === 1 ? "1 recording" : `${ids.length} recordings`;
+    if (!confirm(`Delete ${label} saved under "${deviceType}"? That asset class no longer `
+        + "exists in the fleet, so this is the only way to clear it. This can't be undone.")) {
+      return;
+    }
+    try {
+      await postJson("/captures/delete", { ids });
+    } catch (err) {
+      alert(`Delete failed: ${err.message}`);
     }
     await refresh();
   }
@@ -401,19 +416,19 @@ const Classifier = (() => {
   function startLink(deviceType) {
     state.linking = deviceType;
     state.linkForm = { username: "", password: "", totp: "", needsTotp: false, error: null, busy: false };
-    renderEi();
+    render();
   }
 
   function cancelLink() {
     state.linking = null;
-    renderEi();
+    render();
   }
 
   async function submitLink(deviceType) {
     const f = state.linkForm;
     f.busy = true;
     f.error = null;
-    renderEi();
+    render();
     try {
       await postEiLink({
         device_type: deviceType,
@@ -435,7 +450,7 @@ const Classifier = (() => {
         state.linkForm = { ...f, password: "", busy: false, error: err.message };
       }
     }
-    renderEi();
+    render();
   }
 
   async function unlinkType(deviceType) {
@@ -456,39 +471,114 @@ const Classifier = (() => {
       alert(`Unlink failed: ${err.message}`);
     }
     await refreshEiStatus();
-    renderEi();
+    render();
   }
 
-  async function deleteOrphanedType(deviceType) {
-    const ids = state.captures.filter((c) => c.device_type === deviceType).map((c) => c.id);
-    if (ids.length === 0) return;
-    const label = ids.length === 1 ? "1 recording" : `${ids.length} recordings`;
-    if (!confirm(`Delete ${label} saved under "${deviceType}"? That asset class no longer `
-        + "exists in the fleet, so this is the only way to clear it. This can't be undone.")) {
+  // Both start a background job and return immediately (api/app.py's POST
+  // /classifier/ei/upload + /fetch_model); state.eiJobs is set
+  // optimistically here so the button disables/relabels the instant it's
+  // clicked, without waiting for the first "ei_progress" WS tick.
+  async function uploadAll(deviceType) {
+    state.eiJobs[deviceType] = "upload";
+    delete state.eiUploadProgress[deviceType];
+    delete state.eiJobErrors[deviceType];
+    render();
+    try {
+      await postJson("/classifier/ei/upload", { device_type: deviceType });
+    } catch (err) {
+      delete state.eiJobs[deviceType];
+      alert(`Upload failed to start: ${err.message}`);
+    }
+    await refreshEiStatus();
+    render();
+  }
+
+  async function fetchModelForDeviceType(deviceType) {
+    state.eiJobs[deviceType] = "fetch";
+    delete state.eiJobStage[deviceType];
+    delete state.eiJobErrors[deviceType];
+    render();
+    try {
+      await postJson("/classifier/ei/fetch_model", { device_type: deviceType });
+    } catch (err) {
+      delete state.eiJobs[deviceType];
+      alert(`Fetch failed to start: ${err.message}`);
+    }
+    await refreshEiStatus();
+    render();
+  }
+
+  // "ei_progress" WS handler (api/app.py's _run_ei_job broadcasts one per
+  // stage transition + poll tick/upload batch). "done"/"error" both clear
+  // the in-flight job so the button re-enables; "error" also keeps the
+  // message visible under the card until the next job for that type.
+  function handleMessage(msg) {
+    const deviceType = msg.device_type;
+
+    if (msg.action === "upload") {
+      if (msg.stage === "done") {
+        delete state.eiJobs[deviceType];
+        delete state.eiUploadProgress[deviceType];
+        render();
+        return;
+      }
+      if (msg.stage === "error") {
+        delete state.eiJobs[deviceType];
+        delete state.eiUploadProgress[deviceType];
+        state.eiJobErrors[deviceType] = msg.error || "upload failed";
+        render();
+        return;
+      }
+      state.eiJobs[deviceType] = "upload";
+      state.eiUploadProgress[deviceType] = {
+        stage: msg.stage, uploaded: msg.uploaded, total: msg.total, failures: msg.failures || [],
+      };
+      render();
       return;
     }
-    try {
-      await postJson("/captures/delete", { ids });
-    } catch (err) {
-      alert(`Delete failed: ${err.message}`);
+
+    // Fetch.
+    if (msg.stage === "done") {
+      delete state.eiJobs[deviceType];
+      delete state.eiJobStage[deviceType];
+      refreshEiStatus().then(render);
+      return;
     }
-    await refresh();
+    if (msg.stage === "error") {
+      delete state.eiJobs[deviceType];
+      delete state.eiJobStage[deviceType];
+      state.eiJobErrors[deviceType] = msg.error || "job failed";
+      render();
+      return;
+    }
+    state.eiJobs[deviceType] = msg.action;
+    state.eiJobStage[deviceType] = msg.stage;
+    render();
   }
 
-  async function uploadSelected() {
-    const ids = Array.from(state.selected);
-    if (ids.length === 0) return;
-    try {
-      state.uploadResult = await postJson("/classifier/ei/upload", { capture_ids: ids });
-    } catch (err) {
-      alert(`Upload failed: ${err.message}`);
-    }
-    await refresh();
-  }
+  // ---------------------------------------------------------------------
+  // Event wiring -- one container, every card lives inside it.
+  // ---------------------------------------------------------------------
 
-  function wireEiEvents() {
-    const el = document.getElementById("classifier-ei");
+  function wireEvents() {
+    const el = document.getElementById("classifier-cards");
+
     el.addEventListener("click", (e) => {
+      const selectAll = e.target.closest('[data-action="select_all"]');
+      if (selectAll) {
+        const deviceType = selectAll.dataset.type;
+        const checked = selectAll.checked;
+        capturesFor(deviceType).forEach((c) => {
+          if (checked) state.selected.add(c.id); else state.selected.delete(c.id);
+        });
+        render();
+        return;
+      }
+      const deleteBtn = e.target.closest('[data-action="delete_selected"]');
+      if (deleteBtn) { deleteSelectedForCard(deleteBtn.dataset.type); return; }
+      const editBtn = e.target.closest('[data-action="edit_label_selected"]');
+      if (editBtn) { editLabelForCard(editBtn.dataset.type); return; }
+
       const startBtn = e.target.closest('[data-action="ei_link_start"]');
       if (startBtn) { startLink(startBtn.dataset.type); return; }
       if (e.target.closest('[data-action="ei_link_cancel"]')) { cancelLink(); return; }
@@ -498,7 +588,20 @@ const Classifier = (() => {
       if (unlinkBtn) { unlinkType(unlinkBtn.dataset.type); return; }
       const deleteOrphanBtn = e.target.closest('[data-action="ei_delete_orphaned"]');
       if (deleteOrphanBtn) { deleteOrphanedType(deleteOrphanBtn.dataset.type); return; }
-      if (e.target.closest('[data-action="ei_upload"]')) { uploadSelected(); return; }
+      const uploadBtn = e.target.closest('[data-action="ei_upload"]');
+      if (uploadBtn) { uploadAll(uploadBtn.dataset.type); return; }
+      const fetchBtn = e.target.closest('[data-action="ei_fetch_model"]');
+      if (fetchBtn) { fetchModelForDeviceType(fetchBtn.dataset.type); return; }
+    });
+
+    el.addEventListener("change", (e) => {
+      const checkbox = e.target.closest('[data-action="select"]');
+      if (!checkbox) return;
+      const row = e.target.closest(".classifier-table__row");
+      const id = row.dataset.id;
+      if (checkbox.checked) state.selected.add(id);
+      else state.selected.delete(id);
+      render();
     });
 
     el.addEventListener("input", (e) => {
@@ -518,80 +621,12 @@ const Classifier = (() => {
     });
   }
 
-  function wireEvents() {
-    const samplesEl = document.getElementById("classifier-samples");
-    samplesEl.addEventListener("click", (e) => {
-      const row = e.target.closest(".classifier-table__row");
-
-      if (e.target.closest('[data-action="select_all"]')) {
-        const checkbox = e.target.closest('[data-action="select_all"]');
-        if (checkbox.checked) state.captures.forEach((c) => state.selected.add(c.id));
-        else state.selected.clear();
-        render();
-        return;
-      }
-      if (e.target.closest('[data-action="delete_selected"]')) {
-        deleteIds(Array.from(state.selected));
-        return;
-      }
-      if (!row) return;
-      const id = row.dataset.id;
-
-      if (e.target.closest('[data-action="rename"]')) {
-        const entry = state.captures.find((c) => c.id === id);
-        editingId = id;
-        editValue = entry ? entry.label : "";
-        renderSamples();
-        return;
-      }
-      if (e.target.closest('[data-action="rename_confirm"]')) {
-        confirmRename(id);
-        return;
-      }
-      if (e.target.closest('[data-action="rename_cancel"]')) {
-        editingId = null;
-        renderSamples();
-        return;
-      }
-      if (e.target.closest('[data-action="delete"]')) {
-        deleteIds([id]);
-        return;
-      }
-    });
-
-    samplesEl.addEventListener("change", (e) => {
-      const checkbox = e.target.closest('[data-action="select"]');
-      if (!checkbox) return;
-      const row = e.target.closest(".classifier-table__row");
-      const id = row.dataset.id;
-      if (checkbox.checked) state.selected.add(id);
-      else state.selected.delete(id);
-      // Full render, not just renderSamples() -- the EI panel's "Upload
-      // selected (n)" count/enablement depends on the selection too.
-      render();
-    });
-
-    samplesEl.addEventListener("input", (e) => {
-      const input = e.target.closest('[data-action="rename_input"]');
-      if (!input) return;
-      editValue = input.value;
-    });
-
-    samplesEl.addEventListener("keydown", (e) => {
-      if (!e.target.closest('[data-action="rename_input"]')) return;
-      const row = e.target.closest(".classifier-table__row");
-      if (e.key === "Enter") { e.preventDefault(); confirmRename(row.dataset.id); }
-      else if (e.key === "Escape") { e.preventDefault(); editingId = null; renderSamples(); }
-    });
-  }
-
   function init() {
     wireEvents();
-    wireEiEvents();
     refresh();
   }
 
-  return { init, refresh };
+  return { init, refresh, handleMessage };
 })();
 
 window.Classifier = Classifier;

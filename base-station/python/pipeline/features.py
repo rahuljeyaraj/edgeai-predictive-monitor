@@ -12,10 +12,10 @@ caller's node's own committed `entry.input_dim` (pipeline/manager.py's
 _infer_sensor_config_and_dim, which now folds in scalar_dim_for() below
 too) -- not every node necessarily uses the same per-channel bin count.
 """
-from typing import Dict, FrozenSet, Tuple
+from typing import Dict, FrozenSet, List, Tuple
 
 from sensor_frame import SensorFrame
-from registry import SensorChannel
+from registry import SensorChannel, input_dim_for
 
 # Per-channel time-domain scalars (rms/kurtosis/std/peak/crest_factor/
 # skewness), computed on-device separately per accel axis and on the mic
@@ -64,6 +64,42 @@ def scalar_dim_for(sensor_config: FrozenSet[SensorChannel]) -> int:
     input_dim would be short by exactly this many columns and every frame
     would fail bin-count validation forever)."""
     return sum(len(SCALAR_NAMES) for c in _SCALAR_SUFFIX_BY_CHANNEL if c in sensor_config)
+
+
+def axis_names_for(sensor_config: FrozenSet[SensorChannel]) -> List[str]:
+    """Real per-column names for the vector build_feature_vector() builds
+    for this sensor_config, in the exact same order: each present
+    channel's spectral bins first (fixed SensorChannel order), named
+    "<channel>_binN" (e.g. "accel_x_bin0" .. "accel_x_bin127"), then each
+    present channel's scalar tail, named "<channel>_<scalar>" (e.g.
+    "accel_x_rms", "mic_skewness") -- channel-prefixed to read consistently
+    with the bin names above, NOT the wire protocol's own scalar-suffixed
+    key order (f"{scalar}_{suffix}", e.g. "rms_x", "skewness_mic", used by
+    frame.scalars/telemetry_schema.json) -- these are Edge Impulse-facing
+    display names only, unrelated to that wire key format.
+
+    Bin-index rather than frequency-labeled (e.g. "accel_x_10hz") --
+    sample rate/FFT size aren't persisted anywhere today (only a
+    per-frame runtime value, SensorFrame.spectrum_meta), so a frequency
+    label would need new capture-schema plumbing this doesn't have.
+    Index-based needs none: bin count per channel comes straight from
+    registry.input_dim_for()'s existing default table.
+
+    Used by pipeline/ei_client.py's create_impulse() so Edge Impulse's DSP
+    block gets real, identifiable axis names instead of generic
+    "feature_0".."feature_N" ones."""
+    names: List[str] = []
+    for channel in SensorChannel:
+        if channel not in sensor_config:
+            continue
+        one = frozenset({channel})
+        bin_count = input_dim_for(one) - scalar_dim_for(one)
+        names.extend(f"{channel.value}_bin{i}" for i in range(bin_count))
+    for channel in SensorChannel:
+        if channel not in _SCALAR_SUFFIX_BY_CHANNEL or channel not in sensor_config:
+            continue
+        names.extend(f"{channel.value}_{name}" for name in SCALAR_NAMES)
+    return names
 
 
 def standardize_scalars(vector: Tuple[float, ...], spectral_dim: int,
