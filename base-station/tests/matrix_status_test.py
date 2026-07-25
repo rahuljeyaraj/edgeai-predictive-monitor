@@ -3,7 +3,7 @@
 Exercises matrix_status.fleet_status_text() against the truth table in
 docs/LED_MATRIX_STATUS_PLAN.md §3: blank when nothing's commissioned, a
 count-bearing "NOK" when all good, and the nonzero buckets in fixed
-fault->warning->offline order (healthy dropped) when anything's wrong. Words
+fault->warning->offline->healthy order when anything's wrong. Words
 are the matrix-only shorthand (OK/FLT/WRN/OFF, not the NodeStatus vocabulary
 used elsewhere) and every separator is dropped (no space after a count, no
 space after a comma) -- each character, including a space, costs a fixed
@@ -69,25 +69,26 @@ def main():
         entry(NodeStatus.UNCOMMISSIONED),
     ], "2OK")
 
-    # Anything wrong -> nonzero buckets only, fault->warning->offline order,
-    # healthy dropped entirely.
-    check("all three severities", [
+    # Anything wrong -> nonzero buckets, fault->warning->offline->healthy
+    # order, healthy last (not dropped) if any are still healthy.
+    check("all three severities plus healthy", [
         entry(NodeStatus.HEALTHY),
         entry(NodeStatus.FAULT),
         entry(NodeStatus.WARNING),
         entry(NodeStatus.WARNING),
         entry(NodeStatus.HEALTHY, last_seen=_STALE),  # -> offline
-    ], "1FLT,2WRN,1OFF")
-    check("fault only", [entry(NodeStatus.FAULT), entry(NodeStatus.HEALTHY)], "1FLT")
+    ], "1FLT,2WRN,1OFF,1OK")
+    check("fault only", [entry(NodeStatus.FAULT)], "1FLT")
+    check("fault plus healthy", [entry(NodeStatus.FAULT), entry(NodeStatus.HEALTHY)], "1FLT,1OK")
     check("warning only", [entry(NodeStatus.WARNING)], "1WRN")
 
     # Offline is derived from last_seen staleness, not a stored status:
-    # a HEALTHY node gone quiet counts as offline, and healthy is dropped
-    # once any bucket is nonzero.
+    # a HEALTHY node gone quiet counts as offline, and any still-healthy
+    # nodes are appended last once any bucket is nonzero.
     check("stale healthy is offline", [
         entry(NodeStatus.HEALTHY),
         entry(NodeStatus.HEALTHY, last_seen=_STALE),
-    ], "1OFF")
+    ], "1OFF,1OK")
     # A node that never streamed a frame (last_seen None) is New, not offline.
     check("null last_seen not offline", [
         entry(NodeStatus.HEALTHY),

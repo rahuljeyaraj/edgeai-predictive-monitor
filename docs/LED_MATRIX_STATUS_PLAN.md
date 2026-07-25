@@ -52,10 +52,11 @@ from all counts):
 - `H = W = F = O = 0` (empty fleet, or nothing commissioned yet) → **blank display**.
 - `W = F = O = 0, H > 0` (everything healthy) → `"HOK"` (count included, not just
   "ALL GOOD" — doubles as an implicit fleet-size readout).
-- Otherwise (anything wrong) → list only the **nonzero** buckets, comma-separated
-  with **no space**, in fixed severity order **fault → warning → offline**, healthy
-  count dropped entirely:
-  - All three nonzero: `"FFLT,WWRN,OOFF"`
+- Otherwise (anything wrong) → list the **nonzero** buckets, comma-separated
+  with **no space**, in fixed order **fault → warning → offline → healthy**
+  (healthy last if nonzero, not dropped — the shortened words leave enough
+  room to keep it on-screen):
+  - All four nonzero: `"FFLT,WWRN,OOFF,HOK"`
   - Any subset nonzero: e.g. just `"OOFF"` if that's the only issue.
 
 `OFFLINE` is treated as a peer severity bucket, not folded into fault — a silently

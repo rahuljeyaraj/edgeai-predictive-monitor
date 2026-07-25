@@ -78,11 +78,13 @@ def fleet_status_text(entries: Iterable[RegistryEntry],
         # Empty fleet, or nothing commissioned yet -> blank display.
         return ""
     if warning == 0 and fault == 0 and offline == 0:
-        # Everything healthy -> include the count (doubles as a fleet-size
+        # Everything healthy -> just the count (doubles as a fleet-size
         # readout), not a bare "ALL GOOD".
         return f"{healthy}{_HEALTHY_WORD}"
-    # Anything wrong: only the nonzero buckets, fixed severity order
-    # fault -> warning -> offline, healthy dropped entirely (§3).
+    # Anything wrong: nonzero buckets, fixed severity order
+    # fault -> warning -> offline, healthy last if nonzero. The word
+    # shortening (OK/FLT/WRN/OFF) made room to keep healthy in the message
+    # even here, instead of dropping it (§3 revision).
     parts = []
     if fault:
         parts.append(f"{fault}{_FAULT_WORD}")
@@ -90,4 +92,6 @@ def fleet_status_text(entries: Iterable[RegistryEntry],
         parts.append(f"{warning}{_WARNING_WORD}")
     if offline:
         parts.append(f"{offline}{_OFFLINE_WORD}")
+    if healthy:
+        parts.append(f"{healthy}{_HEALTHY_WORD}")
     return ",".join(parts)
