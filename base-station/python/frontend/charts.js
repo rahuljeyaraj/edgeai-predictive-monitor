@@ -227,7 +227,9 @@ const Charts = (() => {
         anomalyPinnedRange: null, // [x0, x1] the user scrubbed to, while anomalyLive is false
         anomalyWindowSeconds: ANOMALY_WINDOW_SECONDS, // live-tail width; user-adjustable via the rangeslider
 
+        classification: null, // {label, confidence, scores, ts} -- Edge Impulse fault classifier, seeded from entry.last_classification and kept live over the "classification" WS event; null if no model loaded for this node's device_type
         tilesEl: null,
+        classificationEl: null,
         anomalyEl: null, anomalyMounted: false,
         accelSpectrumEl: null, accelSpectrumMounted: false,
         micSpectrumEl: null, micSpectrumMounted: false,
@@ -281,6 +283,8 @@ const Charts = (() => {
         handleSpectrum(msg);
       } else if (msg.type === "anomaly") {
         handleAnomalyScore(msg);
+      } else if (msg.type === "classification") {
+        handleClassification(msg);
       } else if (msg.type === "registry") {
         applyThresholds(msg.node_id, msg.entry);
         if (registryHandler) registryHandler(msg);
@@ -347,6 +351,12 @@ const Charts = (() => {
     dirty.add(msg.node_id);
   }
 
+  function handleClassification(msg) {
+    const node = ensureNode(msg.node_id);
+    node.classification = { label: msg.label, confidence: msg.confidence, scores: msg.scores, ts: msg.timestamp };
+    dirty.add(msg.node_id);
+  }
+
   async function seedAnomalyHistory(nodeId, node) {
     try {
       const res = await fetch(`/nodes/${encodeURIComponent(nodeId)}/history`);
@@ -372,6 +382,7 @@ const Charts = (() => {
     node.faultThreshold = typeof entry.fault_threshold === "number" ? entry.fault_threshold : null;
     node.status = entry.status;
     node.commissioningProgress = entry.commissioning_progress || null;
+    node.classification = entry.last_classification || null;
     dirty.add(nodeId);
   }
 
@@ -404,6 +415,39 @@ const Charts = (() => {
         <div class="scalar-tile__value">${node.scalars[def.key].toFixed(3)}</div>
         <div class="scalar-tile__label">${def.label}</div>
       </div>`).join("")}</div>`;
+  }
+
+  // Recording labels are the operator's own words (bearing/loose/unbalanced/
+  // healthy, etc, docs/EDGE_IMPULSE_DASHBOARD_WORKFLOW_PLAN.md), not Edge
+  // Impulse jargon -- title-casing is all that's needed for display, no
+  // translation table.
+  function titleCase(label) {
+    return String(label).replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+  }
+
+  // Hand-rolled bars, same idiom as buildScalarTilesHtml above (cheap plain
+  // HTML, no Plotly needed for a static per-frame snapshot). Deliberately a
+  // single neutral accent, not STATUS_COLOR's green/amber/red -- that palette
+  // is reserved dashboard-wide for NodeStatus (doc S2), and this is a
+  // completely independent signal (pipeline/manager.py's classifier never
+  // feeds status) that happens to often share the English word "healthy"
+  // with one of its class labels. Reusing status colors here would visually
+  // claim the two are the same thing when they can legitimately disagree.
+  function buildClassificationHtml(node) {
+    const c = node.classification;
+    if (!c || !c.scores || !Object.keys(c.scores).length) {
+      return `<div class="classification-empty">No classifier trained for this asset class yet</div>`;
+    }
+    const rows = Object.entries(c.scores).sort((a, b) => b[1] - a[1]);
+    return `<div class="classification-bars">${rows.map(([label, prob]) => {
+      const isTop = label === c.label;
+      const pct = Math.round(prob * 100);
+      return `<div class="classification-bar${isTop ? " classification-bar--top" : ""}">
+        <div class="classification-bar__label">${escapeAttr(titleCase(label))}</div>
+        <div class="classification-bar__track"><div class="classification-bar__fill" style="width:${pct}%"></div></div>
+        <div class="classification-bar__value">${pct}%</div>
+      </div>`;
+    }).join("")}</div>`;
   }
 
   // ---------------------------------------------------------------------
@@ -777,6 +821,10 @@ const Charts = (() => {
       node.tilesEl = document.createElement("div");
       node.tilesEl.className = "chart-host";
     }
+    if (!node.classificationEl) {
+      node.classificationEl = document.createElement("div");
+      node.classificationEl.className = "chart-host";
+    }
     if (!node.anomalyEl) {
       node.anomalyEl = document.createElement("div");
       node.anomalyEl.className = "chart-plotly";
@@ -889,6 +937,9 @@ const Charts = (() => {
       const tilesSlot = findSlot("chart-slot-tiles", nodeId);
       if (tilesSlot) reparent(node.tilesEl, tilesSlot);
 
+      const classificationSlot = findSlot("chart-slot-classification", nodeId);
+      if (classificationSlot) reparent(node.classificationEl, classificationSlot);
+
       reparent(node.anomalyEl, anomalySlot);
       if (!node.anomalyMounted) {
         const [traces, layout] = buildAnomalyFigure(nodeId, node);
@@ -921,6 +972,7 @@ const Charts = (() => {
         seedAnomalyHistory(nodeId, node);
       }
       node.tilesEl.innerHTML = buildScalarTilesHtml(node);
+      if (node.classificationEl) node.classificationEl.innerHTML = buildClassificationHtml(node);
 
       if (openRawIds.has(nodeId)) {
         const rawAccelSlot = findSlot("chart-slot-raw-accel", nodeId);
@@ -954,6 +1006,7 @@ const Charts = (() => {
       if (!node || !node.anomalyEl) continue;
 
       if (node.tilesEl) node.tilesEl.innerHTML = buildScalarTilesHtml(node);
+      if (node.classificationEl) node.classificationEl.innerHTML = buildClassificationHtml(node);
 
       if (node.anomalyMounted) {
         const [traces, layout] = buildAnomalyFigure(nodeId, node);
@@ -1030,6 +1083,17 @@ const Charts = (() => {
       </div>
       ${chartSlotHtml("chart-slot-anomaly", nodeId)}
     </div>`;
+
+    // Independent of the anomaly score above -- entry.device_type gates this
+    // the same way hasAccel/hasMic gate the sensor charts, not entry.status,
+    // since the classifier runs regardless of commissioning state (S1: "no
+    // device_type, or type has no model -> anomaly score only").
+    if (entry.device_type) {
+      html += `<div class="chart-section">
+        <div class="chart-section__title">Fault classification</div>
+        ${chartSlotHtml("chart-slot-classification", nodeId)}
+      </div>`;
+    }
 
     if (hasAccel) {
       html += `<div class="chart-section">

@@ -639,6 +639,77 @@ body {
   color: #94a3b8;
 }
 
+/* ---- Fault classification bars -- Edge Impulse classifier's per-class
+   confidence, a signal fully independent of NodeStatus (pipeline/manager.py
+   never feeds it into status). Neutral single accent, deliberately NOT
+   STATUS_COLOR's green/amber/red (charts.js) -- that palette means
+   NodeStatus dashboard-wide, and this can legitimately disagree with it. ---- */
+
+.classification-empty {
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 13px;
+  color: #64748b;
+  padding: 8px 0;
+}
+
+.classification-bars {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.classification-bar {
+  display: grid;
+  grid-template-columns: 100px 1fr 44px;
+  align-items: center;
+  gap: 10px;
+}
+
+.classification-bar__label {
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 13px;
+  color: #94a3b8;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.classification-bar__track {
+  height: 8px;
+  border-radius: 4px;
+  background-color: #1e293b;
+  border: 1px solid #334155;
+  overflow: hidden;
+}
+
+.classification-bar__fill {
+  height: 100%;
+  border-radius: 4px;
+  background-color: #475569;
+}
+
+.classification-bar__value {
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-variant-numeric: tabular-nums;
+  font-size: 13px;
+  color: #94a3b8;
+  text-align: right;
+}
+
+.classification-bar--top .classification-bar__label {
+  color: #e2e8f0;
+  font-weight: 600;
+}
+
+.classification-bar--top .classification-bar__fill {
+  background-color: #818cf8;
+}
+
+.classification-bar--top .classification-bar__value {
+  color: #e2e8f0;
+  font-weight: 600;
+}
+
 /* ---- Waterfall 2D/3D toggle pills (doc §4) -- deliberately placed in
    .perf-tier__body, never <summary>, so a pill click never also toggles
    the collapsible open/closed (a native <summary> click does that as a
