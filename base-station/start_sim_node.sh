@@ -7,25 +7,40 @@
 # UNO Q (the one ./start_dashboard.sh brings up) -- not the desktop
 # dashboard (see start_desktop_dashboard.sh for that, no device involved).
 #
-# The problem this works around: the deployed app's run.sh always launches
-# main.py with zero args (`exec python "$PYTHON_SCRIPT"`), and app.yaml has
-# no field to inject one -- so the on-device app never has --mqtt-host set
-# on its own. This script:
+# The MQTT broker lives ON THE UNO Q ITSELF (the hub), not on this dev
+# machine -- matching how a real satellite node has to work: it's a dumb
+# sensor with nowhere else to publish to. This machine's sim just connects
+# out to the device's broker over plain WiFi/Ethernet LAN, exactly like a
+# real satellite would (see docs/Running_Dashboard_And_Satellite_Sim.md's
+# old "Variant B" for the pre-App-Lab version of this same setup). USB/adb
+# is used only for the occasional/one-time steps below -- never for live
+# MQTT traffic -- so a momentary USB blip can no longer flip a sim node
+# "offline" on the dashboard (the old adb-reverse-tunnel version of this
+# script was vulnerable to exactly that, since that port-forward dies with
+# the adb transport session).
+#
+# One-time on-device setup this script does NOT do for you (needs a sudo
+# password typed on-device; adb can't supply one non-interactively):
+#   adb shell
+#   sudo apt-get update && sudo apt-get install -y mosquitto mosquitto-clients
+#   echo -e 'listener 1883 0.0.0.0\nallow_anonymous true' | sudo tee /etc/mosquitto/conf.d/lan.conf
+#   sudo systemctl enable --now mosquitto
+#   sudo systemctl restart mosquitto
+# The broker-reachability check below will fail with this exact guidance
+# if it isn't done yet.
+#
+# main.py picks its own --mqtt-host default at every startup (reads its
+# container's docker-bridge gateway IP from /proc/net/route -- see
+# main.py's _default_mqtt_host()) instead of needing an external script to
+# patch that default and restart the app whenever the gateway IP changes.
+# Guessing wrong (no broker actually there yet) is harmless: paho's
+# connect_async() just retries quietly in the background. This script:
 #   1. Confirms the device's app container is already up (run
-#      ./start_dashboard.sh first if not).
-#   2. `adb reverse tcp:1883 tcp:1883` -- lets the *device's* connections to
-#      127.0.0.1:1883 tunnel back over USB to this machine's own mosquitto
-#      broker (must already be running here).
-#   3. Finds the app container's docker-bridge gateway IP (reachable from
-#      *inside* the container's network namespace, unlike the adb-reverse
-#      target, which only listens in the device's host namespace) and, if
-#      the on-device main.py isn't already defaulting --mqtt-host to it,
-#      patches that default and `arduino-app-cli app restart`s the app so
-#      it takes effect. NOT committed to git -- edits the on-device copy
-#      only; a future ./start_dashboard.sh run overwrites it back to the
-#      clean default (MQTT off) automatically. Skipped entirely (no
-#      restart) if already pointed at the right gateway IP.
-#   4. Starts satellite_node_sim.py here, streaming from --captures-dir.
+#      ./start_dashboard.sh first if not) and running code recent enough
+#      to have this auto-configure logic (redeploy via ./start_dashboard.sh
+#      if not).
+#   2. Starts satellite_node_sim.py here, pointed at the device's own LAN
+#      IP:1883, streaming from --captures-dir.
 #
 # Usage:
 #   ./start_sim_node.sh --captures-dir captures_3 [--nodes N] [--ui-port-base PORT] [--auto-online]
@@ -89,26 +104,6 @@ fi
 "${VENV}/bin/pip" install -q -r "${PY_DIR}/tools/requirements-desktop.txt"
 echo "venv ready: ${VENV}"
 
-step "Checking local mosquitto broker at 127.0.0.1:${MQTT_PORT}"
-if ! "${VENV}/bin/python3" - "127.0.0.1" "${MQTT_PORT}" <<'EOF'
-import socket, sys
-host, port = sys.argv[1], int(sys.argv[2])
-s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-s.settimeout(3)
-try:
-    s.connect((host, port))
-except OSError:
-    sys.exit(1)
-finally:
-    s.close()
-EOF
-then
-    echo "No MQTT broker reachable at 127.0.0.1:${MQTT_PORT}." >&2
-    echo "Install/start one, e.g.: sudo apt-get install -y mosquitto && sudo systemctl start mosquitto" >&2
-    exit 1
-fi
-echo "Broker reachable."
-
 step "Checking adb device connection"
 if ! wait_for_device 15; then
     echo "Board not visible to adb after waiting. Run 'adb devices' to check." >&2
@@ -122,65 +117,46 @@ if [ "${running}" != "true" ]; then
     exit 1
 fi
 
-step "Setting up adb reverse tcp:${MQTT_PORT} (device host namespace -> this machine's broker)"
-if adb reverse --list 2>/dev/null | grep -q "tcp:${MQTT_PORT} tcp:${MQTT_PORT}"; then
-    echo "Already set up."
-else
-    adb_retry 15 reverse "tcp:${MQTT_PORT}" "tcp:${MQTT_PORT}"
-    echo "Set up."
-fi
-
-step "Finding app container's docker-bridge gateway IP"
-route_hex="$(adb_retry 15 shell "docker exec ${CONTAINER} awk '\$2==\"00000000\" {print \$3}' /proc/net/route" 2>/dev/null | tr -d '\r\n')"
-if [ -z "${route_hex}" ] || [ "${#route_hex}" -ne 8 ]; then
-    echo "Could not read the container's default route from /proc/net/route." >&2
+step "Finding the device's own LAN IP (where this machine's sim will reach its broker)"
+DEVICE_LAN_IP="$(find_lan_ip)"
+if [ -z "${DEVICE_LAN_IP}" ]; then
+    echo "Could not determine the device's LAN IP. Is it connected to WiFi/Ethernet? ('adb shell ip route get 1.1.1.1' to check)" >&2
     exit 1
 fi
-GATEWAY_IP="$(printf '%d.%d.%d.%d' \
-    "0x${route_hex:6:2}" "0x${route_hex:4:2}" "0x${route_hex:2:2}" "0x${route_hex:0:2}")"
-echo "Gateway IP (container -> device host, where the adb-reverse tunnel listens): ${GATEWAY_IP}"
+echo "Device LAN IP: ${DEVICE_LAN_IP}"
 
-step "Checking on-device main.py's --mqtt-host default"
-current_default="$(adb_retry 15 shell "docker exec ${CONTAINER} grep -oP '(?<=--mqtt-host\", default=)[^,]*' /app/python/main.py" 2>/dev/null | tr -d '\r\n')"
-desired_default="\"${GATEWAY_IP}\""
-if [ "${current_default}" = "${desired_default}" ]; then
-    echo "Already pointed at ${GATEWAY_IP} -- no patch/restart needed."
-else
-    step "Patching --mqtt-host default to ${GATEWAY_IP} (on-device copy only, not committed to git)"
-    adb_retry 15 shell "docker exec ${CONTAINER} sed -i 's/\"--mqtt-host\", default=[^,]*,/\"--mqtt-host\", default=${desired_default},/' /app/python/main.py"
-
-    step "Restarting the app so the new default takes effect"
-    adb_retry 60 shell "arduino-app-cli app restart ${REMOTE_DIR}"
-
-    step "Waiting for the app container to come back up"
-    up=0
-    for i in $(seq 1 60); do
-        running="$(adb_retry 15 shell "docker inspect -f '{{.State.Running}}' ${CONTAINER}" 2>/dev/null | tr -d '\r\n')"
-        if [ "${running}" = "true" ]; then
-            up=1
-            break
-        fi
-        sleep 2
-    done
-    if [ "${up}" -ne 1 ]; then
-        echo "Container never came back up after restart. Check 'adb shell docker logs ${CONTAINER}'." >&2
-        exit 1
-    fi
-
-    step "Waiting for dashboard HTTP to respond again"
-    LAN_IP="$(find_lan_ip)"
-    VERIFY_BASE="http://${LAN_IP:-localhost}:${DASHBOARD_PORT}"
-    dashboard_up=0
-    for i in $(seq 1 30); do
-        code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "${VERIFY_BASE}/index.html" 2>/dev/null || true)"
-        if [ "${code}" = "200" ]; then
-            dashboard_up=1
-            break
-        fi
-        sleep 2
-    done
-    [ "${dashboard_up}" -eq 1 ] && echo "Dashboard responding (HTTP 200)." || echo "Dashboard hasn't responded yet -- give it a few more seconds." >&2
+step "Checking mosquitto broker is reachable at ${DEVICE_LAN_IP}:${MQTT_PORT}"
+if ! "${VENV}/bin/python3" - "${DEVICE_LAN_IP}" "${MQTT_PORT}" <<'EOF'
+import socket, sys
+host, port = sys.argv[1], int(sys.argv[2])
+s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+s.settimeout(3)
+try:
+    s.connect((host, port))
+except OSError:
+    sys.exit(1)
+finally:
+    s.close()
+EOF
+then
+    echo "No MQTT broker reachable at ${DEVICE_LAN_IP}:${MQTT_PORT}." >&2
+    echo "The UNO Q needs mosquitto installed and open to the LAN (one-time, run on-device):" >&2
+    echo "  adb shell" >&2
+    echo "  sudo apt-get update && sudo apt-get install -y mosquitto mosquitto-clients" >&2
+    echo "  echo -e 'listener 1883 0.0.0.0\\nallow_anonymous true' | sudo tee /etc/mosquitto/conf.d/lan.conf" >&2
+    echo "  sudo systemctl enable --now mosquitto && sudo systemctl restart mosquitto" >&2
+    exit 1
 fi
+echo "Broker reachable."
+
+step "Checking on-device app has MQTT auto-configure support"
+has_autoconfig="$(adb_retry 15 shell "docker exec ${CONTAINER} grep -c _default_mqtt_host /app/python/main.py" 2>/dev/null | tr -d '\r\n')"
+if [ "${has_autoconfig}" = "0" ] || [ -z "${has_autoconfig}" ]; then
+    echo "On-device app predates MQTT auto-configure (main.py has no _default_mqtt_host)." >&2
+    echo "Run ./start_dashboard.sh once to redeploy the latest code, then retry." >&2
+    exit 1
+fi
+echo "Present -- main.py already self-points --mqtt-host at its own gateway IP on every boot, no patch/restart needed."
 
 PIDS=()
 CLEANED_UP=0
@@ -201,7 +177,7 @@ for i in $(seq 0 $((NUM_NODES - 1))); do
     ui_port=$((UI_PORT_BASE + i))
     (
         cd "${PY_DIR}/tools" && exec "${VENV}/bin/python3" satellite_node_sim.py \
-            --mqtt-host 127.0.0.1 --mqtt-port "${MQTT_PORT}" \
+            --mqtt-host "${DEVICE_LAN_IP}" --mqtt-port "${MQTT_PORT}" \
             --captures-dir "${CAPTURES_DIR}" \
             --ui-host 127.0.0.1 --ui-port "${ui_port}"
     ) &
@@ -243,15 +219,9 @@ print(files[0] if files else "")
     fi
 done
 
-LAN_IP="$(find_lan_ip)"
-
 echo
 echo "============================================================"
-if [ -n "${LAN_IP}" ]; then
-echo " Device dashboard: http://${LAN_IP}:${DASHBOARD_PORT}/index.html"
-else
-echo " Device has no network route right now -- reconnect it to WiFi/Ethernet."
-fi
+echo " Device dashboard: http://${DEVICE_LAN_IP}:${DASHBOARD_PORT}/index.html"
 for ui_port in "${SIM_UI_PORTS[@]}"; do
 echo " Sim node UI: http://127.0.0.1:${ui_port}/  (toggle online/capture file/channels here)"
 done

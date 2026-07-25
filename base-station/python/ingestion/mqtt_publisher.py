@@ -37,7 +37,11 @@ class MqttPublisher:
 
     def __init__(self, host: str, port: int, client_id: str = ""):
         self._client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=client_id)
-        self._client.connect(host, port)
+        # connect_async (not connect): see mqtt_subscriber.py's comment --
+        # host is often a best-effort guess now, this must not raise
+        # synchronously (main() calls this directly, unguarded) if nothing's
+        # listening there yet.
+        self._client.connect_async(host, port)
         self._client.loop_start()
 
     def publish_status(self, node_id: str, rgb: str, mode: str, period_ms: int) -> None:

@@ -154,7 +154,12 @@ class MqttSubscriber:
         self._client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=client_id)
         self._client.on_connect = self._handle_connect
         self._client.on_message = self._handle_message
-        self._client.connect(host, port)
+        # connect_async (not connect): host is often a best-effort guess now
+        # (main.py's _default_mqtt_host()) rather than a confirmed broker --
+        # this defers the actual TCP attempt to loop_start()'s background
+        # thread, which retries quietly via paho's own reconnect logic
+        # instead of raising synchronously if nothing's listening yet.
+        self._client.connect_async(host, port)
 
     @property
     def dropped_frames(self) -> int:

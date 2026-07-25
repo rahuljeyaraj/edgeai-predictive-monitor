@@ -223,6 +223,32 @@ def build_telegram_alerts(registry: Registry, alert_store: AlertStore, on_subscr
     return bot
 
 
+def _default_mqtt_host() -> str | None:
+    """Auto-detects this container's own default-route gateway IP by reading
+    /proc/net/route -- the docker-bridge address that reaches the device's
+    own host namespace, where a co-located mosquitto broker (if any) listens
+    on 0.0.0.0. Used as --mqtt-host's default so MQTT satellite ingestion
+    self-configures on every boot: run.sh always launches main.py with zero
+    args (see module docstring), so this used to require an external script
+    to patch this default in the source and restart the app every time the
+    gateway IP changed. connect_async() in mqtt_subscriber.py/
+    mqtt_publisher.py makes guessing wrong here harmless -- if nothing's
+    listening, paho just retries quietly in the background instead of
+    raising. Returns None (MQTT off) if the route table can't be read, e.g.
+    non-Linux or no default route."""
+    try:
+        with open("/proc/net/route") as f:
+            next(f)  # header line
+            for line in f:
+                fields = line.split()
+                if len(fields) >= 3 and fields[1] == "00000000":
+                    gateway_hex = fields[2]
+                    return ".".join(str(int(gateway_hex[i:i + 2], 16)) for i in (6, 4, 2, 0))
+    except OSError:
+        pass
+    return None
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__,
                                       formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -235,8 +261,10 @@ def main():
     parser.add_argument("--no-frontend", action="store_true",
                          help="Don't serve the static dashboard (e.g. deploying it separately)")
 
-    parser.add_argument("--mqtt-host", default=None,
-                         help="Enable real MQTT satellite ingestion against this broker")
+    parser.add_argument("--mqtt-host", default=_default_mqtt_host(),
+                         help="Enable real MQTT satellite ingestion against this broker "
+                              "(auto-detected as this container's docker-bridge gateway "
+                              "IP by default; pass --mqtt-host \"\" to disable)")
     parser.add_argument("--mqtt-port", type=int, default=1883)
 
     parser.add_argument("--gate-threshold", type=float, default=0.05,
