@@ -1294,7 +1294,18 @@ async function pollNodes() {
         maybeAutoSaveCapture(nodeId);
       }
     }
-    Charts.onNodesPolled(nodes);
+    // Pass the race-corrected state.lastNodes, not the raw fetch response
+    // -- a node that registers *after* this poll was dispatched but
+    // *before* it resolved would be missing from `nodes` even though it
+    // now genuinely exists (WS already delivered its "registry"/"spectrum"
+    // push and charts.js already has live buffers for it). Passing `nodes`
+    // straight through made onNodesPolled's own purge-if-absent logic
+    // wrongly evict that node's just-created Plotly charts the instant this
+    // stale poll landed -- reproduces as a freshly-online node's expanded
+    // spectrum going silently inert. state.lastNodes was already merged
+    // with the same guard two lines above for this exact race; charts.js
+    // needs the identical corrected view, not the raw one.
+    Charts.onNodesPolled(state.lastNodes);
     // A decommissioned node never appears in another motorRowHtml() call,
     // so it'd otherwise sit in expandedNodeIds forever (harmless on its
     // own, but see charts.js's attachExpanded()).

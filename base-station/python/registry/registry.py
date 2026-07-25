@@ -427,10 +427,28 @@ class Registry:
             return entry
 
     def touch_last_seen(self, node_id: str, timestamp: Optional[float] = None) -> RegistryEntry:
+        # No self._save() here, deliberately -- this fires on EVERY ingested
+        # frame (pipeline/manager.py's route(), several times a second per
+        # active node), and last_seen is purely a liveness heartbeat: the
+        # frontend derives online/offline from staleness itself (app.js's
+        # bucketFor()), and a stale/missing value after a restart is exactly
+        # as correct as a persisted-but-now-ancient one (both read as
+        # "offline" until the next real frame arrives). Persisting it
+        # synchronously bought nothing but turned every frame into a full
+        # registry.json rewrite (mkstemp+json.dump+os.replace) while holding
+        # this node's lock -- the same lock REST mutations (pause/rename/
+        # commission/...) block on, so any storage hiccup on this device
+        # (confirmed: several years' worth of orphaned zero-byte
+        # .registry-*.tmp files under data/, evidence of writes getting
+        # killed mid-flight) turned into a total dashboard freeze: ingestion
+        # stalls inside the lock, REST's worker threadpool piles up waiting
+        # on it, WS broadcasts (fired only after route() returns) stop, and
+        # the node eventually reads as offline once last_seen goes stale.
+        # See record_anomaly_score()/record_classification() below for the
+        # same fix, same reasoning.
         with self._lock_for(node_id):
             entry = self.get(node_id)
             entry.last_seen = time.time() if timestamp is None else timestamp
-            self._save()
             return entry
 
     def start_commissioning(self, node_id: str) -> RegistryEntry:
@@ -522,11 +540,17 @@ class Registry:
         (pipeline/manager.py's MotorPipeline.handle_frame(), alongside the
         existing history_store.record() call) so Fleet cards can show a
         node's anomaly index without per-node history polling (dashboard
-        redesign S5.1)."""
+        redesign S5.1).
+
+        No self._save() here -- same reasoning as touch_last_seen() above:
+        this is a per-frame-refreshed live cache (the durable history is
+        history_store, a separate sqlite write, not this field), not
+        something that needs to survive a restart. Was one of two other
+        per-frame callers (with record_classification() below) piling
+        redundant full-registry disk writes onto the same hot path/lock."""
         with self._lock_for(node_id):
             entry = self.get(node_id)
             entry.last_anomaly_score = score
-            self._save()
             return entry
 
     def record_classification(self, node_id: str, result: dict) -> RegistryEntry:
@@ -534,9 +558,11 @@ class Registry:
         classifier model actually scored (pipeline/manager.py's
         MotorPipeline.handle_frame(), alongside record_anomaly_score()
         above) -- same "Fleet card reads this without per-node history
-        polling" shape."""
+        polling" shape.
+
+        No self._save() here -- same reasoning as touch_last_seen()/
+        record_anomaly_score() above."""
         with self._lock_for(node_id):
             entry = self.get(node_id)
             entry.last_classification = result
-            self._save()
             return entry

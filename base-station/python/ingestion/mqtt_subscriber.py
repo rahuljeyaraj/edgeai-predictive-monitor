@@ -39,6 +39,8 @@ running Mosquitto broker; confirm a new pipeline is created and routed
 exactly as SPI frames are.
 """
 import logging
+import queue
+import threading
 import time
 from typing import Callable, Optional
 
@@ -52,6 +54,13 @@ from telemetry_frame import MalformedFrameError, decode_frame
 logger = logging.getLogger(__name__)
 
 DATA_TOPIC_FILTER = "epm/+/data"
+
+# Bounds the handoff queue between paho's network thread and the frame-
+# processing worker (see MqttSubscriber's class docstring) -- a safety net
+# against unbounded memory growth if processing ever falls consistently
+# behind arrival rate, not a normal operating condition at today's frame
+# rates. A few seconds' worth of frames across every satellite node combined.
+_QUEUE_MAXSIZE = 500
 
 
 class MalformedMessageError(Exception):
@@ -144,16 +153,35 @@ class MqttSubscriber:
     """Wraps paho.mqtt.client, normalizing every SPECTRUM message on
     `epm/+/data` into a SensorFrame and handing it to on_frame -- the
     push-model counterpart to UartReader's pull-model read_frames()
-    generator. on_frame is typically PipelineManager.route."""
+    generator. on_frame is typically PipelineManager.route.
+
+    paho's on_message callback runs on ONE thread shared by every node on
+    this broker (its network read/dispatch loop, loop_start()'s background
+    thread) -- on_frame (PipelineManager.route) does real inference + a
+    history.db write, non-trivial CPU/IO time. Calling it directly from
+    that callback used to mean one node's frame processing delayed every
+    OTHER node's messages too, since paho can't read the next PUBLISH off
+    the socket until the callback returns (confirmed live via a thread-dump
+    capture during a dashboard "stuck in between" report: the shared paho
+    thread caught mid-torch-forward-pass, well after the socket read that
+    delivered it). Fixed the same way ingestion/spi_reader.py already
+    separates I/O from processing: _enqueue_message (paho's actual
+    callback) only parses+queues, handing off to a dedicated worker thread
+    (_process_loop) that does the real work off paho's critical path.
+    _handle_message is kept as the synchronous "fully process one message"
+    step -- both the worker thread and tests call it directly."""
 
     def __init__(self, host: str, port: int, on_frame: Callable[[SensorFrame], None],
                  client_id: str = ""):
         self._on_frame = on_frame
         self._dropped = 0
         self._routing_errors = 0
+        self._queue: "queue.Queue" = queue.Queue(maxsize=_QUEUE_MAXSIZE)
+        self._worker: Optional[threading.Thread] = None
+        self._stop_worker = threading.Event()
         self._client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=client_id)
         self._client.on_connect = self._handle_connect
-        self._client.on_message = self._handle_message
+        self._client.on_message = self._enqueue_message
         # connect_async (not connect): host is often a best-effort guess now
         # (main.py's _default_mqtt_host()) rather than a confirmed broker --
         # this defers the actual TCP attempt to loop_start()'s background
@@ -172,7 +200,24 @@ class MqttSubscriber:
     def _handle_connect(self, client, userdata, flags, reason_code, properties=None):
         client.subscribe(DATA_TOPIC_FILTER, qos=0)
 
+    def _enqueue_message(self, client, userdata, msg) -> None:
+        """The actual paho on_message callback -- runs on paho's shared
+        network thread (see class docstring), so this must stay cheap and
+        never call self._on_frame directly. Queues the raw callback args
+        for _process_loop's worker thread to fully handle via
+        _handle_message. A full queue means the worker is falling behind
+        (not a normal condition at today's frame rates) -- drop the newest
+        message rather than block paho's thread with a blocking put(),
+        which would recreate the exact stall this split exists to avoid."""
+        try:
+            self._queue.put_nowait((client, userdata, msg))
+        except queue.Full:
+            self._dropped += 1
+
     def _handle_message(self, client, userdata, msg) -> None:
+        """Fully parse + route one message -- called from _process_loop's
+        worker thread in normal operation, or directly by tests that want
+        synchronous, single-threaded behavior (no queue/worker involved)."""
         try:
             frame = normalize_spectrum_message(msg.topic, msg.payload)
         except MalformedMessageError:
@@ -182,11 +227,11 @@ class MqttSubscriber:
             return
         # on_frame (PipelineManager.route) can raise -- e.g. a frame whose
         # bin count no longer matches what this node_id committed to on its
-        # first-ever frame (manager.py's _validate_frame_bins). This runs
-        # inside paho-mqtt's own background thread, shared by every node on
-        # this broker: an uncaught exception here has previously taken down
-        # message processing for the whole fleet, not just the one node that
-        # misbehaved, until the process was restarted. Log + drop instead,
+        # first-ever frame (manager.py's _validate_frame_bins). An uncaught
+        # exception here previously took down message processing for the
+        # whole fleet, not just the one node that misbehaved, until the
+        # process was restarted (still true now: it would otherwise kill
+        # _process_loop's worker thread permanently). Log + drop instead,
         # mirroring the MalformedMessageError handling just above.
         try:
             self._on_frame(frame)
@@ -195,12 +240,31 @@ class MqttSubscriber:
             logger.exception("on_frame failed for node_id=%r topic=%r -- frame dropped",
                               frame.node_id, msg.topic)
 
+    def _process_loop(self) -> None:
+        """Dedicated worker thread, off paho's network thread (see class
+        docstring) -- the actual PipelineManager.route() call (inference +
+        history.db write) happens here, so it can never delay reading the
+        next node's message off the socket."""
+        while not self._stop_worker.is_set():
+            try:
+                client, userdata, msg = self._queue.get(timeout=0.5)
+            except queue.Empty:
+                continue
+            self._handle_message(client, userdata, msg)
+
     def start(self) -> None:
+        self._stop_worker.clear()
+        self._worker = threading.Thread(target=self._process_loop,
+                                         name="mqtt-frame-worker", daemon=True)
+        self._worker.start()
         self._client.loop_start()
 
     def stop(self) -> None:
         self._client.loop_stop()
         self._client.disconnect()
+        self._stop_worker.set()
+        if self._worker is not None:
+            self._worker.join(timeout=2)
 
 
 def main():
