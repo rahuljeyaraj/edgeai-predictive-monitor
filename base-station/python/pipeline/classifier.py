@@ -6,10 +6,12 @@ TFLite interpreter instead of PyTorch -- this is inference-only (EI trains
 and builds the model cloud-side), so none of autoencoder.py's "needs a real
 on-device training story" reasoning for picking PyTorch applies here.
 
-CPU (XNNPACK) only, deliberately -- GPU was spiked live against the real
-board (2026-07-25, docs/DEV_PERF_PAGE_PLAN.md S5b's "worth a quick spike
-before betting the demo story on it") and ruled out, not just left
-unverified:
+CPU (XNNPACK) only, deliberately -- final, not a stopgap. GPU and NPU were
+both spiked live against the real board (2026-07-25, starting from
+docs/DEV_PERF_PAGE_PLAN.md S5b's "worth a quick spike before betting the
+demo story on it") and both ruled out, not left unverified. Full writeup,
+exact commands/output: docs/GPU_NPU_ACCELERATION_FEASIBILITY.md. Short
+version:
 
 - `/dev/dri/card0` and `/dev/dri/renderD128` (this board's Adreno GPU) ARE
   visible AND actually open() successfully from inside the app's Docker
@@ -31,22 +33,28 @@ unverified:
   error. That's why this module doesn't attempt it at all, rather than
   wrapping the attempt in a try/except the way an ordinary "optional
   accelerator" would be handled.
-- Real path forward if GPU/NPU acceleration is still wanted: `ai-edge-litert`
-  ships an optional `npu-sdk` extra pulling in
-  `ai-edge-litert-sdk-qualcomm~=0.2.0` -- Qualcomm's own compiled dispatch
-  library (Hexagon NPU, not the Adreno GPU `monitoring/gpu_perf.py` already
-  reads a busy% for), more likely to be built for this chip's actual ARM
-  baseline since Qualcomm targets their own SoC family directly. Untried --
-  a separate spike, and a genuinely different piece of silicon than "GPU."
-  Building Google's own GPU accelerator from source without LSE is the other
-  option, a much bigger lift than fits a "quick spike."
+- NPU: confirmed dead end, not just untried. This board (QRB2210/QCM2290)
+  only exposes `/dev/fastrpc-adsp` -- no `/dev/fastrpc-cdsp`, the compute
+  domain Qualcomm's QNN/SNPE NPU delegate (the `ai-edge-litert[npu-sdk]`
+  extra) would dispatch to. Qualcomm's own product brief confirms the
+  Hexagon core here is the LPASS *audio* DSP, not a tensor accelerator, and
+  states this board's sanctioned AI path is "CPU and GPU" -- there's no NPU
+  silicon to target.
+- GPU (the real Adreno 702 hardware, separate from `ai-edge-litert`'s dead
+  binary above): re-verified working via `ncnn`'s Vulkan backend --
+  bit-exact output vs. CPU, confirmed running on the actual hardware (not a
+  software fallback). But speedup stayed flat at ~1.0x from a single vector
+  up through a 256-node batch (this classifier is one shared model across
+  every node, unlike the per-motor autoencoder, so batching all nodes'
+  vectors through one call was tested specifically) -- this board's Adreno
+  702 never has enough work per dispatch to beat CPU (NEON) on a net this
+  small. Real, correct, and not worth building.
 
 interpreter_factory is dependency-injected (default: _default_interpreter,
 which imports ai-edge-litert) so tests never need the real TFLite runtime
 installed -- same "duck-typed fake, no mock library" convention
 api/ei_controller.py uses for ei_client (client=ei_client, defaulted but
-swappable). Also the extension point for a future Qualcomm NPU-backed
-interpreter_factory, if that separate spike pans out.
+swappable).
 """
 import json
 import logging

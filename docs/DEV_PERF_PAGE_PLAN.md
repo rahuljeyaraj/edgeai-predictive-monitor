@@ -168,9 +168,15 @@ provisioned/reachable vs. `available: True, busy_percent: 0.0` when genuinely
 idle — never show a fake number for "no data"). `provision-gpu.sh` is a
 one-time host step, **not** applied by `deploy.sh`, wiped by an OS reflash.
 This reports whatever's actually driving the GPU (currently ~nothing, hence
-~0%) — it doesn't make anything use the GPU; on-device ONNX/QNN inference
-(unverified Adreno-version feasibility, separate research track) is the thing
-that would eventually make this read non-zero.
+~0%) — it doesn't make anything use the GPU; on-device inference is the thing
+that would eventually make this read non-zero. **Spiked live 2026-07-25 and
+settled, both directions:** the classifier's actual runtime (`ai-edge-litert`)
+hits a confirmed ARMv8.1 LSE incompatibility on this CPU; the real Adreno
+GPU itself works fine (re-verified via `ncnn`/Vulkan, bit-exact vs. CPU) but
+gives ~1.0x speedup even batched across many nodes at once, so not worth
+building; NPU is a confirmed dead end (no compute-DSP domain on this chip).
+This tile stays at ~0% by design — nothing here is meant to move it. Full
+writeup: docs/GPU_NPU_ACCELERATION_FEASIBILITY.md.
 
 ## 6. MCU stats — removed, not just reshaped
 
