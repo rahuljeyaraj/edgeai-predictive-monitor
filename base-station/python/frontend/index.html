@@ -9,7 +9,7 @@
        just a hard-refresh) picks up the new file. Repeated live-testing
        confusion over "did my CSS/JS change even apply" is why this
        exists (2026-07-24). -->
-  <link rel="stylesheet" href="style.css?v=15">
+  <link rel="stylesheet" href="style.css?v=20">
 </head>
 <body>
   <header class="topbar">
@@ -23,10 +23,10 @@
     </h1>
     <nav class="topbar__nav" aria-label="Dashboard sections">
       <button class="topbar__nav-link is-active" data-tab="fleet">Fleet</button>
+      <button class="topbar__nav-link" data-tab="classifier">Classifier</button>
       <button class="topbar__nav-link" data-tab="network">Network</button>
       <button class="topbar__nav-link" data-tab="performance">Performance</button>
       <button class="topbar__nav-link" data-tab="alerts">Alerts</button>
-      <button class="topbar__nav-link" data-tab="classifier">Classifier</button>
     </nav>
   </header>
 
@@ -40,6 +40,12 @@
         <h2 class="fleet__title">Assets</h2>
       </div>
       <div class="fleet__list" id="fleet-list"></div>
+    </section>
+  </div>
+
+  <div class="tab-panel" data-tab-panel="classifier" hidden>
+    <section class="classifier-page" aria-label="Classifier">
+      <div class="classifier-cards" id="classifier-cards"></div>
     </section>
   </div>
 
@@ -79,17 +85,11 @@
     </section>
   </div>
 
-  <div class="tab-panel" data-tab-panel="classifier" hidden>
-    <section class="classifier-page" aria-label="Classifier">
-      <div class="classifier-cards" id="classifier-cards"></div>
-    </section>
-  </div>
-
   <script src="vendor/plotly-cartesian.min.js"></script>
-  <script src="charts.js?v=15"></script>
-  <script src="perf.js?v=15"></script>
-  <script src="alerts.js?v=15"></script>
-  <script src="classifier.js?v=15"></script>
-  <script src="app.js?v=15"></script>
+  <script src="charts.js?v=20"></script>
+  <script src="perf.js?v=20"></script>
+  <script src="alerts.js?v=20"></script>
+  <script src="classifier.js?v=20"></script>
+  <script src="app.js?v=20"></script>
 </body>
 </html>

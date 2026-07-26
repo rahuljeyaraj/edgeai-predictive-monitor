@@ -1,10 +1,12 @@
 """EIController -- API-layer orchestration for Edge Impulse Round A
 ("Upload") and Round B ("Train/Build/Fetch"), per docs/
-EDGE_IMPULSE_DASHBOARD_WORKFLOW_PLAN.md S4, reworked per S8 (2026-07-25):
-upload() now always uploads every local recording for a device_type (never
-a selection), wipes the EI project first, and fits/persists a pooled
-per-device-type scalar-tail baseline (ei_scaling.py) instead of the old
-per-node commissioning baseline -- see upload()'s own docstring. Mirrors
+EDGE_IMPULSE_DASHBOARD_WORKFLOW_PLAN.md S4, reworked per S8 (2026-07-25) and
+again for the 2026-07-26 Classifier tab cleanup: upload() now sends only the
+caller-selected local recordings for a device_type, but still fits/persists
+a pooled per-device-type scalar-tail baseline (ei_scaling.py) from EVERY
+local recording regardless of selection, so a later upload of a different
+subset normalizes the same way -- see upload()'s own docstring for the
+consequence of no longer wiping the project first. Mirrors
 CaptureController/CommissioningController's role: a thin lifecycle shim
 between REST routes and the ei_client/ei_projects/ei_scaling/capture/
 features plumbing below it.
@@ -80,8 +82,16 @@ class EIController:
 
     def project_ids(self) -> Dict[str, int]:
         """device_type -> Edge Impulse project_id, so the dashboard can
-        link straight to the Studio project next to the "Linked" pill."""
+        link straight to the Studio project."""
         return {dt: p["project_id"]
+                for dt, p in ei_projects.load_projects(self._projects_path).items()}
+
+    def project_names(self) -> Dict[str, str]:
+        """device_type -> Edge Impulse project name, for the dashboard's
+        "Open <project name> in Edge Impulse Studio" link. Falls back to
+        the same computed pattern link() uses to create a project for
+        entries saved before project_name was persisted (ei_projects.py)."""
+        return {dt: p.get("project_name") or f"edgeai-predictive-monitor-{dt}"
                 for dt, p in ei_projects.load_projects(self._projects_path).items()}
 
     def _entry_for(self, device_type: str) -> RegistryEntry:
@@ -111,7 +121,8 @@ class EIController:
         true."""
         existing = ei_projects.get_project(self._projects_path, device_type)
         if existing is not None:
-            return {"linked": True, "project_id": existing["project_id"]}
+            project_name = existing.get("project_name") or f"edgeai-predictive-monitor-{device_type}"
+            return {"linked": True, "project_id": existing["project_id"], "project_name": project_name}
 
         entry = self._entry_for(device_type)
         input_dim = entry.input_dim
@@ -126,17 +137,18 @@ class EIController:
                 f"device_type {device_type!r}: computed {len(axes)} axis names for a "
                 f"{input_dim}-dim vector -- per-channel bin count must differ from the "
                 f"registry default")
+        project_name = f"edgeai-predictive-monitor-{device_type}"
         jwt = self._client.login(username, password, totp)
-        project_id, api_key = self._client.create_project(
-            jwt, f"edgeai-predictive-monitor-{device_type}")
+        project_id, api_key = self._client.create_project(jwt, project_name)
         learn_id = self._client.create_impulse(api_key, project_id, input_dim, axes)
         # Best-effort num_classes from labels already captured for this
         # device type; a lone class if none yet -- EI accepts changing
         # this via the same endpoint again before the first real train.
         num_classes = max(1, len(self._labels_for(device_type)))
         self._client.set_nn_config(api_key, project_id, learn_id, input_dim, num_classes)
-        ei_projects.save_project(self._projects_path, device_type, project_id, api_key)
-        return {"linked": True, "project_id": project_id}
+        ei_projects.save_project(self._projects_path, device_type, project_id, api_key,
+                                  project_name=project_name)
+        return {"linked": True, "project_id": project_id, "project_name": project_name}
 
     def unlink(self, device_type: str) -> dict:
         """Drops device_type's saved project mapping without calling EI's
@@ -326,23 +338,42 @@ class EIController:
         row = ",".join(str(v) for v in vector)
         return f"{header}\n{row}\n".encode("utf-8")
 
-    def upload(self, device_type: str,
+    def upload(self, device_type: str, ids: List[str],
                on_progress: Optional[Callable[..., None]] = None) -> dict:
-        """docs/EDGE_IMPULSE_DASHBOARD_WORKFLOW_PLAN.md S8.3/8.4: uploads
-        EVERY local recording for this device_type -- never a selection,
-        since the pooled scalar-tail baseline (below) needs to fit against
-        the whole local population, not an incomplete slice. Wipes the EI
-        project first (S8.3's "every Upload is: delete all existing
-        samples, then push every local recording fresh" -- eliminates any
-        need to track what's already been sent). Same synchronous-error/
-        _active_jobs contract as train()/fetch_model(): raises before any
-        network call for an unlinked device_type or one with a job already
-        running; long-running, callers run it off a background Thread.
+        """2026-07-26 Classifier tab cleanup: uploads only the caller-
+        selected local recordings (`ids`) for this device_type -- but the
+        pooled scalar-tail baseline (below) is still fit from EVERY local
+        recording for this device_type regardless of selection, so a later
+        upload of a different subset normalizes against the same mu/sigma
+        (not one re-fit from whatever happens to be selected that time).
+        Raises EIControllerError synchronously if `ids` is empty.
 
-        on_progress, if given, is called as on_progress(stage, **extra) --
-        "deleting" with no extra, then "uploading" with uploaded/total/
-        failures on every batch (api/app.py's _run_ei_job spreads **extra
-        into the WS broadcast)."""
+        No longer wipes the EI project first (dropped the old S8.3 "every
+        Upload is: delete all existing samples, then push every local
+        recording fresh" step) -- wiping would delete previously-uploaded,
+        currently-unselected samples, defeating the point of uploading a
+        subset. Known consequence, accepted rather than fixed this round:
+        list_captures() sorts newest-first and a new capture lands at the
+        front of its label's pooled vector list, so the contiguous train/
+        test split below (self._split(), cut by position) is recomputed
+        from the CURRENT population size on every call -- if a label's
+        local population changes between two Upload calls, a capture
+        already uploaded once can shift to the opposite train/test category
+        and, with no dedup anywhere in this stack, end up duplicated in EI
+        under both if it's selected and re-uploaded later. Real fix is
+        persisting each capture's train/test assignment the first time it's
+        computed; out of scope here.
+
+        Same synchronous-error/_active_jobs contract as train()/
+        fetch_model(): raises before any network call for an unlinked
+        device_type or one with a job already running; long-running,
+        callers run it off a background Thread.
+
+        on_progress, if given, is called as on_progress("uploading",
+        uploaded=, total=, failures=) on every batch (api/app.py's
+        _run_ei_job spreads **extra into the WS broadcast)."""
+        if not ids:
+            raise EIControllerError("no recordings selected to upload")
         if device_type in self._active_jobs:
             raise EIControllerError(
                 f"a {self._active_jobs[device_type]!r} job is already running for {device_type!r}")
@@ -357,12 +388,16 @@ class EIController:
 
         self._active_jobs[device_type] = "upload"
         try:
-            # label -> pooled raw vectors across every local capture for
-            # this device_type carrying that label (S8.4 step 1-2). A
-            # capture that fails to load, or whose spectral/scalar split
-            # disagrees with the others already pooled, is rejected
-            # instead of corrupting the pool.
-            by_label: Dict[str, List[Tuple[float, ...]]] = {}
+            selected_ids = set(ids)
+
+            # label -> pooled (capture_id, raw vector) pairs across EVERY
+            # local capture for this device_type carrying that label --
+            # selection-independent, since the baseline fit below (S8.4
+            # step 1-3) needs the whole local population, not an
+            # incomplete slice. A capture that fails to load, or whose
+            # spectral/scalar split disagrees with the others already
+            # pooled, is rejected instead of corrupting the pool.
+            by_label: Dict[str, List[Tuple[str, Tuple[float, ...]]]] = {}
             rejected: Dict[str, str] = {}
             spectral_dim: Optional[int] = None
             sensor_config: Optional[FrozenSet[SensorChannel]] = None
@@ -387,7 +422,8 @@ class EIController:
                     continue
 
                 vectors = [tuple(v) for v in payload["vectors"]]
-                by_label.setdefault(payload["label"], []).extend(vectors)
+                by_label.setdefault(payload["label"], []).extend(
+                    (capture_id, v) for v in vectors)
 
             if not by_label:
                 raise EIControllerError(f"no local recordings for device_type {device_type!r}")
@@ -401,36 +437,45 @@ class EIController:
             # capture, and later ones are rejected on any mismatch).
             axis_names = axis_names_for(sensor_config)
 
-            train_by_label: Dict[str, List[Tuple[float, ...]]] = {}
-            test_by_label: Dict[str, List[Tuple[float, ...]]] = {}
-            for label, vectors in by_label.items():
-                train_by_label[label], test_by_label[label] = self._split(vectors)
+            # Contiguous-tail split over the FULL per-label population
+            # (self._split() is purely index-based, works unchanged on the
+            # paired list) -- preserves stable split boundaries as more
+            # local data accumulates across separate Upload calls.
+            train_by_label: Dict[str, List[Tuple[str, Tuple[float, ...]]]] = {}
+            test_by_label: Dict[str, List[Tuple[str, Tuple[float, ...]]]] = {}
+            for label, pairs in by_label.items():
+                train_by_label[label], test_by_label[label] = self._split(pairs)
 
             # Fit the scalar-tail baseline on the union of TRAIN vectors
             # across every label only (S8.4 step 3) -- unioning test in
             # too would leak validation data into the scaling stats.
-            fit_set = [v for vecs in train_by_label.values() for v in vecs]
+            fit_set = [v for pairs in train_by_label.values() for _cid, v in pairs]
             columns = list(zip(*(v[spectral_dim:] for v in fit_set))) if fit_set else []
             mu = tuple(statistics.fmean(col) for col in columns)
             sigma = tuple(statistics.pstdev(col) for col in columns)
             ei_scaling.save_scaling(self._scaling_path, device_type, spectral_dim, mu, sigma)
 
-            progress("deleting")
-            self._client.delete_all_samples(api_key, project_id)
+            # From here on, only the caller's selection is actually sent.
+            selected_train = {label: [(cid, v) for cid, v in pairs if cid in selected_ids]
+                               for label, pairs in train_by_label.items()}
+            selected_test = {label: [(cid, v) for cid, v in pairs if cid in selected_ids]
+                              for label, pairs in test_by_label.items()}
 
-            total = sum(len(vecs) for vecs in train_by_label.values()) + \
-                sum(len(vecs) for vecs in test_by_label.values())
+            total = sum(len(pairs) for pairs in selected_train.values()) + \
+                sum(len(pairs) for pairs in selected_test.values())
             uploaded_count = 0
-            failures: List[str] = [f"{cid}: {reason}" for cid, reason in rejected.items()]
+            failures: List[str] = [f"{cid}: {reason}" for cid, reason in rejected.items()
+                                    if cid in selected_ids]
             progress("uploading", uploaded=uploaded_count, total=total, failures=list(failures))
 
             uploaded: Dict[str, Dict[str, int]] = {}
             progress_lock = threading.Lock()
             for label in by_label:
                 counts = {"training": 0, "testing": 0}
-                for category, vecs in (("training", train_by_label[label]),
-                                        ("testing", test_by_label[label])):
-                    standardized = [standardize_scalars(v, spectral_dim, mu, sigma) for v in vecs]
+                for category, pairs in (("training", selected_train.get(label, [])),
+                                         ("testing", selected_test.get(label, []))):
+                    standardized = [standardize_scalars(v, spectral_dim, mu, sigma)
+                                     for _cid, v in pairs]
                     samples = [(self._client.timestamped_filename(label, i),
                                 self._to_csv(v, axis_names))
                                for i, v in enumerate(standardized)]

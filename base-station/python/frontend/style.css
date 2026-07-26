@@ -836,6 +836,17 @@ body {
   cursor: not-allowed;
 }
 
+/* .btn-label is normally a <button>, but the Classifier tab's Studio link
+   (classifier.js's linkStudioRowHtml()) is an <a href>, the only anchor
+   styled as a button anywhere in this app -- the browser's default
+   `a:link` color/underline outrank a bare .btn-label class on specificity
+   alone, so without this it renders as a plain blue underlined link
+   instead of matching Unlink/Delete/etc. */
+a.btn-label {
+  color: #e2e8f0;
+  text-decoration: none;
+}
+
 /* "Commission" / "Recommission" -- plain neutral look, same as the base
    .btn-label (and matches Pause). Deliberately NOT red: #ef4444 is
    --color-fault elsewhere in this app (status text, decommission
@@ -852,6 +863,19 @@ body {
 
 .btn-label--ready:not(:disabled):hover {
   background-color: color-mix(in srgb, #3987e5 32%, #1e293b);
+}
+
+/* Classifier tab's Delete(N) (2026-07-26) -- same persistent-tint
+   convention as --ready/--save above, --color-fault instead since this
+   one's destructive rather than an affirmative next step. */
+.btn-label--danger:not(:disabled) {
+  color: #e2e8f0;
+  background-color: color-mix(in srgb, var(--color-fault) 22%, #1e293b);
+  border: 1px solid var(--color-fault);
+}
+
+.btn-label--danger:not(:disabled):hover {
+  background-color: color-mix(in srgb, var(--color-fault) 32%, #1e293b);
 }
 
 /* Capture's Save/Cancel (captureToolbarHtml()) -- same .btn-label base as
@@ -1618,11 +1642,12 @@ body {
 }
 
 /* ---------------------------------------------------------------------
-   Classifier tab (docs/EDGE_IMPULSE_DASHBOARD_WORKFLOW_PLAN.md S8) -- one
-   card per asset class (.classifier-card, layered on .perf-card/
-   .perf-empty for chrome), each holding its own recordings table, a
-   Delete/Edit-label action bar driven by that table's own checkboxes, and
-   -- linked classes only -- Upload/Studio-link/Unlink/Fetch controls.
+   Classifier tab (docs/EDGE_IMPULSE_DASHBOARD_WORKFLOW_PLAN.md S8, reworked
+   2026-07-26) -- one card per asset class (.classifier-card, layered on
+   .perf-card/.perf-empty for chrome), each holding its own recordings
+   table and a single Upload/Delete/Edit-label action bar driven by that
+   table's own checkboxes, plus -- linked classes only -- Studio-link/
+   Unlink/Fetch controls.
    --------------------------------------------------------------------- */
 
 .classifier-page {
@@ -1647,6 +1672,14 @@ body {
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+/* "Recordings" section heading (2026-07-26) -- .chart-section__title's
+   typography reused as-is; reset here since it's an <h3> and would
+   otherwise stack its browser-default margin on top of .classifier-card's
+   own flex `gap`. */
+.classifier-card__section-heading {
+  margin: 0;
 }
 
 .classifier-card__upload-progress {
@@ -1732,16 +1765,38 @@ body {
   flex-wrap: wrap;
 }
 
-.classifier-ei__row + .classifier-ei__row {
-  margin-top: 10px;
-}
-
 .classifier-ei__type {
   font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
   font-size: 15px;
   font-weight: 600;
   color: #e2e8f0;
   min-width: 120px;
+}
+
+/* Live card's heading (2026-07-26 follow-up) -- kicker + large name,
+   replaces the plain "Asset Class: <name>" run-on line. Orphaned cards
+   keep their own .classifier-ei__type + pill layout above, unrelated
+   concept (not in fleet anymore, not a link-state header). */
+.classifier-card__title {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.classifier-card__kicker {
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 12px;
+  font-weight: 600;
+  color: #94a3b8;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.classifier-card__name {
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 22px;
+  font-weight: 700;
+  color: #f8fafc;
 }
 
 .classifier-ei__pill {
@@ -1752,11 +1807,6 @@ body {
   background-color: rgba(148, 163, 184, 0.12);
   border-radius: 999px;
   padding: 3px 10px;
-}
-
-.classifier-ei__pill--linked {
-  color: var(--color-healthy);
-  background-color: rgba(34, 197, 94, 0.14);
 }
 
 /* Orphaned row (deviceTypesInView()'s split) -- a saved recording's asset
@@ -1773,7 +1823,6 @@ body {
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
-  margin: 8px 0 14px;
   padding: 10px;
   border-radius: 8px;
   background-color: rgba(148, 163, 184, 0.06);

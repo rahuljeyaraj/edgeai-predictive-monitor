@@ -85,6 +85,28 @@ def test_remove_project_missing_device_type_returns_false():
         assert get_project(path, "motor001") is not None
 
 
+def test_save_with_project_name_round_trips():
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        path = os.path.join(tmp_dir, "ei_projects.json")
+        save_project(path, "motor001", project_id=42, api_key="ei_abc",
+                      project_name="edgeai-predictive-monitor-motor001")
+        assert get_project(path, "motor001") == {
+            "project_id": 42, "api_key": "ei_abc",
+            "project_name": "edgeai-predictive-monitor-motor001",
+        }
+
+
+def test_save_without_project_name_omits_the_field():
+    # Entries saved before project_name existed (or by any caller that
+    # doesn't pass it) shouldn't grow a bogus "project_name": null --
+    # EIController.project_names() falls back to a computed name for
+    # exactly this case.
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        path = os.path.join(tmp_dir, "ei_projects.json")
+        save_project(path, "motor001", project_id=42, api_key="ei_abc")
+        assert "project_name" not in get_project(path, "motor001")
+
+
 def main():
     test_missing_file_returns_empty_dict()
     test_save_then_load_round_trips()
@@ -94,6 +116,8 @@ def main():
     test_save_creates_parent_directory()
     test_remove_project_drops_only_that_device_type()
     test_remove_project_missing_device_type_returns_false()
+    test_save_with_project_name_round_trips()
+    test_save_without_project_name_omits_the_field()
     print("RESULT: PASS - ei_projects round-trips device_type -> project "
           "mappings and writes the file owner-only")
 

@@ -127,6 +127,7 @@ class EIUnlinkBody(BaseModel):
 
 class EIUploadBody(BaseModel):
     device_type: str
+    ids: List[str]
 
 
 class EIFetchModelBody(BaseModel):
@@ -639,6 +640,7 @@ def create_app(registry: Registry, history_store: HistoryStore,
     def ei_status():
         ctrl = _require_ei()
         return {"device_types": ctrl.status(), "project_ids": ctrl.project_ids(),
+                "project_names": ctrl.project_names(),
                 "models": ctrl.model_status(), "jobs": ctrl.job_state()}
 
     @app.post("/classifier/ei/link")
@@ -704,6 +706,8 @@ def create_app(registry: Registry, history_store: HistoryStore,
     @app.post("/classifier/ei/upload")
     def ei_upload(body: EIUploadBody):
         ctrl = _require_ei()
+        if not body.ids:
+            raise HTTPException(status_code=400, detail="select at least one recording to upload")
         if not ctrl.status().get(body.device_type):
             raise HTTPException(status_code=409,
                                  detail=f"device_type {body.device_type!r} isn't linked to Edge Impulse yet")
@@ -711,7 +715,7 @@ def create_app(registry: Registry, history_store: HistoryStore,
             raise HTTPException(status_code=409,
                                  detail=f"a job is already running for {body.device_type!r}")
         _run_ei_job(body.device_type, "upload",
-                    lambda on_progress: ctrl.upload(body.device_type, on_progress=on_progress))
+                    lambda on_progress: ctrl.upload(body.device_type, body.ids, on_progress=on_progress))
         return {"started": True}
 
     @app.post("/classifier/ei/fetch_model")

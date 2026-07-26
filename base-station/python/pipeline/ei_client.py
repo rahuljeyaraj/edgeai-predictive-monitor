@@ -361,11 +361,16 @@ def delete_all_samples(api_key: str, project_id: int) -> None:
     """docs/EDGE_IMPULSE_DASHBOARD_WORKFLOW_PLAN.md S8.5: wipes every
     sample across all categories for the project and invalidates its
     DSP/learn block state (features + trained model) -- not deleted from
-    EI's cold storage, but a clean wipe from Studio's perspective. Called
-    at the start of every upload() (api/ei_controller.py) so there's never
-    a partial/stale remote state to reconcile against. Unverified against
-    a live account, like every other job endpoint in this module (see
-    module docstring)."""
+    EI's cold storage, but a clean wipe from Studio's perspective. No
+    longer called by upload() (api/ei_controller.py) as of the 2026-07-26
+    Classifier tab cleanup -- upload() now sends only a caller-selected
+    subset of recordings, and wiping first would delete previously-
+    uploaded, currently-unselected samples. Left in place, still covered
+    by ei_client_test.py, same "can stay dead code" call this module
+    already made for Round B's train()/generate_features() after the
+    dashboard's Train button was dropped. Unverified against a live
+    account, like every other job endpoint in this module (see module
+    docstring)."""
     _request("POST", f"{STUDIO_BASE}/api/{project_id}/raw-data/delete-all",
               {"x-api-key": api_key})
 

@@ -2,25 +2,27 @@
 /*
  * Classifier tab -- docs/EDGE_IMPULSE_DASHBOARD_WORKFLOW_PLAN.md S8 (the
  * 2026-07-25 UI reshape; supersedes S3/S4's single-table + separate-panel
- * shape). One card per asset class (device_type), each self-contained:
- * a Linked/Not-linked header, a Delete(N)/Edit-label(N) action bar driven
- * by the card's own row checkboxes, its recordings table, and -- linked
- * only -- an "Upload all" action (S8.3: always every local recording for
- * that class, never a selection) plus a Studio link/Unlink/Fetch-trained-
- * model row. Orphaned device types (a capture's device_type no longer on
- * any fleet node) get their own de-emphasized delete-only card, unchanged
- * from the original S3 design.
+ * shape), reworked again for the 2026-07-26 tab cleanup. One card per
+ * asset class (device_type), each self-contained: an "Asset Class: <name>"
+ * heading (no more Linked/Not-linked pill -- the row right under it IS the
+ * link state: a Link button, or the Studio-project link + Unlink), a
+ * "Recordings" heading + table, a single selection-driven action bar
+ * (Upload(N)/Edit label(N)/Delete(N) -- all three now driven by the same
+ * row-checkbox selection, replacing the old separate "Upload all" button),
+ * and -- linked only -- a Fetch-trained-model row. Orphaned device types (a
+ * capture's device_type no longer on any fleet node) get their own
+ * de-emphasized delete-only card, unchanged from the original S3 design.
  *
- * Upload wipes the EI project first, then re-fits and re-uploads
- * everything (S8.3/8.4 -- backend now owns the whole pooled-normalization
- * story, this module just renders progress); it runs as a background job
- * like Train/Fetch always have, streaming "ei_progress" over the shared
- * /ws connection (handleMessage below, wired into Charts.init's 4th
- * callback in app.js) with an inline two-stage readout (deleting ->
- * uploading N/M, with any failures listed) instead of an alert(). Round
- * B's Train button is gone from this tab per S8.2 (training now happens
- * in EI Studio itself; Fetch is the only glue left) -- the backend route
- * for it no longer exists either.
+ * Upload sends only the selected recordings (never "all" anymore); the
+ * backend still fits its pooled normalization baseline from every local
+ * recording for the asset class regardless of selection (api/
+ * ei_controller.py's upload() docstring). Runs as a background job like
+ * Train/Fetch always have, streaming "ei_progress" over the shared /ws
+ * connection (handleMessage below, wired into Charts.init's 4th callback
+ * in app.js) with an inline "Uploading… N/M" + failures readout instead of
+ * an alert(). Round B's Train button is gone from this tab per S8.2
+ * (training now happens in EI Studio itself; Fetch is the only glue left)
+ * -- the backend route for it no longer exists either.
  *
  * Same module shape as perf.js/alerts.js otherwise: owns its own data
  * (fetches /captures itself rather than reading another module's state).
@@ -37,6 +39,7 @@ const Classifier = (() => {
     selected: new Set(),    // capture ids -- global set, each card filters to its own rows
     eiStatus: {},           // {device_type: linked(bool)}
     eiProjectIds: {},       // {device_type: EI project_id}, for the Studio link
+    eiProjectNames: {},     // {device_type: EI project name}, for the Studio link's label
     eiModels: {},           // {device_type: fetched-model mtime(epoch s) | null}
     eiJobs: {},             // {device_type: "fetch"|"upload"} for whichever are currently running (survives a refresh)
     eiJobStage: {},         // {device_type: last "ei_progress" stage string} -- fetch only
@@ -172,8 +175,9 @@ const Classifier = (() => {
   }
 
   function tableHtml(deviceType, captures) {
+    const heading = `<h3 class="chart-section__title classifier-card__section-heading">Recordings</h3>`;
     if (captures.length === 0) {
-      return `<div class="perf-empty">No recordings yet for this asset class.</div>`;
+      return `${heading}<div class="perf-empty">No recordings yet for this asset class.</div>`;
     }
     const allSelected = captures.every((c) => state.selected.has(c.id));
     const rows = captures.map((entry) => {
@@ -188,7 +192,7 @@ const Classifier = (() => {
         <td>${recorded}</td>
       </tr>`;
     }).join("");
-    return `<div class="classifier-table__wrap">
+    return `${heading}<div class="classifier-table__wrap">
       <table class="classifier-table">
         <thead>
           <tr>
@@ -201,85 +205,116 @@ const Classifier = (() => {
     </div>`;
   }
 
-  function actionsBarHtml(deviceType, captures) {
+  // Upload joins Delete/Edit label as a third selection-driven action (2026-
+  // 07-26 cleanup) -- all three counts come from the same selectedCountFor().
+  // Upload sends only the selected recordings; disabled when not linked, a
+  // job's already running, or nothing's selected.
+  function uploadButtonLabel(deviceType, n) {
+    if (state.eiJobs[deviceType] !== "upload") return `Upload (${n})`;
+    const p = state.eiUploadProgress[deviceType];
+    return p ? `Uploading… ${p.uploaded}/${p.total}` : "Uploading…";
+  }
+
+  function uploadFailuresHtml(deviceType) {
+    const failures = (state.eiUploadProgress[deviceType] || {}).failures || [];
+    if (!failures.length) return "";
+    return `<div class="classifier-card__failures">
+      ${failures.map((f) => `<div>${escapeHtmlLocal(f)}</div>`).join("")}
+    </div>`;
+  }
+
+  // Order + coloring per 2026-07-26/27 follow-ups: Upload/Edit label/
+  // Delete. Upload keeps the blue "ready" tint (.btn-label--ready, same
+  // language as Train/Save elsewhere); Delete alone gets the persistent
+  // red .btn-label--danger treatment (same color-mix convention), since
+  // it's the one destructive action in the row.
+  function actionsBarHtml(deviceType, captures, linked) {
     const n = selectedCountFor(captures);
+    const jobRunning = !!state.eiJobs[deviceType];
+    const uploadDisabled = !linked || jobRunning || n === 0;
     return `<div class="classifier-card__actions">
-      <button type="button" class="btn-label" data-action="delete_selected"
-              data-type="${escapeAttr(deviceType)}" ${n === 0 ? "disabled" : ""}>Delete (${n})</button>
+      <button type="button" class="btn-label btn-label--ready" data-action="ei_upload"
+              data-type="${escapeAttr(deviceType)}" ${uploadDisabled ? "disabled" : ""}
+              ${linked ? "" : `title="Link to Edge Impulse first"`}>
+        ${uploadButtonLabel(deviceType, n)}
+      </button>
       <button type="button" class="btn-label" data-action="edit_label_selected"
               data-type="${escapeAttr(deviceType)}" ${n === 0 ? "disabled" : ""}>Edit label (${n})</button>
-    </div>`;
-  }
-
-  function uploadProgressHtml(deviceType) {
-    const p = state.eiUploadProgress[deviceType];
-    if (!p) return "";
-    const line = p.stage === "deleting"
-      ? "Deleting existing project data…"
-      : `Uploading… ${p.uploaded} / ${p.total}`;
-    const failures = (p.failures || []).length
-      ? `<div class="classifier-card__failures">
-          ${p.failures.map((f) => `<div>${escapeHtmlLocal(f)}</div>`).join("")}
-        </div>`
-      : "";
-    return `<div class="classifier-card__upload-progress">${escapeHtmlLocal(line)}</div>${failures}`;
-  }
-
-  function cardHeaderHtml(deviceType, linked) {
-    return `<div class="classifier-ei__row">
-      <span class="classifier-ei__type">${escapeHtmlLocal(deviceType)}</span>
-      <span class="classifier-ei__pill ${linked ? "classifier-ei__pill--linked" : ""}">
-        ${linked ? "Linked" : "Not linked"}
-      </span>
-    </div>`;
-  }
-
-  function notLinkedFooterHtml(deviceType) {
-    const isLinking = state.linking === deviceType;
-    return `<div class="classifier-ei__row">
-      ${isLinking ? "" : `<button type="button" class="btn-label"
-        data-action="ei_link_start" data-type="${escapeAttr(deviceType)}">Link to Edge Impulse</button>`}
+      <button type="button" class="btn-label btn-label--danger" data-action="delete_selected"
+              data-type="${escapeAttr(deviceType)}" ${n === 0 ? "disabled" : ""}>Delete (${n})</button>
     </div>
-    ${isLinking ? linkFormHtml(deviceType) : ""}`;
+    ${uploadFailuresHtml(deviceType)}`;
   }
 
-  function linkedFooterHtml(deviceType, captures) {
+  // No more Linked/Not-linked pill (2026-07-26 cleanup) -- a small muted
+  // "ASSET CLASS" kicker above a large bold device name; link state is
+  // shown by linkStudioRowHtml() right below (2026-07-27: back to its own
+  // row under the heading, not sharing a row with it -- and both rows use
+  // the same plain .classifier-ei__row wrapper as everything else in the
+  // card, so the flex `gap` on .classifier-card is the ONE source of
+  // vertical spacing throughout -- no more per-pair margin-top making some
+  // gaps bigger than others).
+  function cardHeaderHtml(deviceType) {
+    return `<div class="classifier-ei__row">
+      <div class="classifier-card__title">
+        <span class="classifier-card__kicker">Asset Class</span>
+        <span class="classifier-card__name">${escapeHtmlLocal(deviceType)}</span>
+      </div>
+    </div>`;
+  }
+
+  // Link button (+ inline login form) when not linked, or the Studio
+  // link + Unlink when linked. Studio link text stays short ("Open in
+  // Studio ↗"); the actual project name (which can run long) shows on
+  // hover instead of inline.
+  function linkStudioRowHtml(deviceType, linked) {
+    if (!linked) {
+      const isLinking = state.linking === deviceType;
+      // While the login form is showing, it's the ONLY thing in this
+      // slot -- no empty .classifier-ei__row wrapper left behind around
+      // it (that phantom empty row used to eat an extra flex `gap` on
+      // both sides of itself, throwing off the otherwise-uniform card
+      // spacing the instant Link is clicked).
+      if (isLinking) return linkFormHtml(deviceType);
+      return `<div class="classifier-ei__row">
+        <button type="button" class="btn-label"
+          data-action="ei_link_start" data-type="${escapeAttr(deviceType)}">Link to Edge Impulse</button>
+      </div>`;
+    }
     const projectId = state.eiProjectIds[deviceType];
+    const projectName = state.eiProjectNames[deviceType] || deviceType;
+    return `<div class="classifier-ei__row">
+      ${projectId ? `<a class="btn-label" href="${eiStudioUrl(projectId)}"
+        target="_blank" rel="noopener noreferrer" title="Project: ${escapeAttr(projectName)}">Open in Studio ↗</a>` : ""}
+      <button type="button" class="btn-text" data-action="ei_unlink" data-type="${escapeAttr(deviceType)}">Unlink</button>
+    </div>`;
+  }
+
+  // Fetch-trained-model row -- linked cards only, stays below the action
+  // bar. Button first, then the fetched-at status text after it.
+  function modelRowHtml(deviceType) {
     const jobRunning = !!state.eiJobs[deviceType];
-    const isUploading = state.eiJobs[deviceType] === "upload";
-    const error = state.eiJobErrors[deviceType];
-    return `
-      <div class="classifier-ei__row">
-        ${isUploading ? uploadProgressHtml(deviceType) : `<button type="button" class="btn-label btn-label--ready"
-          data-action="ei_upload" data-type="${escapeAttr(deviceType)}"
-          ${jobRunning || captures.length === 0 ? "disabled" : ""}>
-          Upload all (${captures.length})
-        </button>`}
-      </div>
-      <div class="classifier-ei__row">
-        ${projectId ? `<a class="btn-label" href="${eiStudioUrl(projectId)}"
-          target="_blank" rel="noopener noreferrer">Open in Edge Impulse Studio ↗</a>` : ""}
-        <button type="button" class="btn-text" data-action="ei_unlink" data-type="${escapeAttr(deviceType)}">Unlink</button>
-      </div>
-      <div class="classifier-ei__row">
-        <span class="classifier-ei__model-status">${modelStatusHtml(deviceType)}</span>
-        <button type="button" class="btn-label" data-action="ei_fetch_model"
-                data-type="${escapeAttr(deviceType)}" ${jobRunning ? "disabled" : ""}
-                title="Build + download the trained TFLite model">
-          ${fetchButtonLabel(deviceType)}
-        </button>
-      </div>
-      ${error ? `<div class="classifier-ei__row classifier-ei__error">${escapeHtmlLocal(error)}</div>` : ""}`;
+    return `<div class="classifier-ei__row">
+      <button type="button" class="btn-label" data-action="ei_fetch_model"
+              data-type="${escapeAttr(deviceType)}" ${jobRunning ? "disabled" : ""}
+              title="Build + download the trained TFLite model">
+        ${fetchButtonLabel(deviceType)}
+      </button>
+      <span class="classifier-ei__model-status">${modelStatusHtml(deviceType)}</span>
+    </div>`;
   }
 
   function deviceTypeCardHtml(deviceType) {
     const linked = !!state.eiStatus[deviceType];
     const captures = capturesFor(deviceType);
+    const error = state.eiJobErrors[deviceType];
     return `<div class="perf-card classifier-card">
-      ${cardHeaderHtml(deviceType, linked)}
-      ${actionsBarHtml(deviceType, captures)}
+      ${cardHeaderHtml(deviceType)}
+      ${linkStudioRowHtml(deviceType, linked)}
       ${tableHtml(deviceType, captures)}
-      ${linked ? linkedFooterHtml(deviceType, captures) : notLinkedFooterHtml(deviceType)}
+      ${actionsBarHtml(deviceType, captures, linked)}
+      ${linked ? modelRowHtml(deviceType) : ""}
+      ${error ? `<div class="classifier-ei__row classifier-ei__error">${escapeHtmlLocal(error)}</div>` : ""}
     </div>`;
   }
 
@@ -332,6 +367,7 @@ const Classifier = (() => {
       const body = await res.json();
       state.eiStatus = body.device_types || {};
       state.eiProjectIds = body.project_ids || {};
+      state.eiProjectNames = body.project_names || {};
       state.eiModels = body.models || {};
       // Server-reported job state wins over anything stale left locally
       // from a page load before a job's "done"/"error" broadcast arrived
@@ -478,13 +514,20 @@ const Classifier = (() => {
   // /classifier/ei/upload + /fetch_model); state.eiJobs is set
   // optimistically here so the button disables/relabels the instant it's
   // clicked, without waiting for the first "ei_progress" WS tick.
-  async function uploadAll(deviceType) {
+  //
+  // Sends only the currently-selected rows for this card (2026-07-26 --
+  // Upload joins Delete/Edit label as a selection-driven action, no more
+  // "always every local recording"); the backend still fits its
+  // normalization baseline from every local recording regardless.
+  async function uploadSelected(deviceType) {
+    const ids = capturesFor(deviceType).filter((c) => state.selected.has(c.id)).map((c) => c.id);
+    if (ids.length === 0) return;
     state.eiJobs[deviceType] = "upload";
     delete state.eiUploadProgress[deviceType];
     delete state.eiJobErrors[deviceType];
     render();
     try {
-      await postJson("/classifier/ei/upload", { device_type: deviceType });
+      await postJson("/classifier/ei/upload", { device_type: deviceType, ids });
     } catch (err) {
       delete state.eiJobs[deviceType];
       alert(`Upload failed to start: ${err.message}`);
@@ -589,7 +632,7 @@ const Classifier = (() => {
       const deleteOrphanBtn = e.target.closest('[data-action="ei_delete_orphaned"]');
       if (deleteOrphanBtn) { deleteOrphanedType(deleteOrphanBtn.dataset.type); return; }
       const uploadBtn = e.target.closest('[data-action="ei_upload"]');
-      if (uploadBtn) { uploadAll(uploadBtn.dataset.type); return; }
+      if (uploadBtn) { uploadSelected(uploadBtn.dataset.type); return; }
       const fetchBtn = e.target.closest('[data-action="ei_fetch_model"]');
       if (fetchBtn) { fetchModelForDeviceType(fetchBtn.dataset.type); return; }
     });

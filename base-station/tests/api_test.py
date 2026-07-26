@@ -713,7 +713,7 @@ def test_ei_status_reports_unlinked_by_default(tmp_dir):
 
         status, body = api.request("GET", "/classifier/ei/status")
         assert status == 200 and body == {
-            "device_types": {"motor001": False}, "project_ids": {},
+            "device_types": {"motor001": False}, "project_ids": {}, "project_names": {},
             "models": {"motor001": None}, "jobs": {}}, (status, body)
         print("GET /classifier/ei/status reports an assigned-but-unlinked device_type: PASS")
     finally:
@@ -734,6 +734,7 @@ def test_ei_link_creates_project_then_upload_pushes_samples(tmp_dir):
         status, body = api.request("GET", "/classifier/ei/status")
         assert body == {"device_types": {"motor001": True},
                          "project_ids": {"motor001": 100},
+                         "project_names": {"motor001": "edgeai-predictive-monitor-motor001"},
                          "models": {"motor001": None}, "jobs": {}}, body
 
         status, _ = api.request("POST", f"/nodes/{NODE_ID}/capture/start")
@@ -743,12 +744,17 @@ def test_ei_link_creates_project_then_upload_pushes_samples(tmp_dir):
         assert status == 200
         status, body = api.request("POST", f"/nodes/{NODE_ID}/capture/save", {"label": "bearing_fault"})
         assert status == 200, (status, body)
+        status, body = api.request("GET", "/captures")
+        assert status == 200 and len(body["captures"]) == 1, body
+        capture_id = body["captures"][0]["id"]
 
-        # Upload runs as a background job now (S8.3 -- always every local
-        # recording for the device_type, wiping the project first), same
-        # "observe over /ws, not the REST response" shape as train/fetch.
+        # Upload runs as a background job now (2026-07-26 -- sends only the
+        # caller-selected recordings, no longer wipes the project first),
+        # same "observe over /ws, not the REST response" shape as
+        # train/fetch.
         with api.client.websocket_connect("/ws") as ws:
-            status, body = api.request("POST", "/classifier/ei/upload", {"device_type": "motor001"})
+            status, body = api.request(
+                "POST", "/classifier/ei/upload", {"device_type": "motor001", "ids": [capture_id]})
             assert status == 200 and body == {"started": True}, (status, body)
 
             stages = []
@@ -759,17 +765,16 @@ def test_ei_link_creates_project_then_upload_pushes_samples(tmp_dir):
                     stages.append(message["stage"])
                     if message["stage"] in ("done", "error"):
                         break
-            assert stages[0] == "deleting", stages
-            assert "uploading" in stages, stages
+            assert stages and all(s in ("uploading", "done") for s in stages), stages
             assert stages[-1] == "done", stages
 
         call_names = [c[0] for c in api.ei_client.calls]
-        assert call_names.index("delete_all_samples") < call_names.index("upload_samples"), call_names
+        assert "delete_all_samples" not in call_names, call_names
         assert len(api.ei_client.uploads) >= 1
-        print("POST /classifier/ei/link + /classifier/ei/upload wipe the EI "
-              "project then push every local recording for that device_type "
-              "through to the (faked) client, streaming deleting -> "
-              "uploading -> done over /ws: PASS")
+        print("POST /classifier/ei/link + /classifier/ei/upload push the "
+              "selected recording for that device_type through to the "
+              "(faked) client (no project wipe), streaming uploading -> "
+              "done over /ws: PASS")
     finally:
         api.stop()
 
@@ -788,7 +793,7 @@ def test_ei_link_totp_required_returns_400_marker(tmp_dir):
         assert status == 400 and body["error"] == {"totp_required": True}, (status, body)
 
         status, body = api.request("GET", "/classifier/ei/status")
-        assert body == {"device_types": {"motor001": False}, "project_ids": {},
+        assert body == {"device_types": {"motor001": False}, "project_ids": {}, "project_names": {},
                          "models": {"motor001": None}, "jobs": {}}, \
             "a failed link() must not report the device_type as linked"
         print("POST /classifier/ei/link surfaces a totp_required marker "
@@ -811,7 +816,7 @@ def test_ei_unlink_clears_project_and_allows_relink(tmp_dir):
         assert status == 200 and body == {"removed": True}, (status, body)
 
         status, body = api.request("GET", "/classifier/ei/status")
-        assert body == {"device_types": {"motor001": False}, "project_ids": {},
+        assert body == {"device_types": {"motor001": False}, "project_ids": {}, "project_names": {},
                          "models": {"motor001": None}, "jobs": {}}, body
 
         # Covers "I deleted the project in EI Studio, now what" -- unlinking
@@ -889,7 +894,8 @@ def test_ei_upload_rejects_unlinked_device_type_synchronously(tmp_dir):
         status, body = api.request("POST", f"/nodes/{NODE_ID}/device_type", {"device_type": "motor001"})
         assert status == 200, (status, body)
 
-        status, body = api.request("POST", "/classifier/ei/upload", {"device_type": "motor001"})
+        status, body = api.request(
+            "POST", "/classifier/ei/upload", {"device_type": "motor001", "ids": ["bearing_fault/ghost.json"]})
         assert status == 409, (status, body)
         print("POST /classifier/ei/upload synchronously rejects an unlinked "
               "device_type instead of starting a doomed background job: PASS")
@@ -898,10 +904,17 @@ def test_ei_upload_rejects_unlinked_device_type_synchronously(tmp_dir):
 
 
 def test_ei_upload_job_failure_broadcasts_error_over_ws(tmp_dir):
-    # delete-all (upload's first step, S8.3) failing must abort before any
-    # sample is pushed -- otherwise a failed wipe followed by a successful
-    # upload could double up data in the project (S8.7.4).
-    api = ApiUnderTest(tmp_dir, ei_fail_job="delete_all_samples")
+    # upload() no longer wipes the project first (2026-07-26), and a
+    # per-batch upload_samples() failure is caught and folded into the
+    # progress readout's "failures" list rather than aborting the whole
+    # job (ei_controller.py's upload()/send()) -- so the fault this test
+    # injects to prove the generic ei_progress error-broadcast contract
+    # still works is a real EIControllerError raised from inside the
+    # background job itself: linked, but zero local recordings, so
+    # upload() has nothing to gather. The route's own synchronous checks
+    # only cover "not linked"/"job already running"/"empty selection", not
+    # this -- it only surfaces once the job actually runs.
+    api = ApiUnderTest(tmp_dir)
     try:
         status, body = api.request("POST", f"/nodes/{NODE_ID}/device_type", {"device_type": "motor001"})
         assert status == 200, (status, body)
@@ -909,16 +922,12 @@ def test_ei_upload_job_failure_broadcasts_error_over_ws(tmp_dir):
                                     {"device_type": "motor001", "username": "me@example.com",
                                      "password": "hunter2"})
         assert status == 200 and body["linked"] is True, (status, body)
-        status, _ = api.request("POST", f"/nodes/{NODE_ID}/capture/start")
-        assert status == 200
-        api.capture.feed_frame(frame(NODE_ID))
-        status, _ = api.request("POST", f"/nodes/{NODE_ID}/capture/stop")
-        assert status == 200
-        status, body = api.request("POST", f"/nodes/{NODE_ID}/capture/save", {"label": "bearing_fault"})
-        assert status == 200, (status, body)
+        # Deliberately no capture saved.
 
         with api.client.websocket_connect("/ws") as ws:
-            status, body = api.request("POST", "/classifier/ei/upload", {"device_type": "motor001"})
+            status, body = api.request(
+                "POST", "/classifier/ei/upload",
+                {"device_type": "motor001", "ids": ["bearing_fault/ghost.json"]})
             assert status == 200, (status, body)
 
             error_message = None
@@ -936,9 +945,28 @@ def test_ei_upload_job_failure_broadcasts_error_over_ws(tmp_dir):
             assert body["jobs"] == {}, \
                 "a failed job must still clear job_state(), not strand the device_type as busy"
         assert api.ei_client.uploads == [], \
-            "a failed delete-all must abort before any sample is uploaded"
-        print("A failed EI delete-all broadcasts an ei_progress error over "
+            "a job that fails before gathering anything must upload nothing"
+        print("A failed EI upload job broadcasts an ei_progress error over "
               "/ws, clears job_state(), and uploads nothing: PASS")
+    finally:
+        api.stop()
+
+
+def test_ei_upload_rejects_empty_selection_synchronously(tmp_dir):
+    api = ApiUnderTest(tmp_dir)
+    try:
+        status, body = api.request("POST", f"/nodes/{NODE_ID}/device_type", {"device_type": "motor001"})
+        assert status == 200, (status, body)
+        status, body = api.request("POST", "/classifier/ei/link",
+                                    {"device_type": "motor001", "username": "me@example.com",
+                                     "password": "hunter2"})
+        assert status == 200 and body["linked"] is True, (status, body)
+
+        status, body = api.request(
+            "POST", "/classifier/ei/upload", {"device_type": "motor001", "ids": []})
+        assert status == 400, (status, body)
+        print("POST /classifier/ei/upload synchronously rejects an empty "
+              "selection instead of starting a doomed background job: PASS")
     finally:
         api.stop()
 
@@ -1083,6 +1111,7 @@ def main():
     test_ei_unlink_clears_project_and_allows_relink(tempfile.mkdtemp(dir=tmp_dir))
     test_ei_fetch_model_over_ws(tempfile.mkdtemp(dir=tmp_dir))
     test_ei_upload_rejects_unlinked_device_type_synchronously(tempfile.mkdtemp(dir=tmp_dir))
+    test_ei_upload_rejects_empty_selection_synchronously(tempfile.mkdtemp(dir=tmp_dir))
     test_ei_upload_job_failure_broadcasts_error_over_ws(tempfile.mkdtemp(dir=tmp_dir))
     test_history_endpoint_returns_recorded_scores(tempfile.mkdtemp(dir=tmp_dir))
     test_websocket_broadcast_reaches_connected_client(tempfile.mkdtemp(dir=tmp_dir))

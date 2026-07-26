@@ -17,9 +17,10 @@ from typing import Dict, Optional
 
 
 def load_projects(path: str) -> Dict[str, dict]:
-    """device_type -> {"project_id": int, "api_key": str}. Empty (not an
-    error) if nothing's been linked yet -- mirrors capture.py's
-    list_labels()/list_captures() "no file yet" contract."""
+    """device_type -> {"project_id": int, "api_key": str, "project_name":
+    str (optional -- absent on entries saved before this field existed)}.
+    Empty (not an error) if nothing's been linked yet -- mirrors
+    capture.py's list_labels()/list_captures() "no file yet" contract."""
     if not os.path.isfile(path):
         return {}
     with open(path) as f:
@@ -30,9 +31,13 @@ def get_project(path: str, device_type: str) -> Optional[dict]:
     return load_projects(path).get(device_type)
 
 
-def save_project(path: str, device_type: str, project_id: int, api_key: str) -> None:
+def save_project(path: str, device_type: str, project_id: int, api_key: str,
+                  project_name: Optional[str] = None) -> None:
     projects = load_projects(path)
-    projects[device_type] = {"project_id": project_id, "api_key": api_key}
+    entry = {"project_id": project_id, "api_key": api_key}
+    if project_name is not None:
+        entry["project_name"] = project_name
+    projects[device_type] = entry
     os.makedirs(os.path.dirname(path), exist_ok=True)
     # write-then-rename so a crash mid-write can't leave a truncated/corrupt
     # file behind for the next load_projects() call to choke on.

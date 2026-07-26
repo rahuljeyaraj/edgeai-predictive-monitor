@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
 EIController verification (api/ei_controller.py, docs/
-EDGE_IMPULSE_DASHBOARD_WORKFLOW_PLAN.md S4/S8): link() idempotency,
-upload()'s device_type-scoped "always everything" gather, the pooled
-per-device-type scalar-tail normalization (S8.4 -- replaces the old
-per-node commissioning-baseline approach), the delete-before-upload
-ordering and deleting/uploading progress reporting (S8.3/8.5), and the
+EDGE_IMPULSE_DASHBOARD_WORKFLOW_PLAN.md S4/S8, reworked 2026-07-26): link()
+idempotency, upload()'s device_type-scoped gather (fits its pooled
+per-device-type scalar-tail baseline (S8.4) from EVERY local recording, but
+sends only the caller-selected subset -- no more wipe-before-upload, no more
+"always everything"), the uploading progress reporting, and the
 contiguous-tail train/test split -- all against a FakeEiClient
 (dependency-injected, same "hand-rolled fake, no mock library" convention
 as api_test.py's FakeTelegramBot), no real network.
@@ -209,10 +209,12 @@ def test_link_creates_project_on_first_call():
     result = controller.link("motor001", "me@example.com", "hunter2")
 
     assert result["linked"] is True
+    assert result["project_name"] == "edgeai-predictive-monitor-motor001", result
     assert [c[0] for c in client.calls] == \
         ["login", "create_project", "create_impulse", "set_nn_config"]
     stored = get_project(projects_path, "motor001")
     assert stored["project_id"] == result["project_id"]
+    assert stored["project_name"] == result["project_name"]
     print("link() creates project+impulse+NN-config on first call: PASS")
 
 
@@ -246,7 +248,8 @@ def test_link_is_idempotent():
     first = controller.link("motor001", "me@example.com", "hunter2")
     second = controller.link("motor001", "someone-else@example.com", "different")
 
-    assert second == {"linked": True, "project_id": first["project_id"]}
+    assert second == {"linked": True, "project_id": first["project_id"],
+                       "project_name": first["project_name"]}
     assert len(client.calls) == 4, "second link() must not touch the client at all"
     print("link() is a no-op for an already-linked device_type: PASS")
 
@@ -323,6 +326,9 @@ def test_status_reflects_linked_device_types():
     assert controller.project_ids() == {"motor001": 100}
     print("project_ids() reports the linked device_type's EI project_id only: PASS")
 
+    assert controller.project_names() == {"motor001": "edgeai-predictive-monitor-motor001"}
+    print("project_names() reports the linked device_type's EI project name only: PASS")
+
     create_call = next(c for c in client.calls if c[0] == "create_project")
     assert create_call[2] == "edgeai-predictive-monitor-motor001", create_call
     print("link() names the EI project 'edgeai-predictive-monitor-<device_type>': PASS")
@@ -343,10 +349,10 @@ def test_upload_standardizes_using_pooled_device_type_baseline():
     client = FakeEiClient()
     controller = EIController(registry, projects_path, captures_dir, models_dir, scaling_path, client=client)
     controller.link("motor001", "me@example.com", "hunter2")
-    save_capture_with_scalar(registry, captures_dir, NODE_A, "healthy", 1.0, count=4)
-    save_capture_with_scalar(registry, captures_dir, NODE_B, "bearing_fault", 5.0, count=4)
+    healthy_id = save_capture_with_scalar(registry, captures_dir, NODE_A, "healthy", 1.0, count=4)
+    fault_id = save_capture_with_scalar(registry, captures_dir, NODE_B, "bearing_fault", 5.0, count=4)
 
-    result = controller.upload("motor001")
+    result = controller.upload("motor001", [healthy_id, fault_id])
 
     assert result["rejected"] == {}, result
     # train-only pool: 3x healthy@1.0 + 3x bearing_fault@5.0 -> mean 3.0,
@@ -377,10 +383,10 @@ def test_upload_only_includes_captures_for_the_given_device_type():
     client = FakeEiClient()
     controller = EIController(registry, projects_path, captures_dir, models_dir, scaling_path, client=client)
     controller.link("motor001", "me@example.com", "hunter2")
-    save_capture(registry, captures_dir, NODE_A, "bearing_fault", count=2)
+    capture_id = save_capture(registry, captures_dir, NODE_A, "bearing_fault", count=2)
     save_capture(registry, captures_dir, NODE_B, "bearing_fault", count=2)  # pump002 -- must stay out
 
-    result = controller.upload("motor001")
+    result = controller.upload("motor001", [capture_id])
 
     counts = result["uploaded"]["motor001"]["bearing_fault"]
     assert counts["training"] + counts["testing"] == 2, counts
@@ -394,10 +400,10 @@ def test_upload_pools_same_label_across_captures_before_splitting():
     client = FakeEiClient()
     controller = EIController(registry, projects_path, captures_dir, models_dir, scaling_path, client=client)
     controller.link("motor001", "me@example.com", "hunter2")
-    save_capture(registry, captures_dir, NODE_A, "bearing_fault", count=2)
-    save_capture(registry, captures_dir, NODE_A, "bearing_fault", count=2)
+    id1 = save_capture(registry, captures_dir, NODE_A, "bearing_fault", count=2)
+    id2 = save_capture(registry, captures_dir, NODE_A, "bearing_fault", count=2)
 
-    result = controller.upload("motor001")
+    result = controller.upload("motor001", [id1, id2])
 
     counts = result["uploaded"]["motor001"]["bearing_fault"]
     # 4 pooled vectors, test_fraction=0.2 -> n_test=max(1, round(4*0.2))=1.
@@ -406,32 +412,91 @@ def test_upload_pools_same_label_across_captures_before_splitting():
           "contiguous train/test split, not one split per file: PASS")
 
 
-def test_upload_wipes_project_before_uploading_and_reports_progress():
+def test_upload_never_wipes_project_and_reports_uploading_progress():
     registry, projects_path, captures_dir, models_dir, scaling_path = new_env()
     registry.add(NODE_A, sensor_config=frozenset({SensorChannel.MIC}))
     registry.set_device_type(NODE_A, "motor001")
     client = FakeEiClient()
     controller = EIController(registry, projects_path, captures_dir, models_dir, scaling_path, client=client)
     controller.link("motor001", "me@example.com", "hunter2")
-    save_capture(registry, captures_dir, NODE_A, "bearing_fault", count=3)
+    capture_id = save_capture(registry, captures_dir, NODE_A, "bearing_fault", count=3)
     ticks = []
 
     result = controller.upload(
-        "motor001", on_progress=lambda stage, **extra: ticks.append((stage, extra)))
+        "motor001", [capture_id],
+        on_progress=lambda stage, **extra: ticks.append((stage, extra)))
 
-    assert ticks[0] == ("deleting", {}), ticks
-    uploading_ticks = [t for t in ticks if t[0] == "uploading"]
-    assert uploading_ticks, ticks
-    last_extra = uploading_ticks[-1][1]
-    assert last_extra["uploaded"] == last_extra["total"] == 3, uploading_ticks
-    assert last_extra["failures"] == [], uploading_ticks
+    assert ticks and all(stage == "uploading" for stage, _extra in ticks), ticks
+    last_extra = ticks[-1][1]
+    assert last_extra["uploaded"] == last_extra["total"] == 3, ticks
+    assert last_extra["failures"] == [], ticks
     assert result["failures"] == []
 
-    call_names = [c[0] for c in client.calls]
-    assert call_names.index("delete_all_samples") < call_names.index("upload_samples"), call_names
+    assert "delete_all_samples" not in [c[0] for c in client.calls], \
+        "upload() no longer wipes the project first (2026-07-26 -- would " \
+        "destroy previously-uploaded, currently-unselected samples)"
     assert controller.job_state() == {}, "job must be cleared once upload() returns"
-    print("upload() deletes existing project data before uploading, and "
-          "reports deleting -> uploading(uploaded/total/failures) progress: PASS")
+    print("upload() no longer wipes the project first, and reports "
+          "uploading(uploaded/total/failures) progress: PASS")
+
+
+def test_upload_sends_only_selected_recordings_but_fits_baseline_from_all():
+    # Two different labels, each internally homogeneous (like
+    # test_upload_standardizes_using_pooled_device_type_baseline above) so
+    # the pooled train-only baseline is deterministic regardless of split
+    # position -- proves the baseline is fit from BOTH labels' local
+    # recordings even though only one label's capture is selected for
+    # upload.
+    registry, projects_path, captures_dir, models_dir, scaling_path = new_env()
+    registry.add(NODE_A, sensor_config=frozenset({SensorChannel.MIC}))
+    registry.set_device_type(NODE_A, "motor001")
+    client = FakeEiClient()
+    controller = EIController(registry, projects_path, captures_dir, models_dir, scaling_path, client=client)
+    controller.link("motor001", "me@example.com", "hunter2")
+    healthy_id = save_capture_with_scalar(registry, captures_dir, NODE_A, "healthy", 1.0, count=4)
+    save_capture_with_scalar(registry, captures_dir, NODE_A, "bearing_fault", 5.0, count=4)
+    ticks = []
+
+    result = controller.upload(
+        "motor001", [healthy_id],
+        on_progress=lambda stage, **extra: ticks.append((stage, extra)))
+
+    # Same pooled baseline as when every local recording is selected
+    # (mirrors test_upload_standardizes_using_pooled_device_type_baseline's
+    # math: train-only pool of 3x healthy@1.0 + 3x bearing_fault@5.0).
+    scaling = get_scaling(scaling_path, "motor001")
+    assert all(abs(m - 3.0) < 1e-9 for m in scaling["mu"]), scaling
+    assert all(abs(s - 2.0) < 1e-9 for s in scaling["sigma"]), scaling
+
+    # But only the selected ("healthy") capture's vectors were sent.
+    assert result["uploaded"]["motor001"]["bearing_fault"] == {"training": 0, "testing": 0}, result
+    healthy_counts = result["uploaded"]["motor001"]["healthy"]
+    assert healthy_counts["training"] + healthy_counts["testing"] == 4, healthy_counts
+    assert all(u["label"] == "healthy" for u in client.uploads), client.uploads
+
+    last_uploading = [t for t in ticks if t[0] == "uploading"][-1]
+    assert last_uploading[1]["uploaded"] == last_uploading[1]["total"] == 4, ticks
+    print("upload() sends only the caller-selected recordings but still "
+          "fits the normalization baseline from every local recording: PASS")
+
+
+def test_upload_raises_when_no_recordings_selected():
+    registry, projects_path, captures_dir, models_dir, scaling_path = new_env()
+    registry.add(NODE_A, sensor_config=frozenset({SensorChannel.MIC}))
+    registry.set_device_type(NODE_A, "motor001")
+    client = FakeEiClient()
+    controller = EIController(registry, projects_path, captures_dir, models_dir, scaling_path, client=client)
+    controller.link("motor001", "me@example.com", "hunter2")
+    save_capture(registry, captures_dir, NODE_A, "bearing_fault", count=1)
+    calls_before = len(client.calls)
+
+    try:
+        controller.upload("motor001", [])
+        raise AssertionError("expected EIControllerError")
+    except EIControllerError:
+        pass
+    assert len(client.calls) == calls_before, "must fail before making any EI call"
+    print("upload() rejects an empty selection synchronously: PASS")
 
 
 def test_upload_sends_batches_concurrently():
@@ -443,10 +508,10 @@ def test_upload_sends_batches_concurrently():
     controller.link("motor001", "me@example.com", "hunter2")
     # 60 frames, one label -> _split gives 48 train / 12 test; batched at
     # UPLOAD_BATCH_SIZE=25 makes training 2 batches + testing 1 batch.
-    save_capture(registry, captures_dir, NODE_A, "bearing_fault", count=60)
+    capture_id = save_capture(registry, captures_dir, NODE_A, "bearing_fault", count=60)
 
     start = time.monotonic()
-    result = controller.upload("motor001")
+    result = controller.upload("motor001", [capture_id])
     elapsed = time.monotonic() - start
 
     counts = result["uploaded"]["motor001"]["bearing_fault"]
@@ -469,10 +534,10 @@ def test_upload_raises_for_unlinked_device_type():
     client = FakeEiClient()
     controller = EIController(registry, projects_path, captures_dir, models_dir, scaling_path, client=client)
     # link() deliberately never called for motor001.
-    save_capture(registry, captures_dir, NODE_A, "bearing_fault", count=1)
+    capture_id = save_capture(registry, captures_dir, NODE_A, "bearing_fault", count=1)
 
     try:
-        controller.upload("motor001")
+        controller.upload("motor001", [capture_id])
         raise AssertionError("expected EIControllerError")
     except EIControllerError:
         pass
@@ -490,7 +555,7 @@ def test_upload_raises_when_no_local_recordings():
     # No captures saved at all.
 
     try:
-        controller.upload("motor001")
+        controller.upload("motor001", ["ghost-label/ghost.json"])
         raise AssertionError("expected EIControllerError")
     except EIControllerError:
         pass
@@ -504,12 +569,12 @@ def test_upload_rejects_concurrent_job_for_same_device_type():
     client = FakeEiClient()
     controller = EIController(registry, projects_path, captures_dir, models_dir, scaling_path, client=client)
     controller.link("motor001", "me@example.com", "hunter2")
-    save_capture(registry, captures_dir, NODE_A, "bearing_fault", count=1)
+    capture_id = save_capture(registry, captures_dir, NODE_A, "bearing_fault", count=1)
     controller._active_jobs["motor001"] = "fetch"  # simulate a fetch already in flight
     calls_before = len(client.calls)
 
     try:
-        controller.upload("motor001")
+        controller.upload("motor001", [capture_id])
         raise AssertionError("expected EIControllerError")
     except EIControllerError:
         pass
@@ -680,7 +745,9 @@ def main():
     test_upload_standardizes_using_pooled_device_type_baseline()
     test_upload_only_includes_captures_for_the_given_device_type()
     test_upload_pools_same_label_across_captures_before_splitting()
-    test_upload_wipes_project_before_uploading_and_reports_progress()
+    test_upload_never_wipes_project_and_reports_uploading_progress()
+    test_upload_sends_only_selected_recordings_but_fits_baseline_from_all()
+    test_upload_raises_when_no_recordings_selected()
     test_upload_sends_batches_concurrently()
     test_upload_raises_for_unlinked_device_type()
     test_upload_raises_when_no_local_recordings()
