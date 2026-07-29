@@ -1886,6 +1886,16 @@ a.btn-label {
   width: 100%;
 }
 
+/* Scanned network chips (network.js renderConnect) -- a real, always-
+   visible tappable list, not a native <datalist> dropdown (unreliable on
+   mobile, confirmed live 2026-07-29). Reuses .waterfall-toggle__btn's
+   pill look, just without its persistent is-active/selected state. */
+.network-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 .classifier-ei__model-status {
   font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
   font-size: 13px;

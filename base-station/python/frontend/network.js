@@ -65,7 +65,14 @@ const Network = (() => {
     if (!el) return;
     const f = state.form;
     const n = state.networks;
-    const networkOptions = n.list.map((net) => `<option value="${escapeAttr(net.ssid)}">`).join("");
+    // A real, always-visible list of tappable network buttons, NOT a
+    // native <datalist> -- <datalist>'s autocomplete dropdown is
+    // unreliable-to-absent on mobile browsers (confirmed: the backend was
+    // finding real networks the whole time, but the phone's captive-portal
+    // browser never showed any dropdown for them at all). Clicking a chip
+    // just fills the SSID field below, same as picking from any WiFi list.
+    const networkChips = n.list.map((net) => `<button type="button" class="waterfall-toggle__btn"
+      data-action="network_pick" data-ssid="${escapeAttr(net.ssid)}" ${f.busy ? "disabled" : ""}>${escapeHtml(net.ssid)}</button>`).join("");
     // Read this BEFORE tapping Connect, not after: on the onboarding
     // hotspot, tapping Connect can close this page almost immediately
     // (the device's own network switches out from under it) -- too fast
@@ -77,10 +84,12 @@ const Network = (() => {
     el.innerHTML = `<div class="perf-card">
       <div class="alerts-connect__title">Connect to Wi-Fi</div>
       ${closeTip}
+      <div class="network-list">${networkChips}</div>
+      ${!n.scanning && n.error ? `<div class="classifier-ei__error">Couldn't scan for networks -- try again.</div>` : ""}
+      ${!n.scanning && !n.error && n.list.length === 0 ? `<div class="perf-chart__caption">No networks found yet -- try Scan, or type a hidden network's name directly.</div>` : ""}
       <div class="classifier-ei__link" id="network-connect-form">
-        <input type="text" class="classifier-table__rename-input" placeholder="SSID" list="network-ssid-options"
+        <input type="text" class="classifier-table__rename-input" placeholder="SSID"
                data-action="network_ssid" value="${escapeAttr(f.ssid)}" autocomplete="off" ${f.busy ? "disabled" : ""}>
-        <datalist id="network-ssid-options">${networkOptions}</datalist>
         <input type="password" class="classifier-table__rename-input" placeholder="Password"
                data-action="network_password" value="${escapeAttr(f.password)}" autocomplete="off" ${f.busy ? "disabled" : ""}>
         <button type="button" class="btn-primary" data-action="network_connect_submit" ${f.busy ? "disabled" : ""}>
@@ -89,8 +98,6 @@ const Network = (() => {
         <button type="button" class="btn-label" data-action="network_rescan" ${(f.busy || n.scanning) ? "disabled" : ""}>
           ${n.scanning ? "Scanning…" : "Scan for networks"}
         </button>
-        ${!n.scanning && n.error ? `<div class="classifier-ei__error">Couldn't scan for networks -- try again.</div>` : ""}
-        ${!n.scanning && !n.error && n.list.length === 0 ? `<div class="perf-chart__caption">No networks found yet -- try Scan, or type a hidden network's name directly.</div>` : ""}
         ${f.error ? `<div class="classifier-ei__error">${escapeHtml(f.error)}</div>` : ""}
         ${f.notice ? `<div class="network-connect__notice">${escapeHtml(f.notice)}</div>` : ""}
         ${f.success ? `<div class="network-connect__success">${escapeHtml(f.success)}</div>` : ""}
@@ -233,6 +240,11 @@ const Network = (() => {
   document.getElementById("network-connect").addEventListener("click", (e) => {
     if (e.target.closest('[data-action="network_connect_submit"]')) submitConnect();
     if (e.target.closest('[data-action="network_rescan"]')) scanNetworks();
+    const pickBtn = e.target.closest('[data-action="network_pick"]');
+    if (pickBtn) {
+      state.form.ssid = pickBtn.dataset.ssid;
+      renderConnect();
+    }
   });
 
   document.getElementById("network-connect").addEventListener("input", (e) => {
