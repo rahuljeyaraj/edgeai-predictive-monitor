@@ -54,6 +54,7 @@ from retention import DEFAULT_RETENTION_SECONDS, run_retention_loop
 from perf import PerformanceMonitor
 from gpu_perf import GpuPerfPoller
 from spi_reader import SpiConsumer
+from wifi import WifiStatusPoller, connect as wifi_connect
 from connection_manager import ConnectionManager
 from manager import PipelineManager
 from alert_store import AlertStore, SubscriberNotFoundError
@@ -68,6 +69,7 @@ logger = logging.getLogger(__name__)
 _EMPTY_INGEST = {"seq": None, "frames_ok": 0, "frames_dup": 0, "frames_dropped": 0,
                   "crc_fail": 0, "arm_gap": 0}
 _EMPTY_GPU_PERF = {"available": False, "busy_percent": None}
+_EMPTY_WIFI_STATUS = {"available": False, "mode": None, "ssid": None, "ip": None}
 
 _PERF_BROADCAST_INTERVAL_S = 1.0
 
@@ -112,6 +114,11 @@ class CaptureDeleteBody(BaseModel):
 class CaptureRenameBulkBody(BaseModel):
     ids: List[str]
     label: str
+
+
+class WifiConnectBody(BaseModel):
+    ssid: str
+    password: str
 
 
 class EILinkBody(BaseModel):
@@ -167,6 +174,7 @@ def create_app(registry: Registry, history_store: HistoryStore,
                 alert_store: Optional[AlertStore] = None,
                 telegram_bot=None,
                 ei=None,
+                wifi_status: Optional[WifiStatusPoller] = None,
                 on_startup: Optional[callable] = None) -> FastAPI:
     def _perf_payload() -> dict:
         data = app.state.perf_monitor.snapshot().to_dict()
@@ -226,6 +234,7 @@ def create_app(registry: Registry, history_store: HistoryStore,
     app.state.alert_store = alert_store
     app.state.telegram_bot = telegram_bot
     app.state.ei = ei
+    app.state.wifi_status = wifi_status
     app.state.connection_manager = ConnectionManager()
     app.state.loop = None
 
@@ -346,6 +355,29 @@ def create_app(registry: Registry, history_store: HistoryStore,
         app.state.perf_monitor.disable()
         broadcast_threadsafe(app, {"type": "perf", "enabled": False})
         return {"enabled": False}
+
+    # WiFi onboarding (docs/WIFI_ONBOARDING_PLAN.md S1). GET reads the
+    # background poller's cache (WifiStatusPoller, same "poll-not-push"
+    # shape as gpu_perf -- see python/network/wifi.py); POST blocks on a
+    # real nmcli join attempt via host/wifi_bridge.py, same as
+    # /classifier/ei/link's blocking EI login call. 503 distinguishes "the
+    # bridge itself isn't provisioned" from a normal 400 join failure
+    # (wrong password, out of range).
+    @app.get("/network/wifi/status")
+    def get_wifi_status():
+        if app.state.wifi_status is None:
+            return _EMPTY_WIFI_STATUS
+        return app.state.wifi_status.snapshot()
+
+    @app.post("/network/wifi/connect")
+    def connect_wifi(body: WifiConnectBody):
+        try:
+            result = wifi_connect(body.ssid, body.password)
+        except RuntimeError as e:
+            raise HTTPException(status_code=503, detail=str(e))
+        if not result.get("success"):
+            raise HTTPException(status_code=400, detail=result.get("error") or "Connection failed")
+        return result
 
     def _telegram_subscribers_dict() -> dict:
         if app.state.alert_store is None:

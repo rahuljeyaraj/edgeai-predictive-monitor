@@ -1296,6 +1296,40 @@ a.btn-label {
   cursor: pointer;
 }
 
+/* ---------------------------------------------------------------------
+   Network page (docs/WIFI_ONBOARDING_PLAN.md S1) -- current WiFi
+   mode/SSID/IP (perf-card, same shape as Alerts' connect card) plus a
+   "join factory WiFi" form reusing Classifier's inline .classifier-ei__link
+   row + .classifier-table__rename-input inputs rather than inventing new
+   form chrome.
+   --------------------------------------------------------------------- */
+
+.network-page {
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.network-status__card {
+  gap: 10px;
+  align-items: flex-start;
+  max-width: 480px;
+}
+
+.network-status__row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.network-status__value {
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 15px;
+  font-weight: 600;
+  color: #e2e8f0;
+}
+
 /* ---- tools/raw_capture_server.py's raw_capture.html -- standalone page,
    not a tab in index.html's switcher (only makes sense while the firmware
    is in FUSER_RAW_CAPTURE_MODE, an exclusive alternative to the normal

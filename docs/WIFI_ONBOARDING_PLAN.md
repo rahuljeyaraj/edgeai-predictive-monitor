@@ -1,9 +1,62 @@
 # Plan — Base station + satellite WiFi onboarding
 
-Status: **Design only — nothing implemented yet.** Captures a brainstorm session's
-conclusions for later implementation. Companion to
+Status: **§1 (base station) implemented + live-verified 2026-07-29** (real
+disruptive hardware test, plus a manual phone join of the onboarding AP through
+the actual form). §2/§3 (satellite/sim onboarding) remain design-only. Companion
+to
 [SENSOR_TELEMETRY_FRAME_PLAN.md](SENSOR_TELEMETRY_FRAME_PLAN.md) and
 [EDGE_IMPULSE_FAULT_CLASSIFICATION_PLAN.md](EDGE_IMPULSE_FAULT_CLASSIFICATION_PLAN.md).
+
+## Implementation notes (§1, 2026-07-29)
+
+- **The board's own "open item" resolved**: NetworkManager (not hostapd/
+  dnsmasq) turned out to already be the network stack in use (`nmcli`
+  present + active, board already joined to a real WiFi network via an NM
+  connection profile), and avahi-daemon was already running and publishing
+  `<hostname>.local` by default. So the implementation is nmcli-driven, not
+  a hand-rolled hostapd/dnsmasq stack, and mDNS needed no new code — just a
+  hostname rename (`epm` → `epm-base`) to match this doc.
+- **Host-side**: `base-station/host/wifi_bridge.py` (root, systemd via
+  `host/wifi-bridge.service`) drives `nmcli` from outside the app container
+  (same non-privileged-container reasoning as `host/spi_bridge.py`/
+  `host/gpu_bridge.py`), exposed over `/dev/wifi-link.sock`. A monitor loop
+  brings up an open `EPM-BaseStation` Hotspot NM profile whenever wlan0
+  isn't genuinely joined to a real network — covers "no creds yet," "join
+  failed," and "dropped later" with one check. One-time setup:
+  `base-station/provision-wifi.sh` (mirrors `provision-spi.sh`).
+- **Concurrent AP+STA**: not assumed/needed. Joining the factory network
+  drops the Hotspot outright (single physical wlan0 switching modes) —
+  the doc's "full switch on success" fallback, not "keep hotspot alive."
+- **Credentials**: NetworkManager owns persistence + autoconnect itself
+  (`/etc/NetworkManager/system-connections/*.nmconnection`) — no app-side
+  credential store was added.
+- **App-side**: `base-station/python/network/wifi.py` (status poller +
+  blocking `connect()`), routes `GET/POST /network/wifi/*` in `api/app.py`,
+  and the dashboard's "Network" tab (previously a placeholder) now hosts
+  the SSID/password form + live mode/SSID/IP display.
+- **AP security**: open (no password) — a deliberate, deployment-scale
+  simplification for a transient, physically-supervised onboarding step.
+- **Live-verified 2026-07-29**: killed the board's real WiFi, watched the
+  Hotspot fallback come up automatically (~3s), joined `EPM-BaseStation`
+  from a real phone, submitted real factory-WiFi credentials through the
+  actual Network tab form, confirmed it rejoined and stayed stable. Three
+  bugs only surfaced by this live test (all fixed, re-verified, still not
+  committed as of the first pass — see repo history for the commit that
+  landed this):
+  1. AP-mode status reported the NM connection *profile* name ("Hotspot")
+     instead of the real broadcast SSID technicians would actually see.
+  2. `nmcli device wifi connect <ssid> password <pw>` (the "quick connect"
+     shorthand) is unreliable on this board's nmcli version — fails with
+     `802-11-wireless-security.key-mgmt: property is missing` even against
+     a fresh profile. Fixed by building the connection profile explicitly
+     (`connection add` → `modify wifi-sec.key-mgmt wpa-psk`
+     → `up`) instead of relying on nmcli's shorthand.
+  3. A real concurrency bug: the monitor loop's "not connected yet" check
+     could queue behind an in-flight connect attempt and force the Hotspot
+     back up *right after* a successful join, undoing it. Fixed by having
+     that guard also bail out when already connected to a real network.
+- **Known follow-up**: user has additional issues to fix in a future
+  session (not yet itemized here — ask at the start of that session).
 
 ## 0. Scope
 
@@ -27,10 +80,9 @@ conclusions for later implementation. Companion to
 4. On failure: falls back to AP mode automatically — no manual factory reset
    required.
 
-**Open item to verify on hardware:** whether the UNO Q's WiFi chip supports
-concurrent AP+STA (check `iw list` capabilities). This determines whether the base
-station can keep its own hotspot alive *while also* joined to the factory network,
-versus having to fully switch modes on success.
+**Resolved (2026-07-29):** not pursued — implemented on the assumption of a single
+physical radio (full switch on success, hotspot doesn't stay alive concurrently).
+See "Implementation notes" above.
 
 ## 2. Satellite onboarding (ESP32-S3)
 

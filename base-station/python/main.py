@@ -38,7 +38,7 @@ import threading
 
 _PYTHON_DIR = os.path.dirname(os.path.abspath(__file__))
 for _subpackage in ("common", "registry", "pipeline", "history", "monitoring",
-                     "ingestion", "api", "alerts"):
+                     "ingestion", "api", "alerts", "network"):
     sys.path.insert(0, os.path.join(_PYTHON_DIR, _subpackage))
 
 import uvicorn
@@ -55,6 +55,7 @@ from manager import PipelineManager
 from store import HistoryStore
 from perf import PerformanceMonitor
 from gpu_perf import GpuPerfPoller
+from wifi import WifiStatusPoller
 from app import create_app, broadcast_threadsafe
 from commissioning_controller import CommissioningController
 from capture_controller import CaptureController
@@ -374,6 +375,7 @@ def main():
 
     spi_consumer = SpiConsumer(on_frame=on_frame)
     gpu_perf = GpuPerfPoller()
+    wifi_status = WifiStatusPoller()
 
     def on_subscriber_change() -> None:
         broadcast_threadsafe(app, {
@@ -411,6 +413,7 @@ def main():
         # broadcast_threadsafe before the loop is ready otherwise.
         spi_consumer.start()
         gpu_perf.start()
+        wifi_status.start()
         if mqtt_thread is not None:
             mqtt_thread.start()
         if telegram_bot is not None:
@@ -419,7 +422,7 @@ def main():
     app = create_app(registry, history, commissioning, capture=capture, manager=manager,
                       perf_monitor=perf_monitor, gpu_perf=gpu_perf, spi_consumer=spi_consumer,
                       alert_store=alert_store, telegram_bot=telegram_bot, ei=ei_controller,
-                      on_startup=start_ingestion)
+                      wifi_status=wifi_status, on_startup=start_ingestion)
 
     # Mounted after every REST/WebSocket route above is registered, so
     # this catch-all static handler can never shadow them.

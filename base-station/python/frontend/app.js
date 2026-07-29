@@ -1259,8 +1259,8 @@ recordDrawer.addEventListener("focusin", (e) => {
 });
 
 // ---------------------------------------------------------------------
-// Topbar tabs -- Fleet, Performance (perf.js), and Alerts (alerts.js) are
-// real sections; Network is still a placeholder (docs/DASHBOARD_NAV_PLAN.md).
+// Topbar tabs -- Fleet, Performance (perf.js), Alerts (alerts.js), and
+// Network (network.js) are all real sections.
 // ---------------------------------------------------------------------
 
 document.querySelector(".topbar__nav").addEventListener("click", (e) => {
@@ -1278,6 +1278,9 @@ document.querySelector(".topbar__nav").addEventListener("click", (e) => {
   // changes via its own mutations, or a Record save on the Fleet tab), so
   // refetch on every switch into the tab rather than risk a stale table.
   if (tab === "classifier") Classifier.refresh();
+  // Network has no live WS push either (network.js's own docstring) --
+  // same reasoning, refetch on every switch into the tab.
+  if (tab === "network") Network.refresh();
 });
 
 // ---------------------------------------------------------------------
@@ -1427,6 +1430,7 @@ Charts.init((msg) => {
 Perf.init();
 Alerts.init();
 Classifier.init();
+Network.init();
 pollNodes();
 fetchCaptureLabels();
 fetchDeviceTypes();
