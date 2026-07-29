@@ -54,7 +54,7 @@ from retention import DEFAULT_RETENTION_SECONDS, run_retention_loop
 from perf import PerformanceMonitor
 from gpu_perf import GpuPerfPoller
 from spi_reader import SpiConsumer
-from wifi import WifiStatusPoller, connect as wifi_connect
+from wifi import WifiStatusPoller, connect as wifi_connect, scan as wifi_scan
 from connection_manager import ConnectionManager
 from manager import PipelineManager
 from alert_store import AlertStore, SubscriberNotFoundError
@@ -356,18 +356,25 @@ def create_app(registry: Registry, history_store: HistoryStore,
         broadcast_threadsafe(app, {"type": "perf", "enabled": False})
         return {"enabled": False}
 
-    # WiFi onboarding (docs/WIFI_ONBOARDING_PLAN.md S1). GET reads the
-    # background poller's cache (WifiStatusPoller, same "poll-not-push"
-    # shape as gpu_perf -- see python/network/wifi.py); POST blocks on a
-    # real nmcli join attempt via host/wifi_bridge.py, same as
-    # /classifier/ei/link's blocking EI login call. 503 distinguishes "the
-    # bridge itself isn't provisioned" from a normal 400 join failure
-    # (wrong password, out of range).
+    # WiFi onboarding (docs/WIFI_ONBOARDING_PLAN.md S1). status GET reads
+    # the background poller's cache (WifiStatusPoller, same "poll-not-push"
+    # shape as gpu_perf -- see python/network/wifi.py); scan and connect
+    # both block on a real nmcli call via host/wifi_bridge.py (a scan, and
+    # a join attempt respectively), same as /classifier/ei/link's blocking
+    # EI login call -- scan always returns 200 with an `error` field on
+    # failure (never breaks the form, but still distinguishable from a
+    # genuinely empty scan), connect's 503 distinguishes "the bridge
+    # itself isn't provisioned" from a normal 400 join failure (wrong
+    # password, out of range).
     @app.get("/network/wifi/status")
     def get_wifi_status():
         if app.state.wifi_status is None:
             return _EMPTY_WIFI_STATUS
         return app.state.wifi_status.snapshot()
+
+    @app.get("/network/wifi/scan")
+    def scan_wifi():
+        return wifi_scan()
 
     @app.post("/network/wifi/connect")
     def connect_wifi(body: WifiConnectBody):

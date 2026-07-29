@@ -31,6 +31,9 @@ STATUS_TIMEOUT_S = 2.0
 # genuine nmcli timeout on the other end is what surfaces, not this socket
 # read timing out first and masking it as "bridge unreachable."
 CONNECT_TIMEOUT_S = 60.0
+# Must outlast wifi_bridge.py's own SCAN_TIMEOUT_S (15s), same reasoning as
+# CONNECT_TIMEOUT_S above.
+SCAN_TIMEOUT_S = 20.0
 
 
 def _request(payload: dict, timeout: float) -> dict:
@@ -90,6 +93,20 @@ class WifiStatusPoller:
         with self._lock:
             return {"available": self._available, "mode": self._mode,
                      "ssid": self._ssid, "ip": self._ip}
+
+
+def scan() -> dict:
+    """Blocking request to wifi_bridge for nearby networks. Returns
+    {"networks": [...], "error": str|None} -- never raises, since a scan
+    failure shouldn't take down the connect form. `error` distinguishes a
+    real failure (bridge unreachable, or wifi_bridge's own nmcli call
+    failed/timed out -- see its scan_payload()) from a genuinely empty
+    scan, so the frontend can show "try again" instead of a misleading
+    "no networks nearby" for what was really a transient failure."""
+    try:
+        return _request({"cmd": "scan"}, SCAN_TIMEOUT_S)
+    except (OSError, ValueError) as exc:
+        return {"networks": [], "error": f"wifi-bridge unreachable: {exc}"}
 
 
 def connect(ssid: str, password: str) -> dict:

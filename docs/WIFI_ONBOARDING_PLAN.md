@@ -1,11 +1,99 @@
 # Plan — Base station + satellite WiFi onboarding
 
-Status: **§1 (base station) implemented + live-verified 2026-07-29** (real
-disruptive hardware test, plus a manual phone join of the onboarding AP through
-the actual form). §2/§3 (satellite/sim onboarding) remain design-only. Companion
-to
+Status: **§1 (base station) implemented + live-verified 2026-07-29**, including
+Round 2's captive-portal auto-open (confirmed working on a real phone) and
+Round 3's scan/messaging fixes below. §2/§3 (satellite/sim onboarding) remain
+design-only. Companion to
 [SENSOR_TELEMETRY_FRAME_PLAN.md](SENSOR_TELEMETRY_FRAME_PLAN.md) and
 [EDGE_IMPULSE_FAULT_CLASSIFICATION_PLAN.md](EDGE_IMPULSE_FAULT_CLASSIFICATION_PLAN.md).
+
+## Round 2: UX follow-up fixes (2026-07-29, built, NOT yet live-verified)
+
+Real usage of the Round 1 build surfaced five issues, all addressed:
+
+1. **No auto-loading portal page** — joining `EPM-BaseStation` required
+   manually typing the IP, unlike a real airport-WiFi captive portal.
+   Fixed with the actual captive-portal trick: `provision-wifi.sh` now
+   drops an `/etc/NetworkManager/dnsmasq-shared.d/captive-portal.conf`
+   (`address=/#/10.42.0.1`) so every DNS lookup a joined device makes
+   resolves to the Hotspot's own IP, and `wifi_bridge.py` runs a new
+   port-80 listener that 302-redirects any request to the dashboard's
+   Network tab (`http://<ip>:8080/?tab=network`). An OS's own
+   connectivity-check probe (Apple/Google/Microsoft/Firefox all ping
+   different well-known URLs) hits this instead of the real internet and
+   the OS pops its browser open on the redirect target automatically —
+   same mechanism real captive portals use. `app.js` gained a `?tab=`
+   deep-link so that URL lands directly on Network, not Fleet.
+2. **Copy said "factory" / called AP mode onboarding-only** — both wrong:
+   this AP is a real network usable standalone (satellites can join it
+   directly, not just during setup). Reworded the heading ("Join a WiFi
+   network") and caption in `network.js`, and dropped the "(onboarding)"
+   suffix from the AP mode label.
+3. **Redundant IP address shown in AP mode** — whoever reached the page
+   already knows it (they typed it, or landed via the new captive-portal
+   redirect). Now only shown once actually joined to a real network (STA
+   mode).
+4. **No visible list of nearby WiFi networks** — added a `scan` command to
+   `wifi_bridge.py` (`nmcli device wifi list --rescan yes`), a
+   `GET /network/wifi/scan` route, and a `<datalist>`-backed SSID field
+   (native combobox: pick from the list or type a hidden network's name)
+   with a manual "Rescan" button. **Known caveat, not yet re-tested**:
+   Round 1's live testing found this radio can't scan for other networks
+   while it's hosting its own AP (`nmcli device wifi list` returned
+   nothing but itself) — i.e. the scan may come back empty in exactly the
+   onboarding moment (technician on the Hotspot, about to join the real
+   network) it'd be most useful for. It should still work once already on
+   a real network (switching to a different one). The UI already degrades
+   gracefully either way (manual SSID entry always works), but this needs
+   a live check before calling the scan itself reliable.
+5. **"Failed to fetch" on a successful join, no success message** — root
+   cause: a successful join means the radio switches away from whatever
+   network carried the connect request (the Hotspot itself, most often),
+   so the HTTP response can never arrive — this is `fetch()` throwing a
+   network-level `TypeError`, not the backend actually failing. `network.js`
+   now tells that apart from a real HTTP-level failure and shows an
+   amber "connection dropped — that usually means it worked, go check
+   `http://epm-base.local`" notice instead of a bare fetch error, plus an
+   explicit green success message on the (rarer) case the response does
+   arrive.
+
+**Not yet done:** live-verified on real hardware/phones (the redirect in
+particular needs testing across iOS/Android/Windows/desktop-browser probe
+behavior, which varies) — needs `provision-wifi.sh` re-run on the board
+(new dnsmasq drop-in + port-80 listener) plus an app redeploy.
+
+## Round 3: live-test findings + fixes (2026-07-29, built + deployed)
+
+Round 2 shipped untested; a real phone test found the captive-portal
+auto-open works, but surfaced new issues:
+
+1. **Item 4's "known caveat" was wrong** — live-tested scanning while
+   genuinely in AP mode (Hotspot up, confirmed via `nmcli`) and it DOES
+   find nearby networks, contrary to Round 1's assumption. The real
+   problem was different: `scan_payload()` forced `--rescan yes` on
+   *every* call, so every scan paid the full ~7s real-scan cost, and any
+   hiccup (timeout, a flaky phone-side captive-portal browser) came back
+   indistinguishable from a genuine empty result — both were just `[]`.
+   Fixed: switched to `--rescan auto` (nmcli's own cache-freshness
+   judgment — repeat calls now return in ~0.1s when a recent scan already
+   ran, confirmed live), and threaded a distinct `error` field end-to-end
+   (`wifi_bridge.py` → `python/network/wifi.py` → the REST route →
+   `network.js`) so a real scan failure shows "couldn't scan — try again"
+   instead of a misleading "no networks found."
+2. **Removed Round 2's new caption** ("this device broadcasts its own
+   network... a real network other devices can connect to directly") —
+   confusing, cut per live-test feedback. Heading reverted from "Join a
+   WiFi network" back to **"Connect to Wi-Fi"**.
+3. **Post-submit message often never got read** — on the onboarding
+   hotspot, tapping Connect can close the page (or drop its connectivity)
+   almost immediately once the device's own network switches, sometimes
+   before any post-submit message renders at all. Fixed by moving the
+   warning **before** the action instead of after: a short "this page may
+   close after you tap Connect — that's normal, reopen the dashboard to
+   check" tip is now always visible in AP mode, read before the risk
+   starts rather than raced against it. The existing post-submit
+   notice/error/success messages (which still show correctly whenever the
+   page *does* survive) were also shortened to single short sentences.
 
 ## Implementation notes (§1, 2026-07-29)
 
@@ -55,8 +143,7 @@ to
      could queue behind an in-flight connect attempt and force the Hotspot
      back up *right after* a successful join, undoing it. Fixed by having
      that guard also bail out when already connected to a real network.
-- **Known follow-up**: user has additional issues to fix in a future
-  session (not yet itemized here — ask at the start of that session).
+- **Known follow-up**: addressed 2026-07-29 — see "Round 2" and "Round 3" above.
 
 ## 0. Scope
 

@@ -1263,10 +1263,9 @@ recordDrawer.addEventListener("focusin", (e) => {
 // Network (network.js) are all real sections.
 // ---------------------------------------------------------------------
 
-document.querySelector(".topbar__nav").addEventListener("click", (e) => {
-  const link = e.target.closest(".topbar__nav-link");
+function activateTab(tab) {
+  const link = document.querySelector(`.topbar__nav-link[data-tab="${tab}"]`);
   if (!link) return;
-  const tab = link.dataset.tab;
 
   document.querySelectorAll(".topbar__nav-link").forEach((el) => {
     el.classList.toggle("is-active", el === link);
@@ -1281,6 +1280,12 @@ document.querySelector(".topbar__nav").addEventListener("click", (e) => {
   // Network has no live WS push either (network.js's own docstring) --
   // same reasoning, refetch on every switch into the tab.
   if (tab === "network") Network.refresh();
+}
+
+document.querySelector(".topbar__nav").addEventListener("click", (e) => {
+  const link = e.target.closest(".topbar__nav-link");
+  if (!link) return;
+  activateTab(link.dataset.tab);
 });
 
 // ---------------------------------------------------------------------
@@ -1435,3 +1440,11 @@ pollNodes();
 fetchCaptureLabels();
 fetchDeviceTypes();
 setInterval(pollNodes, NODES_POLL_MS);
+
+// Lets host/wifi_bridge.py's captive-portal redirect (docs/
+// WIFI_ONBOARDING_PLAN.md S1) land a freshly-joined phone/laptop straight
+// on the Network tab instead of Fleet -- a bare "?tab=network" query param
+// on the page URL it redirects to. After the .init() calls above so the
+// target tab's own data is already loading, not just its DOM.
+const deepLinkTab = new URLSearchParams(window.location.search).get("tab");
+if (deepLinkTab) activateTab(deepLinkTab);

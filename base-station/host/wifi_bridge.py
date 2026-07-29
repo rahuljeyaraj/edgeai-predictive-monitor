@@ -26,10 +26,14 @@ Two responsibilities:
 
 2. A one-request-per-connection JSON socket API (same wire-protocol shape
    as spi_bridge.py/gpu_bridge.py -- one line of JSON in, one line of
-   JSON out) for the app container to read current status and submit new
-   factory-WiFi credentials:
+   JSON out) for the app container to read current status, list nearby
+   networks, and submit new factory-WiFi credentials:
      {"cmd": "status"}
        -> {"mode": "sta"|"ap"|"disconnected", "ssid": str|null, "ip": str|null}
+     {"cmd": "scan"}
+       -> {"networks": [{"ssid": str, "signal": int}, ...], "error": str|null}
+       (networks strongest-signal first; error is set on a real scan
+       failure/timeout, distinct from a genuinely empty result)
      {"cmd": "connect", "ssid": str, "password": str}
        -> {"success": bool, "error": str|null}
    A connect attempt blocks this connection for up to CONNECT_TIMEOUT_S
@@ -37,6 +41,20 @@ Two responsibilities:
    call, caller's worker thread absorbs it" shape the app side already
    uses for e.g. POST /classifier/ei/link's blocking EI login) since this
    is a rare, one-shot, technician-driven action, not a polled path.
+
+3. A captive-portal redirect: while the Hotspot is up, provision-wifi.sh's
+   dnsmasq-shared.d drop-in resolves EVERY hostname a joined phone/laptop
+   looks up to the Hotspot's own IP (same trick real captive portals use --
+   an OS's own connectivity-check probe, e.g. Apple's
+   captive.apple.com/hotspot-detect.html or Google's generate_204, ends up
+   pointed at us instead of the real internet). That alone isn't enough --
+   the probe is plain HTTP on port 80, and the dashboard listens on
+   DASHBOARD_PORT, not 80 -- so this daemon also runs a trivial port-80
+   listener (_run_captive_portal_redirect) that 302s any request straight
+   to the dashboard's Network tab. Seeing anything other than the exact
+   response it expects is what makes the OS pop its own browser open on
+   this redirect's Location automatically, the same "join WiFi -> a login
+   page just appears" behavior as airport/hotel WiFi.
 
 Concurrent AP+STA on this board's WCBN3536A radio is NOT assumed:
 activating the factory-network connection while the Hotspot is up is
@@ -50,6 +68,7 @@ All state-mutating nmcli calls (ensure_hotspot_up/down, handle_connect)
 go through _nm_lock so the monitor loop and an in-flight app-triggered
 connect request never race each other.
 """
+import http.server
 import json
 import os
 import socket
@@ -60,6 +79,11 @@ import time
 
 SOCKET_PATH = "/dev/wifi-link.sock"
 IFACE = "wlan0"
+# Must match main.py's --port default (also app.yaml's exposed [8080, 8081]
+# list) -- this is where the app container's dashboard actually listens;
+# the port-80 redirect below only exists to bounce probes/browsers there.
+DASHBOARD_PORT = 8080
+CAPTIVE_PORTAL_PORT = 80
 HOTSPOT_CON_NAME = "Hotspot"
 # The Hotspot profile's actual broadcast SSID (provision-wifi.sh creates it
 # with this ssid, con-name "Hotspot" -- distinct names on purpose, see
@@ -67,6 +91,9 @@ HOTSPOT_CON_NAME = "Hotspot"
 HOTSPOT_SSID = "EPM-BaseStation"
 MONITOR_INTERVAL_S = 10
 CONNECT_TIMEOUT_S = 45
+# A real rescan (not just reading nmcli's cached scan cache) takes a few
+# seconds on this radio -- generous headroom over that.
+SCAN_TIMEOUT_S = 15
 # Brief pause after tearing down the Hotspot before attempting the new
 # join, letting the radio actually finish switching modes.
 RADIO_SETTLE_S = 2
@@ -154,6 +181,50 @@ def status_payload():
     return {"mode": "disconnected", "ssid": None, "ip": ip}
 
 
+def scan_payload():
+    """Returns nearby networks, strongest signal first, deduped by SSID (a
+    network is usually seen once per radio/band it's on). Uses nmcli's own
+    "auto" rescan judgment, NOT a forced "yes" rescan on every request --
+    nmcli already tracks how stale its own scan cache is and only pays the
+    real ~5-10s scan cost when it decides the cache is actually old, so a
+    repeat call (e.g. the "Scan for networks" button after the automatic
+    one on page load) is fast whenever a recent scan already ran. Doesn't
+    hold _nm_lock: read-only from NM's point of view (doesn't touch our
+    own connection profiles), so it's fine to run concurrently with the
+    monitor loop or an in-flight connect.
+
+    Returns {"networks": [...], "error": str|null} -- error distinguishes
+    "nmcli itself failed or timed out" from a genuinely clean empty scan;
+    without this, both would look identical over the wire and the
+    dashboard couldn't tell an infra failure apart from "no networks
+    nearby, this is real" -- see python/network/wifi.py's scan()."""
+    try:
+        result = _nmcli(["-t", "-f", "SSID,SIGNAL", "device", "wifi", "list", "--rescan", "auto"],
+                         timeout=SCAN_TIMEOUT_S)
+    except subprocess.TimeoutExpired:
+        return {"networks": [], "error": "Scan timed out"}
+    if result.returncode != 0:
+        return {"networks": [], "error": result.stderr.strip() or "Scan failed"}
+    best_signal = {}
+    for line in result.stdout.splitlines():
+        # SIGNAL is always numeric (no colons), so the last colon is always
+        # the field separator even if the SSID itself contains one -- same
+        # reasoning as _device_state()'s split.
+        ssid, _, signal_str = line.rpartition(":")
+        ssid = ssid.strip()
+        if not ssid or ssid == HOTSPOT_SSID:  # blank == hidden network; skip our own AP
+            continue
+        try:
+            signal = int(signal_str)
+        except ValueError:
+            signal = 0
+        if ssid not in best_signal or signal > best_signal[ssid]:
+            best_signal[ssid] = signal
+    networks = [{"ssid": ssid, "signal": signal} for ssid, signal in best_signal.items()]
+    networks.sort(key=lambda n: n["signal"], reverse=True)
+    return {"networks": networks, "error": None}
+
+
 def _connect_to_network(ssid, password):
     """Explicit delete/add/modify/up sequence, NOT the `nmcli device wifi
     connect <ssid> password <pw>` shorthand -- confirmed on hardware that
@@ -210,6 +281,52 @@ def handle_connect(ssid, password):
     return {"success": success, "error": error}
 
 
+class _CaptivePortalRedirectHandler(http.server.BaseHTTPRequestHandler):
+    """Answers every request on CAPTIVE_PORTAL_PORT with a 302 to the
+    dashboard's Network tab. Deliberately ignores path/method specifics --
+    an OS's captive-portal probe hits a fixed well-known URL (varies by
+    OS/browser: Apple, Google, Microsoft, Firefox all use different ones)
+    and this only needs to NOT return that probe's expected "you're on the
+    real internet" response for the OS to assume a portal and open a
+    browser on whatever this redirects to."""
+
+    def _redirect(self):
+        # self.connection.getsockname() is THIS accepted socket's local
+        # address -- i.e. whatever IP the client actually dialed (the
+        # Hotspot's address, reachable from where the client sits) --
+        # rather than a hardcoded subnet, so this keeps working even if
+        # NM's "shared" ipv4 method ever picks a different one.
+        host_ip = self.connection.getsockname()[0]
+        location = f"http://{host_ip}:{DASHBOARD_PORT}/?tab=network"
+        self.send_response(302)
+        self.send_header("Location", location)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def do_GET(self):
+        self._redirect()
+
+    def do_HEAD(self):
+        self._redirect()
+
+    def log_message(self, format_str, *args):  # noqa: A002 - stdlib signature
+        pass  # OS captive-portal probes poll every few seconds; silence per-request noise
+
+
+def run_captive_portal_redirect():
+    # Best-effort: if port 80 is somehow already taken, the rest of the
+    # bridge (status/scan/connect, hotspot fallback) must keep working --
+    # this is a nice-to-have UX layer on top, not load-bearing.
+    try:
+        server = http.server.ThreadingHTTPServer(("", CAPTIVE_PORTAL_PORT), _CaptivePortalRedirectHandler)
+    except OSError as exc:
+        print(f"wifi_bridge: captive-portal redirect disabled, port {CAPTIVE_PORTAL_PORT} unavailable: {exc}",
+              file=sys.stderr, flush=True)
+        return
+    with server:
+        server.serve_forever()
+
+
 def monitor_loop():
     while True:
         try:
@@ -239,6 +356,8 @@ def handle_client(conn):
         cmd = request.get("cmd")
         if cmd == "status":
             response = status_payload()
+        elif cmd == "scan":
+            response = scan_payload()
         elif cmd == "connect":
             response = handle_connect(request.get("ssid", ""), request.get("password", ""))
         else:
@@ -248,6 +367,7 @@ def handle_client(conn):
 
 def main():
     threading.Thread(target=monitor_loop, daemon=True, name="wifi-bridge-monitor").start()
+    threading.Thread(target=run_captive_portal_redirect, daemon=True, name="wifi-bridge-captive-portal").start()
 
     if os.path.exists(SOCKET_PATH):
         os.remove(SOCKET_PATH)

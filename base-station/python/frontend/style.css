@@ -1869,6 +1869,23 @@ a.btn-label {
   width: 100%;
 }
 
+.network-connect__success {
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 13px;
+  color: var(--color-healthy);
+  width: 100%;
+}
+
+/* Ambiguous "the join probably worked" case (network.js submitConnect) --
+   amber, not red: this isn't a confirmed failure, just an unconfirmed
+   outcome the technician needs to go check. */
+.network-connect__notice {
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 13px;
+  color: var(--color-warning);
+  width: 100%;
+}
+
 .classifier-ei__model-status {
   font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
   font-size: 13px;
