@@ -26,6 +26,7 @@ const Alerts = (() => {
     subscribers: {},
     nodes: {},
     connecting: false,
+    qrCode: null,
   };
   let connectTimeout = null;
 
@@ -55,10 +56,13 @@ const Alerts = (() => {
       return;
     }
 
+    const qrHtml = state.qrCode
+      ? `<img class="alerts-connect__qr" src="${escapeAttr(state.qrCode)}"
+               alt="QR code to open this Telegram connect link">`
+      : "";
     el.innerHTML = `<div class="perf-card alerts-connect__card">
       <div class="alerts-connect__title">Telegram alerts</div>
-      <div class="perf-chart__caption">Get a message here whenever a node enters
-        warning/fault, or recovers.</div>
+      ${qrHtml}
       <button type="button" class="btn-primary" id="alerts-connect-btn">Connect Telegram</button>
     </div>`;
   }
@@ -155,6 +159,22 @@ const Alerts = (() => {
     }
   }
 
+  // The QR shown by default alongside the button is its own connect token,
+  // independent of whatever token startConnect() mints on click -- each is
+  // one-shot (alert_store.py's consume_token), so re-minting here after
+  // every subscriber-list change (i.e. a possible connect) keeps the QR
+  // scannable for the next person instead of going dead after first use.
+  async function refreshConnectQr() {
+    if (!state.status.configured) return;
+    try {
+      const { qr_code } = await postJson("/alerts/telegram/connect");
+      state.qrCode = qr_code;
+      renderConnect();
+    } catch (err) {
+      console.error("Failed to load Telegram connect QR", err);
+    }
+  }
+
   async function updatePrefs(chatId, faultOnly, nodeIds) {
     try {
       await postJson(`/alerts/telegram/subscribers/${chatId}/prefs`,
@@ -237,6 +257,7 @@ const Alerts = (() => {
     state.subscribers = msg.subscribers || {};
     clearConnectWait();
     render();
+    refreshConnectQr();
   }
 
   async function init() {
@@ -251,6 +272,7 @@ const Alerts = (() => {
       console.error("Failed to fetch initial Telegram alerts state", err);
     }
     render();
+    refreshConnectQr();
   }
 
   return { init, handleMessage };

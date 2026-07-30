@@ -3,3 +3,4 @@ torch
 psutil
 python-statemachine==3.2.0
 ai-edge-litert
+qrcode

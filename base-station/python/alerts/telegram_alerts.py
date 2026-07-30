@@ -17,6 +17,8 @@ Telegram chat back to the dashboard session that requested the connection
 (docs/DASHBOARD_IDEAS_BACKLOG.md's flow). So this registers its own /start
 command instead, left disabled on the brick itself.
 """
+import base64
+import io
 import json
 import logging
 import re
@@ -24,6 +26,8 @@ import threading
 import urllib.error
 import urllib.request
 from typing import Callable, Optional
+
+import qrcode
 
 from alert_store import AlertStore
 from registry import NodeStatus, Registry
@@ -91,6 +95,27 @@ def fetch_bot_username(token: str, timeout: float = 10.0) -> str:
     if not payload.get("ok"):
         raise ValueError(f"Telegram getMe failed: {payload}")
     return payload["result"]["username"]
+
+
+def build_connect_qr(deep_link: str) -> str:
+    """Renders the dashboard's "Connect Telegram" deep link as a QR code,
+    so a phone can scan it directly rather than needing the device the
+    dashboard is open on to itself have Telegram. Returns a data: URI
+    the frontend can drop straight into an <img src> -- no separate
+    endpoint/round-trip needed since the image is small (a few KB).
+
+    box_size=6 (vs. qrcode.make()'s default 10) keeps the native PNG close
+    to the ~220px the frontend displays it at -- the default produced a
+    450x450 image the browser then had to smooth-scale down by >2.5x,
+    blurring the module edges enough that phone cameras failed to decode
+    it at all."""
+    qr = qrcode.QRCode(box_size=6, border=4)
+    qr.add_data(deep_link)
+    qr.make(fit=True)
+    img = qr.make_image()
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode("ascii")
 
 
 def wire_telegram_alerts(registry: Registry, bot, alert_store: AlertStore,

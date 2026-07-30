@@ -1188,6 +1188,25 @@ a.btn-label {
   color: #f1f5f9;
 }
 
+.alerts-connect__qr {
+  width: 220px;
+  height: 220px;
+  padding: 12px;
+  background: #fff;
+  border-radius: 8px;
+  align-self: center;
+  /* Keeps the QR's module edges crisp when the browser scales the source
+     PNG to this size -- default smooth scaling blurs them enough that
+     phone cameras fail to decode it. */
+  image-rendering: -webkit-optimize-contrast;
+  image-rendering: crisp-edges;
+  image-rendering: pixelated;
+}
+
+.alerts-connect__card .btn-primary {
+  align-self: center;
+}
+
 .btn-primary {
   font: inherit;
   font-family: system-ui, -apple-system, "Segoe UI", sans-serif;

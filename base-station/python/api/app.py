@@ -54,6 +54,7 @@ from retention import DEFAULT_RETENTION_SECONDS, run_retention_loop
 from perf import PerformanceMonitor
 from gpu_perf import GpuPerfPoller
 from spi_reader import SpiConsumer
+import telegram_alerts
 from wifi import WifiStatusPoller, connect as wifi_connect, scan as wifi_scan
 from connection_manager import ConnectionManager
 from manager import PipelineManager
@@ -416,7 +417,9 @@ def create_app(registry: Registry, history_store: HistoryStore,
             raise HTTPException(status_code=503,
                                  detail="Telegram bot username unavailable (getMe failed at startup)")
         token = app.state.alert_store.create_connect_token()
-        return {"token": token, "deep_link": f"https://t.me/{bot_username}?start={token}"}
+        deep_link = f"https://t.me/{bot_username}?start={token}"
+        return {"token": token, "deep_link": deep_link,
+                "qr_code": telegram_alerts.build_connect_qr(deep_link)}
 
     @app.get("/alerts/telegram/subscribers")
     def list_telegram_subscribers():
