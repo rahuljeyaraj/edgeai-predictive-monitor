@@ -29,6 +29,16 @@ fi
 step "Stopping existing app (if running)"
 adb shell "arduino-app-cli app stop ${REMOTE_DIR}" || true
 
+step "Waiting for adb to settle (app stop briefly re-enumerates the board's USB)"
+for _ in $(seq 1 10); do
+    [ "$(adb get-state 2>/dev/null || true)" = "device" ] && break
+    sleep 1
+done
+if [ "$(adb get-state 2>/dev/null || true)" != "device" ]; then
+    echo "Board didn't come back after app stop. Check 'adb devices' and re-run ./deploy.sh." >&2
+    exit 1
+fi
+
 step "Removing previous copy on device (preserving build/venv cache)"
 # Only clear app source files, not ${REMOTE_DIR}/.cache — that's where the
 # device keeps the Python venv (uv) and sketch build cache. Wiping it every
@@ -37,18 +47,35 @@ step "Removing previous copy on device (preserving build/venv cache)"
 adb shell "test -d '${REMOTE_DIR}' && find '${REMOTE_DIR}' -mindepth 1 -maxdepth 1 -not -name '.cache' -exec rm -rf {} + || true"
 
 step "Pushing app to ${REMOTE_DIR}"
-# Stream via tar instead of `adb push`ing each top-level entry: a plain push
-# of the "python" dir drags along whatever's sitting in python/.venv (a local
-# dev-only venv, unrelated to the device's own uv-managed venv under
-# ${REMOTE_DIR}/.cache) -- 1GB+ of torch et al, stalling the deploy on a
-# single .so transfer. tar -C into LOCAL_DIR keeps dotfiles (no dotglob
-# needed) and skips .cache to begin with since it isn't under LOCAL_DIR.
-adb shell "mkdir -p '${REMOTE_DIR}'"
+# Build the tar locally, then `adb push` it as a real file and extract it
+# remotely -- NOT `tar -cf - . | adb shell "tar -xf -"`. That piped form
+# repeatedly (5+ times across past sessions) truncated mid-stream with NO
+# non-zero exit code (the pipeline's exit status is adb shell's, not the
+# local tar's), leaving the device with a half-extracted app and no
+# app.yaml. A real `adb push` of a finished file doesn't have that failure
+# mode. /tmp is used (not /data/local/tmp -- "secure_mkdirs failed:
+# Permission denied" on this board).
+#
+# Excludes: .venv/__pycache__/.pytest_cache are local dev-only cruft, same
+# reasoning as before. captures/ and captures_*/ (matching .gitignore) are
+# this dev machine's own local capture recordings for offline experiments/EI
+# upload tooling (base-station/python/tools/*.py's _DEFAULT_CAPTURES_DIR) --
+# unrelated to the device's own captures, which live under
+# ${REMOTE_DIR}/.cache/data/captures and are never touched by this script.
+# Shipping tens of MB of them on every deploy was dead weight and a likely
+# contributor to the pipe-truncation failures above.
+TAR_PATH="$(mktemp -t deploy-XXXXXX.tar)"
+trap 'rm -f "${TAR_PATH}"' EXIT
 tar -C "${LOCAL_DIR}" \
     --exclude='.venv' \
     --exclude='__pycache__' \
     --exclude='.pytest_cache' \
-    -cf - . | adb shell "tar -C '${REMOTE_DIR}' -xf -"
+    --exclude='captures' \
+    --exclude='captures_*' \
+    -cf "${TAR_PATH}" .
+adb shell "mkdir -p '${REMOTE_DIR}'"
+adb push "${TAR_PATH}" /tmp/deploy.tar
+adb shell "tar -C '${REMOTE_DIR}' -xf /tmp/deploy.tar && rm /tmp/deploy.tar"
 
 step "Starting app"
 adb shell "arduino-app-cli app start ${REMOTE_DIR}"
