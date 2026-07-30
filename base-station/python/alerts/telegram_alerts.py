@@ -19,6 +19,7 @@ command instead, left disabled on the brick itself.
 """
 import json
 import logging
+import re
 import threading
 import urllib.error
 import urllib.request
@@ -47,6 +48,20 @@ _STATUS_LABEL = {
     NodeStatus.WARNING: "⚠️ WARNING",
     NodeStatus.FAULT: "\U0001f534 FAULT",
 }
+
+
+def _node_label(entry) -> str:
+    """Formats "device_name (node_id)", matching how the dashboard itself
+    only treats a node as "having a nickname" when device_name differs
+    from the raw node_id (frontend/app.js's hasNickname check) -- falls
+    back to the bare node_id when no nickname was ever set."""
+    if entry.device_name and entry.device_name != entry.node_id:
+        return f"{entry.device_name} ({entry.node_id})"
+    return entry.node_id
+
+
+def _title_case(label: str) -> str:
+    return re.sub(r"\b\w", lambda m: m.group().upper(), label.replace("_", " "))
 
 
 def build_telegram_bot():
@@ -139,12 +154,25 @@ def wire_telegram_alerts(registry: Registry, bot, alert_store: AlertStore,
         previous = _last_status.get(node_id)
         _last_status[node_id] = status
 
+        # Registry only ever calls on_status_change for a node_id that
+        # already has an entry (add() itself fires it right after creating
+        # one) -- and this callback runs synchronously from inside that
+        # same node's RLock (registry.py's _notify_status_change call
+        # sites), so re-entering it via get() here is safe, not a deadlock.
+        entry = registry.get(node_id)
+        label = _node_label(entry)
+
         tier = _ALERT_TIER.get(status)
         if tier is not None:
-            text = f"{_STATUS_LABEL[status]} — {node_id}"
+            text = f"{_STATUS_LABEL[status]} — {label}"
+            if status == NodeStatus.FAULT and entry.last_classification:
+                classification = entry.last_classification
+                text += (
+                    f"\nClassifier: {_title_case(classification['label'])} "
+                    f"({classification['confidence']:.0%} confidence)")
             recipients = alert_store.subscribers_for(node_id, tier)
         elif status == NodeStatus.HEALTHY and previous in _RECOVERABLE_FROM:
-            text = f"✅ RECOVERED — {node_id} is back to healthy"
+            text = f"✅ RECOVERED — {label} is back to healthy"
             # An "all clear" is exactly as urgent as the event it clears --
             # a fault-only subscriber who got the original FAULT message
             # should get its recovery too, and a warning's recovery
