@@ -1,7 +1,13 @@
 # Plan — AI-triggered motor stop (physical AI action)
 
-Status: **design-only, not yet implemented.** Written up so it can be
-reviewed and picked up in a later session. Companion to
+Status: **STALE — superseded and built.** This design-only doc was
+superseded by a locked "machinery protection trip" plan (API 670 framing,
+not motor control; see `docs/progress4.md`'s intro and the
+`machinery-protection-trip-plan` memory) that was actually implemented and
+committed as `ebc08f4`. The rejected/superseded parts of this doc (the
+operator-typed topic string in particular) are kept below for history, but
+do not re-propose them. For current status, open issues, and live-hardware
+findings, see [progress4.md](progress4.md). Companion to
 [motor-driver.md](motor-driver.md).
 
 ## Why

@@ -85,14 +85,19 @@ class ProtectionController:
     def __init__(self, registry: Registry,
                  publish_trip: Optional[Callable[[int], None]] = None,
                  trip_delay_s: float = DEFAULT_TRIP_DELAY_S,
-                 confirm_window_s: float = DEFAULT_CONFIRM_WINDOW_S):
+                 confirm_window_s: float = DEFAULT_CONFIRM_WINDOW_S,
+                 motor_state_query: Optional[Callable[[str], Optional[bool]]] = None):
         """publish_trip: called with the motor index when a countdown expires.
         None disables tripping entirely (no countdowns start) while leaving
-        the IDLE/TRIPPED status reporting fully working."""
+        the IDLE/TRIPPED status reporting fully working.
+
+        motor_state_query: node_id -> currently-confirmed running state (True/
+        False), or None if unknown. See set_motor_state_query."""
         self._registry = registry
         self._publish_trip = publish_trip
         self._trip_delay_s = trip_delay_s
         self._confirm_window_s = confirm_window_s
+        self._motor_state_query = motor_state_query
         self._lock = threading.Lock()
         self._states: Dict[str, ProtectionState] = {}
 
@@ -103,6 +108,13 @@ class ProtectionController:
         (app.state.loop must exist before ingestion starts). Passing None
         leaves IDLE/TRIPPED reporting live with tripping disabled."""
         self._publish_trip = publish_trip
+
+    def set_motor_state_query(self, motor_state_query: Optional[Callable[[str], Optional[bool]]]) -> None:
+        """Late-bound for the same reason set_publish_trip is: main.py builds
+        the PipelineManager this reads from after this controller already
+        exists (it's what supplies PipelineManager's own on_motor_state
+        hook)."""
+        self._motor_state_query = motor_state_query
 
     # -- introspection for the REST layer ------------------------------
 
@@ -292,6 +304,15 @@ class ProtectionController:
             return
 
         confirm.start()
+        # The gate may already have confirmed STOPPED before this trip fired
+        # -- e.g. an operator already stopped the machine by hand, or a
+        # previous trip attempt already parked it there. on_motor_state only
+        # fires on a fresh edge, so if the state was already STOPPED nothing
+        # will ever call it again and the confirm window above would time
+        # out for a machine that is, in fact, stopped. Ask the live gate
+        # state directly to catch that case immediately instead.
+        if self._motor_state_query is not None and self._motor_state_query(node_id) is False:
+            self.on_motor_state(node_id, running=False)
 
     def _confirm_timeout(self, node_id: str) -> None:
         """The trip went out but the machine never went quiet."""

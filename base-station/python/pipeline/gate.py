@@ -35,6 +35,13 @@ Nodes commissioned before running_energy_ref existed have it as None; for
 those, the gate falls back to the absolute `threshold` -- which reproduces
 the old always-RUNNING behaviour exactly rather than changing what a
 not-yet-re-commissioned node does underneath an operator.
+
+compute_energy() only sums accelerometer channels, not mic -- see its own
+docstring. Nodes commissioned before that change have a running_energy_ref
+computed the old, mic-inclusive way; re-commissioning recalculates it
+against the same accel-only definition the live gate now uses, the same
+re-commissioning requirement the running_energy_ref bug above already
+established.
 """
 import logging
 import math
@@ -61,10 +68,18 @@ class MotorState(Enum):
 
 
 def compute_energy(frame: SensorFrame) -> float:
-    """RMS across whatever channels are present in frame.bins (mic, accel,
-    or any future channel) -- a channel absent from the dict (S4.1)
-    simply doesn't contribute."""
-    bins = [b for chan_bins in frame.bins.values() for b in chan_bins]
+    """RMS across this frame's accelerometer channels when it has any,
+    mic excluded deliberately -- whether a motor is turning is a mechanical
+    fact, and a microphone picks up ambient room/electrical noise that has
+    nothing to do with it, which raises the STOPPED-reading floor for no
+    benefit (a live rig with the motors fully powered down still read a
+    "running"-range energy because ambient mic pickup alone cleared the
+    threshold). Falls back to every channel present (i.e. mic) for a
+    mic-only sensor_config (features.py's test_single_sensor_mic_only) --
+    those nodes have no accelerometer to prefer, so mic is all there is."""
+    accel_bins = [b for chan, chan_bins in frame.bins.items()
+                  if chan.startswith("accel") for b in chan_bins]
+    bins = accel_bins or [b for chan_bins in frame.bins.values() for b in chan_bins]
     if not bins:
         return 0.0
     return math.sqrt(sum(b * b for b in bins) / len(bins))

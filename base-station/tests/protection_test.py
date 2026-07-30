@@ -39,7 +39,7 @@ SHORT_CONFIRM_WINDOW_S = 0.1
 
 
 def build(trip_motor_idx=1, with_publisher=True,
-           confirm_window_s=CONFIRM_WINDOW_S):
+           confirm_window_s=CONFIRM_WINDOW_S, motor_state_query=None):
     """A commissioned, HEALTHY node plus a ProtectionController wired to it,
     with the trip output armed against `trip_motor_idx` (None = unarmed)."""
     tmp_dir = tempfile.mkdtemp(prefix="protection_test_")
@@ -57,7 +57,8 @@ def build(trip_motor_idx=1, with_publisher=True,
     protection = ProtectionController(
         registry,
         publish_trip=(lambda idx: published.append(idx)) if with_publisher else None,
-        trip_delay_s=TRIP_DELAY_S, confirm_window_s=confirm_window_s)
+        trip_delay_s=TRIP_DELAY_S, confirm_window_s=confirm_window_s,
+        motor_state_query=motor_state_query)
     registry.on_status_change(protection.on_status_change)
     return registry, protection, published
 
@@ -211,6 +212,30 @@ def test_no_publisher_still_reports_idle_but_cannot_trip():
     print("with no publisher: no trips, but IDLE reporting still works: PASS")
 
 
+def test_already_stopped_machine_confirms_instantly_via_query():
+    """A machine an operator already stopped by hand (or that a prior trip
+    already parked at STOPPED) before this FAULT/trip fired can never
+    produce a fresh on_motor_state edge -- the edge already happened, so
+    on_motor_state won't be called again and the confirm window alone would
+    time out forever even though the machine really is stopped. The live
+    motor_state_query closes that gap by checking the current state directly
+    right when the trip publishes."""
+    registry, protection, published = build(
+        trip_motor_idx=1, confirm_window_s=SHORT_CONFIRM_WINDOW_S,
+        motor_state_query=lambda node_id: False)
+
+    registry.set_status(NODE_ID, NodeStatus.FAULT)
+    # Never call on_motor_state -- simulating the gate having already
+    # confirmed STOPPED before this trip fired, same setup as the
+    # unconfirmed-trip test above, just with the query wired in.
+    time.sleep(TRIP_DELAY_S + SETTLE_S)
+
+    assert published == [1], published
+    assert status(registry) == NodeStatus.TRIPPED, status(registry)
+    assert protection.snapshot(NODE_ID)["trip_failed"] is False
+    print("a machine already stopped before the trip fires confirms instantly via the live query: PASS")
+
+
 def test_tripped_node_restarted_without_a_fix_trips_again():
     registry, protection, published = build(trip_motor_idx=1)
 
@@ -243,6 +268,7 @@ if __name__ == "__main__":
         test_fault_flap_does_not_restart_or_double_the_countdown()
         test_unarmed_node_never_trips()
         test_no_publisher_still_reports_idle_but_cannot_trip()
+        test_already_stopped_machine_confirms_instantly_via_query()
         test_tripped_node_restarted_without_a_fix_trips_again()
         print("RESULT: PASS - protection ladder, IDLE/TRIPPED split, Hold and "
               "failed-trip handling all behave")

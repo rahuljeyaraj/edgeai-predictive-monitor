@@ -5,13 +5,15 @@ anything downstream (pipeline manager, gate, feature builder, ...)
 touches them.
 
 `bins` is keyed by SensorChannel value string (e.g. "mic"/"accel"), not
-fixed mic_bins/accel_bins fields -- so downstream code (gate.py's energy
-computation, manager.py's sensor_config inference, features.py's model
-vector) iterates whatever channels a frame actually carries instead of
-assuming exactly two, AND every key is guaranteed to be a real SensorChannel
-value -- that invariant is what lets those consumers treat every bins entry
-as model-relevant without checking. A channel absent from a frame is simply
-absent from this dict, not present-with-None.
+fixed mic_bins/accel_bins fields -- so downstream code (manager.py's
+sensor_config inference, features.py's model vector) iterates whatever
+channels a frame actually carries instead of assuming exactly two, AND every
+key is guaranteed to be a real SensorChannel value -- that invariant is what
+lets those consumers treat every bins entry as model-relevant without
+checking. A channel absent from a frame is simply absent from this dict, not
+present-with-None. (gate.py's energy computation is the one consumer that
+does filter by channel name -- accelerometer only, deliberately excluding
+mic -- see its own docstring.)
 
 `display_bins` holds spectrum channels that exist purely for dashboard
 display and deliberately do NOT correspond to any SensorChannel -- today

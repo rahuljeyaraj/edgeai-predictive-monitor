@@ -158,6 +158,17 @@ class MotorPipeline:
         self._motor_running: Optional[bool] = None
         self._seen_running = False
 
+    @property
+    def motor_running(self) -> Optional[bool]:
+        """Live read of the gate's confirmed state -- unlike on_motor_state's
+        edge callback (which only fires when the state *changes*), this
+        answers "is it stopped right now" even if the gate already confirmed
+        STOPPED before whoever's asking started watching. None before a
+        model exists to gate against."""
+        if self._inference is None:
+            return None
+        return self._inference.motor_state == MotorState.RUNNING
+
     def handle_frame(self, frame: SensorFrame, status: NodeStatus) -> None:
         self.frame_count += 1
 
@@ -403,3 +414,13 @@ class PipelineManager:
 
     def pipelines(self) -> Dict[str, MotorPipeline]:
         return dict(self._pipelines)
+
+    def is_running(self, node_id: str) -> Optional[bool]:
+        """protection/'s trip-confirmation query hook -- see
+        MotorPipeline.motor_running for why this has to be a live read
+        rather than riding the on_motor_state edge callback. None if this
+        node has no pipeline yet, or none scoring (not commissioned)."""
+        pipeline = self._pipelines.get(node_id)
+        if pipeline is None:
+            return None
+        return pipeline.motor_running
