@@ -2,16 +2,16 @@
 
 Status: **design-only, not yet implemented.** Written up so it can be
 reviewed and picked up in a later session. Companion to
-[demo-stepper-vibration-rig.md](demo-stepper-vibration-rig.md).
+[motor-driver.md](motor-driver.md).
 
 ## Why
 
 The contest requires "physical AI": inference has to trigger a real-world
 action, not just update a dashboard/LED/Telegram alert. Today
-`demo/stepper_rig/` (the vibration-source stepper motors) is a fully
+`motor-driver/` (the vibration-source stepper motors) is a fully
 standalone Arduino Uno, controlled only by a human running
-`demo/run_demo.py` (or `dashboard.html`) from a host laptop over USB serial.
-Nothing connects it to the base station's inference pipeline.
+`motor-driver/run_demo.py` (or `dashboard.html`) from a host laptop over USB
+serial. Nothing connects it to the base station's inference pipeline.
 
 The host laptop already IS the motor's controller — it has the stepper
 rig's Uno on USB and already runs `run_demo.py`. So the base station doesn't
@@ -32,14 +32,14 @@ as more commands are implemented." Add a `MOTOR_STOP` command the same way,
 addressed to a pseudo node-id like `"motor_rig"` (not a real registry entry,
 just an MQTT topic target). A new small script on the host laptop subscribes
 to that topic and calls the stepper rig's existing serial stop command
-(`d`, already implemented in `stepper_rig.ino` and already wrapped by
-`run_demo.py`'s `Rig.disable()`).
+(`d`, already implemented in `motor-driver/src/main.cpp` and already wrapped
+by `run_demo.py`'s `Rig.disable()`).
 
 ```
 InferencePipeline (base station) --FAULT--> Registry.on_status_change
    --> wire_motor_stop_publishing() --> MQTT epm/motor_rig/cmd
       --> (LAN) --> motor_stop_listener.py on host laptop
-         --> pyserial 'd' --> stepper_rig.ino --> EN_PIN HIGH (drivers off)
+         --> pyserial 'd' --> motor-driver firmware --> EN_PIN HIGH (drivers off)
 ```
 
 ### Tying a dashboard asset to a motor
@@ -58,7 +58,7 @@ give each asset an optional, operator-set link to a physical stop target:
 - A small REST endpoint (alongside the existing rename/set-device-type
   endpoints in `api/`) + a field in the asset's settings/expanded panel —
   e.g. "Physical stop target" — so an operator can type `motor_rig` for
-  whichever asset is the one wired to `demo/stepper_rig/`. Nothing else in
+  whichever asset is the one wired to `motor-driver/`. Nothing else in
   the dashboard changes; unset stays the default for every other asset.
 - `wire_motor_stop_publishing` (below) then generalizes: on transition to
   `FAULT`, if `registry.get(node_id).motor_stop_topic` is set, publish
@@ -123,7 +123,7 @@ live)
   (~line 404), same `if args.mqtt_host:` gate — this feature only works when
   MQTT is enabled, same as satellite ingestion already requires.
 
-**`demo/motor_stop_listener.py`** (new)
+**`motor-driver/motor_stop_listener.py`** (new)
 - Standalone script for the host laptop, next to `run_demo.py`. Takes
   `--port` (stepper rig's serial port) and `--mqtt-host` (base station's LAN
   IP) args.
@@ -132,7 +132,7 @@ live)
   present).
 - On a `MOTOR_STOP` message with `stop=True`: call `.disable()` on a `Rig`
   instance (reuse the class already in `run_demo.py` — import it directly,
-  `demo/` is one folder, no packaging needed).
+  `motor-driver/` is one folder, no packaging needed).
 - Decodes the 2-byte envelope locally (doesn't import
   `base-station/python/common/wire_protocol.py` — that package deploys to
   the UNO Q container, a different machine/filesystem entirely; a short
@@ -141,9 +141,9 @@ live)
   re-implements wire formats in C++ without sharing code with the Python
   side).
 
-**`docs/demo-stepper-vibration-rig.md`**
-- Note the deliberate, narrow exception to its own "keep the rig
-  independent" recommendation (lines 28-30): one one-way safety-stop signal
+**`docs/motor-driver.md`**
+- Note the deliberate, narrow exception to its own "keep the rig's control
+  path independent" recommendation (§1): one one-way safety-stop signal
   only, no RPM/speed coupling, added for the contest's physical-AI
   requirement.
 

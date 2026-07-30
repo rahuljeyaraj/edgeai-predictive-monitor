@@ -3,12 +3,13 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Stepper Rig Dashboard</title>
+<title>Motor Driver — Control Panel</title>
 <style>
   :root {
     --bg: #0f1115; --panel: #1a1e26; --panel2: #222834;
     --line: #2c333f; --text: #e6e9ef; --muted: #8b93a3;
-    --accent: #4f8cff; --accent2: #37c98b; --warn: #ffb020; --danger: #ff5470;
+    --accent: #4f8cff; --accent2: #37c98b; --accent3: #ffb020;
+    --warn: #ffb020; --danger: #ff5470;
     --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   }
   * { box-sizing: border-box; }
@@ -22,10 +23,6 @@
     padding: 14px 20px; border-bottom: 1px solid var(--line); background: var(--panel);
   }
   header h1 { font-size: 16px; margin: 0; font-weight: 600; }
-  .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--danger);
-         display: inline-block; margin-right: 7px; vertical-align: middle; }
-  .dot.on { background: var(--accent2); box-shadow: 0 0 8px var(--accent2); }
-  .status { color: var(--muted); font-size: 13px; }
   .spacer { flex: 1; }
   button {
     font: inherit; color: var(--text); background: var(--panel2);
@@ -36,11 +33,12 @@
   button:disabled { opacity: .45; cursor: not-allowed; }
   button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
   button.primary:hover:not(:disabled) { background: #3d7bf0; }
-  button.danger  { background: var(--danger); border-color: var(--danger); color: #fff; }
+  button.danger  { background: var(--danger); border-color: var(--danger); color: #fff; font-weight: 600; }
   button.ghost   { background: transparent; }
-  main { max-width: 1040px; margin: 0 auto; padding: 20px; display: grid; gap: 18px; }
-  .row { display: grid; gap: 18px; grid-template-columns: 1fr 1fr; }
-  @media (max-width: 760px) { .row { grid-template-columns: 1fr; } }
+  main { max-width: 1200px; margin: 0 auto; padding: 20px; display: grid; gap: 18px; }
+  .row { display: grid; gap: 18px; grid-template-columns: 1fr 1fr 1fr; }
+  @media (max-width: 980px) { .row { grid-template-columns: 1fr 1fr; } }
+  @media (max-width: 640px) { .row { grid-template-columns: 1fr; } }
   .card {
     background: var(--panel); border: 1px solid var(--line);
     border-radius: 14px; padding: 18px 20px;
@@ -51,9 +49,16 @@
   /* card header: title block on the left, on/off switch on the right */
   .cardhead { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
 
+  /* industrial state pill: RUNNING / STOPPED / OFF */
+  .pill { display: inline-block; font-size: 10.5px; font-weight: 700; letter-spacing: .04em;
+          padding: 2px 8px; border-radius: 999px; font-family: var(--mono); margin-top: 4px; }
+  .pill.running { background: rgba(55,201,139,.15); color: var(--accent2); }
+  .pill.stopped { background: rgba(255,176,32,.15); color: var(--accent3); }
+  .pill.off     { background: rgba(139,147,163,.15); color: var(--muted); }
+
   /* editable RPM readout (type a number OR drag the slider) */
   .readout { font-family: var(--mono); font-size: 34px; font-weight: 600;
-             display: flex; align-items: baseline; gap: 8px; }
+             display: flex; align-items: baseline; gap: 8px; margin-top: 10px; }
   .readout small { font-size: 15px; color: var(--muted); font-weight: 400; }
   input.rpmin {
     font: inherit; font-family: var(--mono); font-size: 34px; font-weight: 600;
@@ -64,8 +69,13 @@
 
   input[type=range] { width: 100%; margin: 14px 0 6px; accent-color: var(--accent); }
   .m2 input[type=range] { accent-color: var(--accent2); }
+  .m3 input[type=range] { accent-color: var(--accent3); }
   .ticks { display: flex; justify-content: space-between; color: var(--muted);
            font-size: 11px; font-family: var(--mono); }
+
+  /* commanded-vs-target ramp readout under the slider */
+  .rampline { display: flex; justify-content: space-between; color: var(--muted);
+              font-size: 11px; font-family: var(--mono); margin-top: 6px; }
 
   /* a disabled motor is dimmed but stays interactive (you can preset a speed) */
   .card.off .readout, .card.off input[type=range], .card.off .ticks { opacity: .4; }
@@ -73,7 +83,7 @@
   /* on/off + sync switch */
   .toggle { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; user-select: none; }
   .toggle .tlabel { font-size: 12px; color: var(--muted); font-family: var(--mono);
-                    min-width: 22px; text-align: right; }
+                    min-width: 30px; text-align: right; }
   .switch { position: relative; display: inline-block; width: 42px; height: 24px; }
   .switch input { position: absolute; opacity: 0; width: 0; height: 0; }
   .slide { position: absolute; inset: 0; background: var(--panel2); border: 1px solid var(--line);
@@ -83,6 +93,7 @@
   .switch input:checked + .slide { background: var(--accent); border-color: var(--accent); }
   .switch input:checked + .slide::before { transform: translateX(18px); background: #fff; }
   .m2 .switch input:checked + .slide { background: var(--accent2); border-color: var(--accent2); }
+  .m3 .switch input:checked + .slide { background: var(--accent3); border-color: var(--accent3); }
 
   /* sync bar */
   .sync { display: flex; align-items: center; gap: 12px; }
@@ -106,10 +117,9 @@
 </head>
 <body>
 <header>
-  <h1>⚙️ Stepper Rig</h1>
-  <span class="status"><span id="dot" class="dot"></span><span id="connState">disconnected</span></span>
+  <h1>⚙️ Motor Driver</h1>
   <div class="spacer"></div>
-  <button id="stopBtn" class="danger" disabled>■ Stop (disable both)</button>
+  <button id="stopBtn" class="danger" disabled>■ Stop All</button>
   <button id="connBtn" class="primary">Connect</button>
 </header>
 
@@ -122,41 +132,7 @@
     the Arduino Uno's port.</p>
   </div>
 
-  <div class="row">
-    <!-- Motor 1 -->
-    <div class="card" id="card1">
-      <div class="cardhead">
-        <div>
-          <h2>Motor 1 · X</h2>
-          <div class="sub">STEP D2 · DIR D5</div>
-        </div>
-        <label class="toggle">
-          <span class="tlabel" id="en1lbl">On</span>
-          <span class="switch"><input type="checkbox" id="en1" checked><span class="slide"></span></span>
-        </label>
-      </div>
-      <div class="readout"><input id="rpm1" class="rpmin" type="number" min="-1200" max="1200" step="1" value="0"> <small>RPM</small></div>
-      <input id="slider1" type="range" min="-1200" max="1200" step="1" value="0" />
-      <div class="ticks"><span>-1200</span><span>0</span><span>+1200</span></div>
-    </div>
-
-    <!-- Motor 2 -->
-    <div class="card m2" id="card2">
-      <div class="cardhead">
-        <div>
-          <h2>Motor 2 · Y</h2>
-          <div class="sub">STEP D3 · DIR D6</div>
-        </div>
-        <label class="toggle">
-          <span class="tlabel" id="en2lbl">On</span>
-          <span class="switch"><input type="checkbox" id="en2" checked><span class="slide"></span></span>
-        </label>
-      </div>
-      <div class="readout"><input id="rpm2" class="rpmin" type="number" min="-1200" max="1200" step="1" value="0"> <small>RPM</small></div>
-      <input id="slider2" type="range" min="-1200" max="1200" step="1" value="0" />
-      <div class="ticks"><span>-1200</span><span>0</span><span>+1200</span></div>
-    </div>
-  </div>
+  <div class="row" id="motorRow"></div>
 
   <!-- Sync -->
   <div class="card sync" id="syncCard">
@@ -164,8 +140,7 @@
       <span class="switch"><input type="checkbox" id="syncTgl"><span class="slide"></span></span>
     </label>
     <div class="txt">
-      <b>Sync</b> — Motor 2 (Y) follows Motor 1 (X)
-      <div class="hint">Turning this on copies X's speed to Y. Changing Y directly switches it back off.</div>
+      <b>Sync</b> — Motors 2 &amp; 3 follow Motor 1
     </div>
   </div>
 
@@ -184,9 +159,17 @@
 <script>
 "use strict";
 
-const RPM_MAX = 1200;  // full-step ceiling (jumpers removed) — matches firmware RPM_MAX
-const SEND_THROTTLE_MS = 80;   // rate-limit slider spam to the serial link
+const RPM_MAX = 1200;          // full-step ceiling (jumpers removed) — matches firmware RPM_MAX
 const BOOT_MS = 2200;          // Uno resets when the port opens; wait before driving
+
+// ---- Ramp configuration -----------------------------------------------------
+// The firmware applies whatever speed it's told IMMEDIATELY (no on-device
+// ramp — see motor-driver/src/main.cpp). So the dashboard is what keeps a
+// motor from stalling on a big jump: every target change (slider, typed
+// value, sync, enable toggle) is walked toward gradually here, at RAMP_RPM_S
+// rpm/second, and the intermediate values are what actually get sent.
+const RAMP_RPM_S = 150;        // matches the old firmware's proven-safe ramp rate
+const RAMP_TICK_MS = 100;      // how often the ramp advances and sends a command
 
 let port = null, writer = null, reader = null, keepReading = false;
 const enc = new TextEncoder();
@@ -195,16 +178,46 @@ const $ = (id) => document.getElementById(id);
 const consoleEl = $("console");
 
 // ---- Motor / sync state ----------------------------------------------------
-// Per-motor: commanded rpm (what the slider/box show) and enabled flag. What we
-// actually send is `en ? rpm : 0`, so a disabled motor won't rotate even with a
-// non-zero speed dialed in. The CNC shield shares one ~ENABLE line across both
-// drivers, so we only fully de-energize (send `d`) when BOTH motors are off.
+// Speed and run/stop are deliberately two independent things per motor:
+//   `rpm`  the dialed-in speed setting (slider/number box). Stopping a motor
+//          never touches this, so starting it again returns it to the same
+//          speed it was running at before.
+//   `run`  whether that speed is currently being applied.
+//   `sent` the last RPM actually sent to the Uno. The ramp walks `sent` toward
+//          `rpm` while running, or toward 0 while stopped.
+const MOTORS = [
+  { idx: 1, cls: "m1", label: "Motor 1 · X" },
+  { idx: 2, cls: "m2", label: "Motor 2 · Y" },
+  { idx: 3, cls: "m3", label: "Motor 3 · Z" },
+];
 const M = {
-  1: { rpm: 0, en: true },
-  2: { rpm: 0, en: true },
+  1: { rpm: 0, run: false, sent: null },
+  2: { rpm: 0, run: false, sent: null },
+  3: { rpm: 0, run: false, sent: null },
 };
 let sync = false;
 let energized = null;   // last e/d state pushed to the Uno (null = unknown)
+
+// ---- DOM scaffold (3 motor cards) -------------------------------------------
+function buildMotorCards() {
+  const row = $("motorRow");
+  row.innerHTML = MOTORS.map(m => `
+    <div class="card ${m.cls}" id="card${m.idx}">
+      <div class="cardhead">
+        <h2>${m.label}</h2>
+        <label class="toggle">
+          <span class="tlabel" id="run${m.idx}lbl">Stop</span>
+          <span class="switch"><input type="checkbox" id="run${m.idx}"><span class="slide"></span></span>
+        </label>
+      </div>
+      <span class="pill off" id="pill${m.idx}">STOPPED</span>
+      <div class="readout"><input id="rpm${m.idx}" class="rpmin" type="number" min="-1200" max="1200" step="1" value="0"> <small>RPM target</small></div>
+      <input id="slider${m.idx}" type="range" min="-1200" max="1200" step="1" value="0" />
+      <div class="ticks"><span>-1200</span><span>0</span><span>+1200</span></div>
+      <div class="rampline"><span>commanded: <b id="sent${m.idx}">0</b> RPM</span><span id="ramping${m.idx}"></span></div>
+    </div>
+  `).join("");
+}
 
 function log(kind, text) {
   const line = document.createElement("div");
@@ -218,8 +231,6 @@ function log(kind, text) {
 }
 
 function setConnected(on) {
-  $("dot").classList.toggle("on", on);
-  $("connState").textContent = on ? "connected · 115200" : "disconnected";
   $("connBtn").textContent = on ? "Disconnect" : "Connect";
   $("stopBtn").disabled = !on;
 }
@@ -233,14 +244,15 @@ async function connect() {
     setConnected(true);
     log("sys", "port opened — Uno is rebooting (~2s)…");
     readLoop();
-    // Uno boots energized at 90 RPM; sync it to the UI (both at 0) once it's up.
-    energized = true;
-    setTimeout(() => {
+    // Once the Uno finishes rebooting, drive its speed state to a known zero
+    // rather than assuming it — then let the ramp loop take over.
+    setTimeout(async () => {
       if (!port) return;
-      sendCmd("e");
-      pushMotor(1);
-      pushMotor(2);
-      log("sys", "ready — motors zeroed to match the dashboard");
+      await zeroAllMotors();
+      energized = false;
+      await sendCmd("d");
+      startRampLoop();
+      log("sys", "ready — all motors stopped");
     }, BOOT_MS);
   } catch (e) {
     log("err", "connect failed: " + e.message);
@@ -248,6 +260,9 @@ async function connect() {
 }
 
 async function disconnect() {
+  stopRampLoop();
+  [1, 2, 3].forEach(idx => { M[idx].run = false; paintRun(idx); });
+  await zeroAllMotors();         // leave the Uno holding 0, not a stale speed
   await sendCmd("d");            // safety: coast the motors on disconnect
   keepReading = false;
   try { if (reader) await reader.cancel(); } catch (_) {}
@@ -255,6 +270,7 @@ async function disconnect() {
   try { if (port) await port.close(); } catch (_) {}
   port = null;
   energized = null;
+  [1, 2, 3].forEach(idx => { M[idx].sent = null; });
   setConnected(false);
   log("sys", "disconnected");
 }
@@ -295,100 +311,149 @@ async function sendCmd(cmd) {
   }
 }
 
-// ---- Throttled per-target senders -----------------------------------------
-function makeThrottledSender(prefix) {
-  let last = 0, pending = null, timer = null;
-  return (rpm) => {
-    const cmd = `${prefix} ${rpm}`;
-    const now = Date.now();
-    if (now - last >= SEND_THROTTLE_MS) {
-      last = now; sendCmd(cmd);
-    } else {
-      pending = cmd;
-      if (!timer) timer = setTimeout(() => {
-        timer = null; last = Date.now();
-        if (pending) { sendCmd(pending); pending = null; }
-      }, SEND_THROTTLE_MS - (now - last));
-    }
-  };
-}
-const senders = { 1: makeThrottledSender("1"), 2: makeThrottledSender("2") };
-
 function clampRpm(v) {
   v = Math.round(Number(v));
   if (!isFinite(v)) v = 0;
   return Math.max(-RPM_MAX, Math.min(RPM_MAX, v));
 }
 
-// ---- Command plumbing ------------------------------------------------------
-// Send the motor's effective speed (0 when disabled) plus keep the shared driver
-// enable in sync: energize while either motor is on, de-energize when both off.
-function pushMotor(idx) {
-  const want = M[1].en || M[2].en;
-  if (energized !== want) { energized = want; sendCmd(want ? "e" : "d"); }
-  senders[idx](M[idx].en ? M[idx].rpm : 0);
+// ---- Ramp scheduler ---------------------------------------------------------
+// The firmware has no acceleration curve of its own (see main.cpp), so this
+// loop IS the ramp: on a fixed cadence, walk each motor's `sent` value toward
+// its `rpm` target (or 0 if disabled) by at most RAMP_RPM_S worth of RPM, and
+// send the result. Ticking continues in the background for as long as
+// connected — a motor just sits idle once `sent` reaches its target.
+let rampTimer = null;
+function rampTargetFor(idx) { return M[idx].run ? M[idx].rpm : 0; }
+
+// Force every motor to a commanded 0 on the Uno itself, not just in this
+// page's state. The firmware remembers the last speed it was given and the
+// shared ~ENABLE line re-applies it to ALL motors the moment anything sends
+// `e` — so `d` alone does NOT make a motor safe. Skipping these writes was
+// what made an idle motor jump back to life when a different motor started.
+async function zeroAllMotors() {
+  for (const idx of [1, 2, 3]) {
+    M[idx].sent = 0;
+    await sendCmd(`${idx} 0`);
+    paintSent(idx);
+    paintRamping(idx, false);
+  }
 }
 
-// Reflect state into the DOM without firing input/change events (no send).
+function rampTick() {
+  const maxDelta = RAMP_RPM_S * (RAMP_TICK_MS / 1000);
+  for (const idx of [1, 2, 3]) {
+    const target = rampTargetFor(idx);
+    let sent = M[idx].sent;
+    if (sent === null) continue;      // not connected / not yet booted
+    if (sent === target) { paintRamping(idx, false); continue; }
+    const diff = target - sent;
+    sent += Math.sign(diff) * Math.min(Math.abs(diff), maxDelta);
+    // Snap once within a fraction of an RPM to avoid an endless tiny tail.
+    if (Math.abs(target - sent) < 0.5) sent = target;
+    M[idx].sent = sent;
+    sendCmd(`${idx} ${sent.toFixed(1)}`);
+    paintSent(idx);
+    paintRamping(idx, sent !== target);
+  }
+}
+
+function startRampLoop() {
+  if (rampTimer) return;
+  rampTimer = setInterval(() => { rampTick(); refreshEnergize(); }, RAMP_TICK_MS);
+}
+function stopRampLoop() {
+  if (!rampTimer) return;
+  clearInterval(rampTimer);
+  rampTimer = null;
+}
+
+// Energize while ANY motor is running, de-energize only once ALL are stopped —
+// the CNC shield shares one ~ENABLE line across all three driver slots.
+// Safe only because every stopped motor has already been commanded to 0 RPM
+// (see zeroAllMotors / userSetRun); otherwise this `e` would restart them.
+function refreshEnergize() {
+  const want = M[1].run || M[2].run || M[3].run;
+  if (energized !== want) { energized = want; sendCmd(want ? "e" : "d"); }
+}
+
+// ---- Painting ---------------------------------------------------------------
 function paintRpm(idx) {
   $("slider" + idx).value = M[idx].rpm;
   $("rpm" + idx).value = M[idx].rpm;
 }
-function paintEn(idx) {
-  $("en" + idx).checked = M[idx].en;
-  $("en" + idx + "lbl").textContent = M[idx].en ? "On" : "Off";
-  $("card" + idx).classList.toggle("off", !M[idx].en);
+function paintSent(idx) {
+  $("sent" + idx).textContent = M[idx].sent === null ? "—" : Math.round(M[idx].sent);
+}
+function paintRamping(idx, ramping) {
+  $("ramping" + idx).textContent = ramping ? "ramping…" : "";
+}
+function paintRun(idx) {
+  $("run" + idx).checked = M[idx].run;
+  $("run" + idx + "lbl").textContent = M[idx].run ? "Run" : "Stop";
+  $("card" + idx).classList.toggle("off", !M[idx].run);
+  paintPill(idx);
+}
+function paintPill(idx) {
+  const pill = $("pill" + idx);
+  if (!M[idx].run) { pill.textContent = "STOPPED"; pill.className = "pill off"; }
+  else if (M[idx].rpm === 0) { pill.textContent = "IDLE"; pill.className = "pill stopped"; }
+  else { pill.textContent = "RUNNING"; pill.className = "pill running"; }
 }
 function paintSync() {
   $("syncTgl").checked = sync;
   $("syncCard").classList.toggle("on", sync);
 }
 
-// ---- User actions ----------------------------------------------------------
+// ---- User actions ------------------------------------------------------------
 function userSetSpeed(idx, v) {
   M[idx].rpm = clampRpm(v);
   paintRpm(idx);
-  if (idx === 1 && sync) {          // X drives Y while synced
-    M[2].rpm = M[1].rpm;
-    paintRpm(2);
-    pushMotor(2);
-  } else if (idx === 2 && sync) {   // a direct Y change breaks the link
+  paintPill(idx);
+  if (idx === 1 && sync) {          // motor 1 drives 2 & 3 while synced
+    [2, 3].forEach(j => { M[j].rpm = M[1].rpm; paintRpm(j); paintPill(j); });
+  } else if ((idx === 2 || idx === 3) && sync) {   // a direct change breaks the link
     sync = false;
     paintSync();
   }
-  pushMotor(idx);
 }
 
-function userSetEnable(idx, on) {
-  M[idx].en = on;
-  paintEn(idx);
-  pushMotor(idx);
+// Run/stop only gates whether `rpm` is applied — it never edits `rpm` itself,
+// so a motor restarted later ramps back to the speed it was already set to.
+function userSetRun(idx, on) {
+  M[idx].run = on;
+  paintRun(idx);
 }
 
 function userSetSync(on) {
   sync = on;
   paintSync();
-  if (on) {                          // adopt X's current speed immediately
-    M[2].rpm = M[1].rpm;
-    paintRpm(2);
-    pushMotor(2);
+  if (on) {                          // adopt motor 1's current target immediately
+    [2, 3].forEach(j => { M[j].rpm = M[1].rpm; paintRpm(j); paintPill(j); });
   }
 }
 
-// ---- UI wiring -------------------------------------------------------------
-[1, 2].forEach((idx) => {
+// ---- UI wiring ----------------------------------------------------------------
+buildMotorCards();
+[1, 2, 3].forEach((idx) => {
   $("slider" + idx).addEventListener("input", (e) => userSetSpeed(idx, e.target.value));
   $("rpm" + idx).addEventListener("change", (e) => userSetSpeed(idx, e.target.value));
-  $("en" + idx).addEventListener("change", (e) => userSetEnable(idx, e.target.checked));
+  $("run" + idx).addEventListener("change", (e) => userSetRun(idx, e.target.checked));
+  paintRun(idx);
 });
 $("syncTgl").addEventListener("change", (e) => userSetSync(e.target.checked));
 
 // header + misc buttons
 $("connBtn").addEventListener("click", () => (port ? disconnect() : connect()));
-$("stopBtn").addEventListener("click", () => {   // kill switch: both off -> `d`
-  M[1].en = false; M[2].en = false;
-  paintEn(1); paintEn(2);
-  pushMotor(1); pushMotor(2);
+// Stop All: skip the ramp and cut power now. Speed settings are preserved —
+// this stops the motors, it does not reset how fast they were dialed to.
+$("stopBtn").addEventListener("click", async () => {
+  stopRampLoop();
+  [1, 2, 3].forEach(idx => { M[idx].run = false; paintRun(idx); });
+  await zeroAllMotors();   // must precede `d`, or `e` later restarts them
+  energized = false;
+  await sendCmd("d");
+  startRampLoop();
 });
 $("clearBtn").addEventListener("click", () => (consoleEl.innerHTML = ""));
 $("helpBtn").addEventListener("click", () => sendCmd("h"));
