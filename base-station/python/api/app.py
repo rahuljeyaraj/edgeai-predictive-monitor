@@ -173,6 +173,7 @@ def create_app(registry: Registry, history_store: HistoryStore,
                 spi_consumer: Optional[SpiConsumer] = None,
                 alert_store: Optional[AlertStore] = None,
                 telegram_bot=None,
+                telegram_bot_username: Optional[str] = None,
                 ei=None,
                 wifi_status: Optional[WifiStatusPoller] = None,
                 on_startup: Optional[callable] = None) -> FastAPI:
@@ -233,6 +234,7 @@ def create_app(registry: Registry, history_store: HistoryStore,
     app.state.spi_consumer = spi_consumer
     app.state.alert_store = alert_store
     app.state.telegram_bot = telegram_bot
+    app.state.telegram_bot_username = telegram_bot_username
     app.state.ei = ei
     app.state.wifi_status = wifi_status
     app.state.connection_manager = ConnectionManager()
@@ -394,13 +396,14 @@ def create_app(registry: Registry, history_store: HistoryStore,
 
     @app.get("/alerts/telegram/status")
     def telegram_status():
-        # bot_username is this app's own env var (not brick-managed, see
-        # app.yaml's comment) -- surfaced here so the frontend can build a
-        # helpful "not configured yet" message rather than just hiding the
-        # connect button with no explanation.
+        # bot_username comes from Telegram's own getMe API at startup
+        # (main.py's build_telegram_alerts), not a second env var --
+        # surfaced here so the frontend can build a helpful "not
+        # configured yet" message rather than just hiding the connect
+        # button with no explanation.
         return {
             "configured": app.state.telegram_bot is not None,
-            "bot_username": os.getenv("TELEGRAM_BOT_USERNAME"),
+            "bot_username": app.state.telegram_bot_username,
         }
 
     @app.post("/alerts/telegram/connect")
@@ -408,9 +411,10 @@ def create_app(registry: Registry, history_store: HistoryStore,
         if app.state.telegram_bot is None or app.state.alert_store is None:
             raise HTTPException(status_code=503,
                                  detail="Telegram alerts not configured (TELEGRAM_BOT_TOKEN unset)")
-        bot_username = os.getenv("TELEGRAM_BOT_USERNAME")
+        bot_username = app.state.telegram_bot_username
         if not bot_username:
-            raise HTTPException(status_code=503, detail="TELEGRAM_BOT_USERNAME not set")
+            raise HTTPException(status_code=503,
+                                 detail="Telegram bot username unavailable (getMe failed at startup)")
         token = app.state.alert_store.create_connect_token()
         return {"token": token, "deep_link": f"https://t.me/{bot_username}?start={token}"}
 

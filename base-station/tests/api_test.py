@@ -153,7 +153,8 @@ class ApiUnderTest:
     registry/history state never leaks between tests."""
 
     def __init__(self, tmp_dir: str, node_id=NODE_ID, sensor_config=frozenset({SensorChannel.MIC}),
-                 min_frames=5, epochs=300, telegram_bot=None, ei_totp_code=None, ei_fail_job=None):
+                 min_frames=5, epochs=300, telegram_bot=None, telegram_bot_username=None,
+                 ei_totp_code=None, ei_fail_job=None):
         registry_path = os.path.join(tmp_dir, "registry.json")
         self.registry = Registry(registry_path)
         self.registry.add(node_id, sensor_config=sensor_config)
@@ -174,7 +175,8 @@ class ApiUnderTest:
             self.ei_models_dir, self.ei_scaling_path, client=self.ei_client)
         self.app = create_app(self.registry, self.history, self.commissioning, self.capture,
                                manager=self.manager,
-                               alert_store=self.alert_store, telegram_bot=telegram_bot, ei=self.ei)
+                               alert_store=self.alert_store, telegram_bot=telegram_bot,
+                               telegram_bot_username=telegram_bot_username, ei=self.ei)
         self._client_cm = TestClient(self.app)
         self.client = self._client_cm.__enter__()  # runs lifespan, so broadcast_threadsafe works
 
@@ -1021,9 +1023,7 @@ def test_telegram_connect_requires_configured_bot(tmp_dir):
 
 
 def test_telegram_connect_returns_token_and_deep_link(tmp_dir):
-    api = ApiUnderTest(tmp_dir, telegram_bot=FakeTelegramBot())
-    old_username = os.environ.get("TELEGRAM_BOT_USERNAME")
-    os.environ["TELEGRAM_BOT_USERNAME"] = "test_epm_bot"
+    api = ApiUnderTest(tmp_dir, telegram_bot=FakeTelegramBot(), telegram_bot_username="test_epm_bot")
     try:
         status, body = api.request("GET", "/alerts/telegram/status")
         assert status == 200 and body["configured"] is True, (status, body)
@@ -1037,10 +1037,20 @@ def test_telegram_connect_returns_token_and_deep_link(tmp_dir):
         assert api.alert_store.consume_token(body["token"]) is True
         print("POST /alerts/telegram/connect returns a real token + deep link: PASS")
     finally:
-        if old_username is None:
-            os.environ.pop("TELEGRAM_BOT_USERNAME", None)
-        else:
-            os.environ["TELEGRAM_BOT_USERNAME"] = old_username
+        api.stop()
+
+
+def test_telegram_connect_503s_when_username_unavailable(tmp_dir):
+    # bot configured (token set, brick constructed) but getMe failed at
+    # startup (e.g. no network yet) -- build_telegram_alerts falls back to
+    # bot_username=None in that case (main.py), and connect() must not
+    # hand back a broken deep link.
+    api = ApiUnderTest(tmp_dir, telegram_bot=FakeTelegramBot(), telegram_bot_username=None)
+    try:
+        status, body = api.request("POST", "/alerts/telegram/connect")
+        assert status == 503, (status, body)
+        print("POST /alerts/telegram/connect 503s when bot username is unavailable: PASS")
+    finally:
         api.stop()
 
 
@@ -1118,6 +1128,7 @@ def main():
     test_telegram_status_reports_not_configured_by_default(tempfile.mkdtemp(dir=tmp_dir))
     test_telegram_connect_requires_configured_bot(tempfile.mkdtemp(dir=tmp_dir))
     test_telegram_connect_returns_token_and_deep_link(tempfile.mkdtemp(dir=tmp_dir))
+    test_telegram_connect_503s_when_username_unavailable(tempfile.mkdtemp(dir=tmp_dir))
     test_telegram_subscriber_prefs_update_broadcasts_and_disconnect_removes(tempfile.mkdtemp(dir=tmp_dir))
 
     print("RESULT: PASS - REST endpoints reflect registry/commissioning changes, and "

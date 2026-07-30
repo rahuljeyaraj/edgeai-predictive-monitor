@@ -15,14 +15,18 @@ Run with PYTHONPATH covering base-station/python/registry, .../alerts:
     PYTHONPATH=base-station/python/registry:base-station/python/alerts \\
         python3 base-station/tests/telegram_alerts_test.py
 """
+import io
+import json
 import os
 import sys
 import tempfile
 import time
+import urllib.error
+import urllib.request
 
 from registry import NodeStatus, Registry, SensorChannel
 from alert_store import AlertStore
-from telegram_alerts import wire_telegram_alerts
+from telegram_alerts import fetch_bot_username, wire_telegram_alerts
 
 
 class FakeSender:
@@ -236,6 +240,64 @@ def test_no_alert_on_initial_commissioning_to_healthy(tmp_dir):
     print("commissioning straight to HEALTHY (never warning/fault) sends nothing: PASS")
 
 
+class FakeResponse:
+    def __init__(self, body_bytes):
+        self._body = body_bytes
+
+    def read(self):
+        return self._body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc):
+        return False
+
+
+def test_fetch_bot_username_parses_getme_result():
+    original = urllib.request.urlopen
+    try:
+        body = json.dumps({"ok": True, "result": {"id": 1, "username": "my_cool_bot"}}).encode()
+        urllib.request.urlopen = lambda url, timeout=None: FakeResponse(body)
+        assert fetch_bot_username("fake-token") == "my_cool_bot"
+        print("fetch_bot_username parses a successful getMe response: PASS")
+    finally:
+        urllib.request.urlopen = original
+
+
+def test_fetch_bot_username_raises_on_api_error():
+    original = urllib.request.urlopen
+    try:
+        body = json.dumps({"ok": False, "error_code": 401, "description": "Unauthorized"}).encode()
+        urllib.request.urlopen = lambda url, timeout=None: FakeResponse(body)
+        try:
+            fetch_bot_username("bad-token")
+            assert False, "expected ValueError on ok=False"
+        except ValueError:
+            pass
+        print("fetch_bot_username raises on ok=False (e.g. bad token): PASS")
+    finally:
+        urllib.request.urlopen = original
+
+
+def test_fetch_bot_username_raises_on_network_error():
+    original = urllib.request.urlopen
+
+    def raise_http_error(url, timeout=None):
+        raise urllib.error.HTTPError(url, 500, "error", {}, io.BytesIO(b""))
+
+    try:
+        urllib.request.urlopen = raise_http_error
+        try:
+            fetch_bot_username("any-token")
+            assert False, "expected an exception on a failed request"
+        except urllib.error.HTTPError:
+            pass
+        print("fetch_bot_username propagates a failed request (caller decides how to handle): PASS")
+    finally:
+        urllib.request.urlopen = original
+
+
 def main():
     tmp_dir = tempfile.mkdtemp(prefix="telegram_alerts_test_")
 
@@ -247,6 +309,9 @@ def main():
     test_node_scope_filters_alerts(tempfile.mkdtemp(dir=tmp_dir))
     test_recovery_to_healthy_sends_all_clear(tempfile.mkdtemp(dir=tmp_dir))
     test_no_alert_on_initial_commissioning_to_healthy(tempfile.mkdtemp(dir=tmp_dir))
+    test_fetch_bot_username_parses_getme_result()
+    test_fetch_bot_username_raises_on_api_error()
+    test_fetch_bot_username_raises_on_network_error()
 
     print("RESULT: PASS - telegram_alerts.py's /start /stop handling and status-change "
           "alert wiring all behave as expected")

@@ -17,8 +17,11 @@ Telegram chat back to the dashboard session that requested the connection
 (docs/DASHBOARD_IDEAS_BACKLOG.md's flow). So this registers its own /start
 command instead, left disabled on the brick itself.
 """
+import json
 import logging
 import threading
+import urllib.error
+import urllib.request
 from typing import Callable, Optional
 
 from alert_store import AlertStore
@@ -56,6 +59,23 @@ def build_telegram_bot():
     actually fire in practice."""
     from arduino.app_bricks.telegram_bot import TelegramBot
     return TelegramBot()
+
+
+def fetch_bot_username(token: str, timeout: float = 10.0) -> str:
+    """Calls Telegram's own getMe API directly (not the brick -- it has no
+    accessor for this) to resolve the bot's @username from its token, so
+    the dashboard's "Connect Telegram" deep link (t.me/<username>?start=
+    <token>) never needs a second, separately-configured
+    TELEGRAM_BOT_USERNAME value that could drift from the token actually
+    in use. Raises OSError/ValueError on any network or API failure --
+    callers should treat that as "Telegram alerts unavailable this boot"
+    rather than crashing startup over it."""
+    url = f"https://api.telegram.org/bot{token}/getMe"
+    with urllib.request.urlopen(url, timeout=timeout) as resp:
+        payload = json.loads(resp.read())
+    if not payload.get("ok"):
+        raise ValueError(f"Telegram getMe failed: {payload}")
+    return payload["result"]["username"]
 
 
 def wire_telegram_alerts(registry: Registry, bot, alert_store: AlertStore,

@@ -212,16 +212,25 @@ def build_telegram_alerts(registry: Registry, alert_store: AlertStore, on_subscr
     """Constructs the arduino:telegram_bot brick and wires it to `registry`
     + `alert_store` (docs/DASHBOARD_IDEAS_BACKLOG.md's Telegram alerts).
     Only called when TELEGRAM_BOT_TOKEN is set (main() below) -- Telegram
-    alerts are opt-in, same as --mqtt-host satellite ingestion. Returns the
-    bot; caller is responsible for .start()/.stop() (deferred to
+    alerts are opt-in, same as --mqtt-host satellite ingestion. Returns
+    (bot, bot_username) -- bot_username comes from Telegram's own getMe
+    API (not a second env var, see fetch_bot_username's docstring) and is
+    None if that call fails (e.g. no network yet at boot), in which case
+    the dashboard's Connect flow reports Telegram as unconfigured until a
+    restart. Caller is responsible for bot.start()/.stop() (deferred to
     start_ingestion() below, same reason spi_consumer/gpu_perf are: this
     needs app.state.loop set before any inbound Telegram message could
     trigger a broadcast_threadsafe call)."""
-    from telegram_alerts import build_telegram_bot, wire_telegram_alerts
+    from telegram_alerts import build_telegram_bot, fetch_bot_username, wire_telegram_alerts
 
     bot = build_telegram_bot()
     wire_telegram_alerts(registry, bot, alert_store, on_subscriber_change=on_subscriber_change)
-    return bot
+    try:
+        bot_username = fetch_bot_username(os.environ["TELEGRAM_BOT_TOKEN"])
+    except (OSError, ValueError, KeyError):
+        logging.exception("Telegram getMe failed -- Connect Telegram will be unavailable this boot")
+        bot_username = None
+    return bot, bot_username
 
 
 def _default_mqtt_host() -> str | None:
@@ -391,8 +400,10 @@ def main():
     # `configured: false` and the dashboard's Alerts tab hides the connect
     # flow rather than erroring.
     telegram_bot = None
+    telegram_bot_username = None
     if os.getenv("TELEGRAM_BOT_TOKEN"):
-        telegram_bot = build_telegram_alerts(registry, alert_store, on_subscriber_change)
+        telegram_bot, telegram_bot_username = build_telegram_alerts(
+            registry, alert_store, on_subscriber_change)
 
     stop_event = threading.Event()
     mqtt_thread = None
@@ -421,7 +432,8 @@ def main():
 
     app = create_app(registry, history, commissioning, capture=capture, manager=manager,
                       perf_monitor=perf_monitor, gpu_perf=gpu_perf, spi_consumer=spi_consumer,
-                      alert_store=alert_store, telegram_bot=telegram_bot, ei=ei_controller,
+                      alert_store=alert_store, telegram_bot=telegram_bot,
+                      telegram_bot_username=telegram_bot_username, ei=ei_controller,
                       wifi_status=wifi_status, on_startup=start_ingestion)
 
     # Mounted after every REST/WebSocket route above is registered, so

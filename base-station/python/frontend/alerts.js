@@ -41,8 +41,7 @@ const Alerts = (() => {
       el.innerHTML = `<div class="perf-card alerts-connect__card">
         <div class="alerts-connect__title">Telegram alerts</div>
         <div class="perf-empty">Not configured yet -- set TELEGRAM_BOT_TOKEN (the
-          arduino:telegram_bot brick's secret, via App Lab) and TELEGRAM_BOT_USERNAME
-          for this app, then restart.</div>
+          arduino:telegram_bot brick's secret, via App Lab), then restart.</div>
       </div>`;
       return;
     }
