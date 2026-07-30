@@ -21,7 +21,7 @@ class CommissioningController:
     (pipeline/commissioning.py, S3.5/M7)."""
 
     def __init__(self, registry: Registry, models_dir: str,
-                 gate_factory: Callable[[], MotorStateGate], min_frames: int = 50,
+                 gate_factory: Callable[[str], MotorStateGate], min_frames: int = 50,
                  epochs: int = 300):
         self._registry = registry
         self._models_dir = models_dir
@@ -34,7 +34,8 @@ class CommissioningController:
         if node_id in self._sessions:
             raise CommissioningError(f"commissioning already in progress for {node_id!r}")
         session = CommissioningSession(self._registry, self._models_dir, node_id,
-                                        self._gate_factory(), self._min_frames, self._epochs)
+                                        self._gate_factory(node_id), self._min_frames,
+                                        self._epochs)
         session.start()
         self._sessions[node_id] = session
 

@@ -164,6 +164,14 @@ body {
   --color-new: #22d3ee;
   --color-paused: #717171;
   --color-offline: #4d4d4d;
+  /* Machinery protection (docs/MOTOR_STOP_PLAN.md). Tripped is a deeper,
+     darker red than --color-fault: same family, because it IS the fault's
+     consequence, but distinguishable side by side so a fleet list with both
+     doesn't read as one undifferentiated block of red. Idle is blue -- a
+     machine an operator switched off is a normal condition, not a degraded
+     one, so it must not borrow the greys that mean "no data from this node". */
+  --color-tripped: #b91c1c;
+  --color-idle: #3b82f6;
 }
 
 .tile--all { --accent: var(--color-all); }
@@ -173,6 +181,8 @@ body {
 .tile--new { --accent: var(--color-new); }
 .tile--paused { --accent: var(--color-paused); }
 .tile--offline { --accent: var(--color-offline); }
+.tile--tripped { --accent: var(--color-tripped); }
+.tile--idle { --accent: var(--color-idle); }
 
 @media (max-width: 380px) {
   .summary__row {
@@ -233,6 +243,8 @@ body {
 .motor-row-group--new { --accent: var(--color-new); }
 .motor-row-group--paused { --accent: var(--color-paused); }
 .motor-row-group--offline { --accent: var(--color-offline); }
+.motor-row-group--tripped { --accent: var(--color-tripped); }
+.motor-row-group--idle { --accent: var(--color-idle); }
 
 .motor-row {
   display: flex;
@@ -1919,4 +1931,101 @@ a.btn-label {
   font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
   font-size: 13px;
   color: #94a3b8;
+}
+
+/* ---- Machinery protection (docs/MOTOR_STOP_PLAN.md) -----------------
+   The expanded panel's only non-chart block, so it gets its own idiom
+   rather than borrowing .chart-section (which exists to wrap a Plotly
+   slot). Sits above the charts because during a trip countdown it is the
+   most time-critical thing on screen, and the only part an operator can
+   act on. */
+.protection {
+  /* flex 1 1 100% because .motor-row__detail-main is a wrapping flex row --
+     without it this sits as a narrow column beside the charts instead of
+     taking its own full-width band above them. */
+  flex: 1 1 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px 16px;
+  margin-bottom: 18px;
+  background-color: #131c2b;
+  border: 1px solid #1e293b;
+  border-radius: 10px;
+}
+
+.protection__title {
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 13px;
+  font-weight: 600;
+  color: #94a3b8;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.protection__row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}
+
+/* Fixed width so the two rows' values line up into a column without a
+   table or grid -- the label text lengths differ. */
+.protection__label {
+  flex: 0 0 96px;
+  font-size: 14px;
+  color: #94a3b8;
+}
+
+.protection__select {
+  flex: 0 1 260px;
+  padding: 7px 10px;
+  font-size: 14px;
+  font-family: inherit;
+  color: #e2e8f0;
+  background-color: #0f172a;
+  border: 1px solid #334155;
+  border-radius: 6px;
+}
+
+.protection__select:focus {
+  outline: none;
+  border-color: var(--color-idle);
+}
+
+.protection__select option:disabled {
+  color: #64748b;
+}
+
+.protection__state {
+  font-size: 14px;
+  color: #e2e8f0;
+}
+
+/* A live countdown and a failed trip are the two states that must pull the
+   eye. Counting-down borrows --color-fault (the alarm is still current);
+   failed uses the darker tripped red plus bold, because "we tried to stop
+   this machine and it did not stop" is the most serious line this panel
+   can show. */
+.protection__state--counting {
+  color: var(--color-fault);
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+.protection__state--failed {
+  color: var(--color-tripped);
+  font-weight: 700;
+}
+
+/* Same "author display beats the [hidden] UA rule at equal specificity" fix
+   this file already needs for .device-type-suggestions, .motor-row__capture-
+   suggestions and .record-drawer: .btn-label sets display:inline-flex, which
+   wins over the browser's `[hidden] { display: none }`, so the Hold button
+   stayed visible with no trip pending. It must only exist while a countdown
+   is actually running -- offering to Hold a trip that already fired (or was
+   never scheduled) is a button that silently does nothing. */
+.protection .btn-label[hidden] {
+  display: none;
 }

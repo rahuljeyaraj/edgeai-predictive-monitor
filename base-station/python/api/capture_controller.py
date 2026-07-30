@@ -15,7 +15,7 @@ from capture import (CaptureError, CaptureSession, list_labels, list_captures,
 
 class CaptureController:
     def __init__(self, registry: Registry, captures_dir: str,
-                 gate_factory: Callable[[], MotorStateGate]):
+                 gate_factory: Callable[[str], MotorStateGate]):
         self._registry = registry
         self._captures_dir = captures_dir
         self._gate_factory = gate_factory
@@ -45,7 +45,7 @@ class CaptureController:
         session = self._sessions.get(node_id)
         if session is None:
             session = CaptureSession(self._registry, self._captures_dir, node_id,
-                                      self._gate_factory())
+                                      self._gate_factory(node_id))
             self._sessions[node_id] = session
         return session
 

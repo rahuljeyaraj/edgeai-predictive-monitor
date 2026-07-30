@@ -122,7 +122,7 @@ def test_toggle_hides_and_restores_visibility():
     print("disable/enable toggles stats visibility, prior data survives the toggle: PASS")
 
 
-def gate_factory() -> MotorStateGate:
+def gate_factory(node_id: str = "n") -> MotorStateGate:
     return MotorStateGate(threshold=0.5, debounce_frames=1)
 
 

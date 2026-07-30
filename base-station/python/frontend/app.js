@@ -17,11 +17,19 @@ const OFFLINE_AFTER_S = 30;
 // "all" isn't a bucketFor() outcome -- it's the unfiltered total, shown
 // as its own tile so a click can reset whatever per-status filter is
 // applied to the fleet listing.
+// "tripped" and "idle" both mean "this machine isn't turning" (registry.py's
+// NodeStatus) and both get their own tile, including "idle" -- a bucket with
+// no tile would be absent from REAL_BUCKETS, so it could never be in
+// selectedBuckets and every node in it would silently vanish from the fleet
+// list. Zero-count tiles are hidden below, so neither costs anything on a
+// fleet that has no stopped machines.
 const SUMMARY_TILES = [
   { bucket: "all", label: "Assets" },
+  { bucket: "tripped", label: "Tripped" },
   { bucket: "fault", label: "Faulty" },
   { bucket: "warning", label: "Warning" },
   { bucket: "healthy", label: "Healthy" },
+  { bucket: "idle", label: "Idle" },
   { bucket: "new", label: "New" },
   { bucket: "paused", label: "Paused" },
   { bucket: "offline", label: "Offline" },
@@ -49,12 +57,21 @@ function bucketFor(entry) {
   if (entry.status === "healthy") return "healthy";
   if (entry.status === "warning") return "warning";
   if (entry.status === "fault") return "fault";
+  // Both checked after staleness, deliberately -- unlike "paused" above.
+  // Paused is an operator's standing intent, so it outranks going quiet, but a
+  // stopped machine we've genuinely lost contact with is offline first and
+  // stopped second, exactly as a faulted node that goes quiet reads offline.
+  if (entry.status === "tripped") return "tripped";
+  if (entry.status === "idle") return "idle";
   // uncommissioned, commissioning_collecting, commissioning_training
   return "new";
 }
 
 function renderSummary(nodes) {
-  const counts = { all: 0, fault: 0, warning: 0, healthy: 0, new: 0, paused: 0, offline: 0 };
+  // Built from REAL_BUCKETS rather than written out by hand, so adding a
+  // bucket to SUMMARY_TILES can't leave an undefined count here.
+  const counts = { all: 0 };
+  for (const bucket of REAL_BUCKETS) counts[bucket] = 0;
   for (const entry of Object.values(nodes)) {
     counts.all += 1;
     counts[bucketFor(entry)] += 1;
@@ -121,7 +138,119 @@ const STATUS_LABEL = {
   warning: "Warning",
   fault: "Faulty",
   paused: "Paused",
+  // "Stopped" rather than "Idle" for the pill: it says what an operator can
+  // see at the machine. The tile keeps the shorter "Idle".
+  idle: "Stopped",
+  tripped: "Tripped",
 };
+
+// ---------------------------------------------------------------------
+// Machinery protection (docs/MOTOR_STOP_PLAN.md)
+// ---------------------------------------------------------------------
+
+// How many motors the rig exposes. Unavoidably a second copy of
+// motor-driver/run_demo.py's MOTOR_IDS -- that's a standalone script on a
+// different machine, with no shared module to import from. Keep in sync.
+const TRIP_MOTOR_COUNT = 3;
+
+// nodeId -> epoch ms the trip fires at. The server sends a remaining-seconds
+// figure, but GET /nodes only refreshes every 5s, so a 10s countdown would
+// visibly jump 10 -> 5 -> 0. Converting to a local deadline once and ticking
+// against it keeps the number honest between polls, while the server stays the
+// source of truth for whether a countdown exists at all.
+const tripDeadlines = {};
+
+function noteTripCountdown(entry) {
+  const p = entry.protection;
+  if (!p || p.trip_in_s === null || p.trip_in_s === undefined) {
+    delete tripDeadlines[entry.node_id];
+    return;
+  }
+  tripDeadlines[entry.node_id] = Date.now() + p.trip_in_s * 1000;
+}
+
+function tripSecondsLeft(nodeId) {
+  const deadline = tripDeadlines[nodeId];
+  if (deadline === undefined) return null;
+  return Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
+}
+
+function protectionStatusText(entry) {
+  const p = entry.protection || {};
+  const left = tripSecondsLeft(entry.node_id);
+  if (left !== null) return `Tripping in ${left}s…`;
+  if (p.trip_failed) return "Trip failed — machine still running";
+  if (entry.status === "tripped") {
+    const when = p.tripped_at
+      ? new Date(p.tripped_at * 1000).toLocaleTimeString()
+      : null;
+    return when ? `Tripped ${when} · confirmed stopped` : "Tripped · confirmed stopped";
+  }
+  if (!p.armed) return "Not armed";
+  return "Armed";
+}
+
+// Re-renders only the status line's text, never the whole row: a full
+// re-render every 500ms would blow away the <select>'s focus and any open
+// dropdown out from under the operator.
+function tickTripCountdowns() {
+  for (const el of document.querySelectorAll("[data-trip-status]")) {
+    const nodeId = el.dataset.nodeId;
+    const entry = state.lastNodes[nodeId];
+    if (!entry) continue;
+    const text = protectionStatusText(entry);
+    if (el.textContent !== text) el.textContent = text;
+    // The Hold button is only meaningful while a countdown is actually
+    // running, so it disappears the moment the trip fires.
+    const hold = document.querySelector(`[data-action="protection_hold"][data-node-id="${CSS.escape(nodeId)}"]`);
+    if (hold) hold.hidden = tripSecondsLeft(nodeId) === null;
+  }
+}
+setInterval(tickTripCountdowns, 500);
+
+function protectionSectionHtml(entry) {
+  const p = entry.protection;
+  // Absent only when the backend has no ProtectionController at all -- render
+  // nothing rather than an empty section promising a control that can't work.
+  if (!p) return "";
+
+  // escapeHtml, not a separate escapeAttr: this module's escapeHtml already
+  // escapes both quote characters, and every other attribute interpolation in
+  // app.js uses it the same way. charts.js has its own escapeAttr; app.js
+  // never did.
+  const safeId = escapeHtml(entry.node_id);
+  const current = entry.trip_motor_idx;
+  // One motor, one asset: a motor another node already claims is shown but
+  // disabled, so the constraint is visible instead of only surfacing as a 409
+  // after the operator picks it.
+  const claimed = new Map();
+  for (const other of Object.values(state.lastNodes)) {
+    if (other.node_id !== entry.node_id && other.trip_motor_idx) {
+      claimed.set(other.trip_motor_idx, other.device_name || other.node_id);
+    }
+  }
+
+  let options = `<option value=""${current ? "" : " selected"}>No trip output</option>`;
+  for (let idx = 1; idx <= TRIP_MOTOR_COUNT; idx += 1) {
+    const owner = claimed.get(idx);
+    options += `<option value="${idx}"${current === idx ? " selected" : ""}${owner ? " disabled" : ""}>`
+      + `Motor ${idx}${owner ? ` — used by ${escapeHtml(owner)}` : ""}</option>`;
+  }
+
+  const countingDown = tripSecondsLeft(entry.node_id) !== null;
+  return `<div class="protection" data-role="protection">
+    <div class="protection__title">Protection</div>
+    <div class="protection__row">
+      <label class="protection__label" for="trip-motor-${safeId}">Trip output</label>
+      <select class="protection__select" id="trip-motor-${safeId}" data-action="set_trip_motor" data-node-id="${safeId}">${options}</select>
+    </div>
+    <div class="protection__row">
+      <span class="protection__label">Status</span>
+      <span class="protection__state${p.trip_failed ? " protection__state--failed" : ""}${countingDown ? " protection__state--counting" : ""}" data-trip-status data-node-id="${safeId}">${escapeHtml(protectionStatusText(entry))}</span>
+      <button type="button" class="btn-label btn-label--danger" data-action="protection_hold" data-node-id="${safeId}"${countingDown ? "" : " hidden"}>Hold</button>
+    </div>
+  </div>`;
+}
 
 // Status label shown in the row -- appends live collected/min_frames
 // progress while collecting (entry.commissioning_progress, from
@@ -191,6 +320,14 @@ function rowControls(entry) {
     commissionLabel = "Recommission"; commissionAction = "commission_start";
     commissionEnabled = true; commissionVariant = "action";
     commissionTooltip = "Recollect baseline and retrain";
+  } else if (status === "idle" || status === "tripped") {
+    // Also correctly disabled, but for a different reason than paused, so it
+    // says so: commissioning collects gated *running* frames, and there are
+    // none to collect from a machine that isn't turning. Matches
+    // start_commissioning's source states, which exclude both.
+    commissionLabel = "Recommission"; commissionAction = null;
+    commissionEnabled = false; commissionVariant = "pending";
+    commissionTooltip = "Start the machine first to recommission";
   } else {
     commissionLabel = "Recommission"; commissionAction = "commission_start";
     commissionEnabled = false; commissionVariant = "pending";
@@ -488,6 +625,7 @@ const ACTION_ENDPOINT = {
   decommission: (id) => ["POST", `/nodes/${id}/decommission`],
   capture_stop: (id) => ["POST", `/nodes/${id}/capture/stop`],
   capture_cancel: (id) => ["POST", `/nodes/${id}/capture/cancel`],
+  protection_hold: (id) => ["POST", `/nodes/${id}/protection/hold`],
 };
 
 async function api(method, path, body) {
@@ -906,12 +1044,22 @@ function motorRowHtml(entry) {
     </div>
   </div>`;
 
+  // Machinery protection lives above the charts, not below: during a trip
+  // countdown this is the most time-critical thing on screen, and it's the
+  // only part of the panel an operator can act on.
+  //
+  // Rendered here in app.js rather than inside Charts.detailBodyHtml() so
+  // charts.js stays purely charts -- this is the panel's only non-chart
+  // content, and it needs the fleet-wide node list (for already-claimed
+  // motors) plus its own event wiring, both of which live here already.
+
   // Capture no longer lives here (2026-07-24 round 6: see recordDrawer
   // above) -- this is just charts now, one column, no side panel. Node ID
   // is already shown in the identity block above (motor-row__node-id);
   // repeating it here was redundant.
   const detailHtml = isExpanded ? `<div class="motor-row__detail">
     <div class="motor-row__detail-main">
+      ${protectionSectionHtml(entry)}
       ${Charts.detailBodyHtml(entry, {
         rawOpen: openRawIds.has(entry.node_id),
         waterfallOpen: openWaterfallIds.has(entry.node_id),
@@ -1134,8 +1282,39 @@ document.getElementById("fleet-list").addEventListener("click", (e) => {
   // else to toggle expand", collapsing the row out from under whatever the
   // operator was just interacting with.
   if (e.target.closest(".motor-row__body")) return;
+  // Same problem for the Protection section: it sits inside
+  // .motor-row-group but outside .motor-row__body (it's rendered here, not
+  // by charts.js), so without this its <select> and Hold button would
+  // collapse the row on every click.
+  if (e.target.closest(".protection")) return;
   const group = e.target.closest(".motor-row-group");
   if (group) toggleExpand(group.dataset.nodeId);
+});
+
+// The trip-output <select> needs "change", which the click handler above
+// can't see. Its own listener rather than a branch in that one, since
+// change/click have genuinely different semantics here.
+document.getElementById("fleet-list").addEventListener("change", async (e) => {
+  const select = e.target.closest('[data-action="set_trip_motor"]');
+  if (!select) return;
+  const nodeId = select.dataset.nodeId;
+  const raw = select.value;
+  const motorIdx = raw === "" ? null : Number(raw);
+  const previous = state.lastNodes[nodeId] ? state.lastNodes[nodeId].trip_motor_idx : null;
+  try {
+    await api("POST", `/nodes/${nodeId}/trip_motor`, { motor_idx: motorIdx });
+    showToast(motorIdx === null
+      ? "Trip output cleared -- this asset can no longer stop a machine"
+      : `Trip output armed on Motor ${motorIdx}`);
+  } catch (err) {
+    console.error(`Setting trip motor on ${nodeId} failed`, err);
+    // Snap back to what the server still believes rather than leaving the
+    // dropdown showing a selection that was rejected (e.g. a 409 from
+    // another asset already claiming that motor).
+    select.value = previous === null || previous === undefined ? "" : String(previous);
+    showToast(`Couldn't set trip output: ${err.message}`, "error");
+  }
+  await pollNodes();
 });
 
 // The native `toggle` event on <details> does NOT bubble -- but
@@ -1356,6 +1535,10 @@ async function pollNodes() {
     for (const nodeId of openScalarsIds) {
       if (!(nodeId in state.lastNodes)) openScalarsIds.delete(nodeId);
     }
+    // Re-base every countdown against this fresh trip_in_s before rendering
+    // -- the local deadline is only an interpolation between polls, and the
+    // server remains the authority on whether a trip is pending at all.
+    for (const entry of Object.values(state.lastNodes)) noteTripCountdown(entry);
     renderSummary(state.lastNodes);
     // Skip the list re-render while a rename or device-type edit is open
     // -- startRename()/startDeviceTypeEdit()/Escape re-render explicitly
@@ -1390,12 +1573,16 @@ Charts.init((msg) => {
     if (openRecordNodeId === msg.node_id) closeRecordDrawer();
   } else if (msg.type === "registry") {
     lastWsTouchAt[msg.node_id] = Date.now();
-    // The WS broadcast's entry is registry.py's plain to_dict() -- unlike
-    // GET /nodes, it has no commissioning_progress/capture_progress
-    // (both REST-only, added in app.py's _node_dict). Carry the
-    // last-known progress forward so neither label flickers back to its
-    // bare/idle form for the few seconds until the next REST poll
-    // restores it.
+    // The WS broadcast now sends the same _node_dict() shape GET /nodes
+    // does, so commissioning_progress/capture_progress/protection are all
+    // present -- api/app.py's _on_registry_status_change was switched to
+    // _node_dict so a FAULT push carries the trip countdown that same
+    // transition just started, instead of the dashboard showing FAULT with
+    // no sign of a pending trip until the next 5s poll.
+    //
+    // The carry-forward below is therefore usually redundant, and is kept
+    // as belt-and-braces for any other producer of a "registry" message
+    // that still sends a bare to_dict().
     const prev = state.lastNodes[msg.node_id];
     const entry = msg.entry;
     if (prev && prev.commissioning_progress
@@ -1406,6 +1593,10 @@ Charts.init((msg) => {
       entry.capture_progress = prev.capture_progress;
     }
     state.lastNodes[msg.node_id] = entry;
+    // A trip countdown starts on the FAULT transition, so this push is the
+    // earliest the dashboard can know about it -- re-base the local deadline
+    // here rather than waiting for the next poll.
+    noteTripCountdown(entry);
     // Stale % from a previous run must never linger into the next one --
     // clear the moment the node leaves commissioning_training for any
     // reason (completed, or a fresh commission started elsewhere).

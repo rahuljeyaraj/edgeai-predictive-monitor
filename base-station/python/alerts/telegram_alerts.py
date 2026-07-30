@@ -41,16 +41,24 @@ logger = logging.getLogger(__name__)
 # (nothing server-side ever sets it) -- is silent: those are
 # operator-driven or in-progress states, not fleet-health events worth
 # paging someone over.
+#
+# TRIPPED counts as the "fault" tier: this system physically stopped a
+# machine, which is strictly more urgent than the fault that caused it, so
+# even a fault-only subscriber must hear about it. IDLE stays silent -- an
+# operator switching a machine off is not a fleet-health event, same reasoning
+# as paused.
 _ALERT_TIER = {
     NodeStatus.WARNING: "warning",
     NodeStatus.FAULT: "fault",
+    NodeStatus.TRIPPED: "fault",
 }
 
-_RECOVERABLE_FROM = {NodeStatus.WARNING, NodeStatus.FAULT}
+_RECOVERABLE_FROM = {NodeStatus.WARNING, NodeStatus.FAULT, NodeStatus.TRIPPED}
 
 _STATUS_LABEL = {
     NodeStatus.WARNING: "⚠️ WARNING",
     NodeStatus.FAULT: "\U0001f534 FAULT",
+    NodeStatus.TRIPPED: "\U0001f6d1 TRIPPED",
 }
 
 
@@ -190,7 +198,15 @@ def wire_telegram_alerts(registry: Registry, bot, alert_store: AlertStore,
         tier = _ALERT_TIER.get(status)
         if tier is not None:
             text = f"{_STATUS_LABEL[status]} — {label}"
-            if status == NodeStatus.FAULT and entry.last_classification:
+            if status == NodeStatus.TRIPPED:
+                # Says what physically happened and what the operator has to
+                # do, because nothing here will do it for them: recovery is a
+                # human restarting the machine (protection/protection.py).
+                motor = entry.trip_motor_idx
+                text += ("\nMachine stopped by protection"
+                          + (f" (motor {motor})" if motor else "")
+                          + ".\nRestart it at the machine once the fault is fixed.")
+            if status in (NodeStatus.FAULT, NodeStatus.TRIPPED) and entry.last_classification:
                 classification = entry.last_classification
                 text += (
                     f"\nClassifier: {_title_case(classification['label'])} "
@@ -203,7 +219,8 @@ def wire_telegram_alerts(registry: Registry, bot, alert_store: AlertStore,
             # should get its recovery too, and a warning's recovery
             # respects fault_only the same way the warning itself did.
             recipients = alert_store.subscribers_for(
-                node_id, "fault" if previous == NodeStatus.FAULT else "warning")
+                node_id,
+                "warning" if previous == NodeStatus.WARNING else "fault")
         else:
             return
 

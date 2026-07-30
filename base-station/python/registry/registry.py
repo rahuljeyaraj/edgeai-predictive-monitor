@@ -47,6 +47,18 @@ class NodeStatus(Enum):
     FAULT = "fault"
     OFFLINE = "offline"
     PAUSED = "paused"
+    # Machinery-protection states (docs/MOTOR_STOP_PLAN.md). Both mean "this
+    # node's machine is not turning"; they differ only in who stopped it,
+    # which is exactly the distinction an operator needs and which a single
+    # "stopped" status would erase.
+    #
+    # IDLE closes a pre-existing hole rather than serving the trip feature:
+    # pipeline/gate.py already detects a stopped motor and inference.py
+    # already declines to score it, but nothing ever wrote that fact
+    # anywhere, so a machine switched off an hour ago kept displaying
+    # whatever status it held while it was last running.
+    IDLE = "idle"
+    TRIPPED = "tripped"
 
 
 # per-channel input_dim (S4.2: "drives 512 vs 1024 model dim"). Adding a
@@ -124,6 +136,31 @@ class RegistryEntry:
     # build_feature_vector()'s scalar tail uses. None until commissioned.
     scalar_mu: Optional[Tuple[float, ...]] = None
     scalar_sigma: Optional[Tuple[float, ...]] = None
+    # Median pipeline/gate.py compute_energy() over this node's own
+    # commissioning batch -- the reference the running/stopped gate scales
+    # its threshold from (gate.py's DEFAULT_RUNNING_FRACTION). Same
+    # motivation as warning_threshold/fault_threshold above: gate energy is
+    # an RMS over unnormalized FFT magnitudes, so its absolute scale is a
+    # property of this node's sensor range, gain and mounting, and no single
+    # global number can mean "stopped" for every node. None for entries
+    # commissioned before this field existed -- gate.py falls back to its
+    # absolute threshold for those, preserving their old behaviour until
+    # they're re-commissioned.
+    running_energy_ref: Optional[float] = None
+    # Which motor on the rig this asset's machinery-protection trip stops
+    # (docs/MOTOR_STOP_PLAN.md), 1-based, matching motor-driver's own serial
+    # command numbering. None = no trip output wired, which is the default
+    # and stays true for most assets: a monitored point usually has no
+    # actuator, so protection is armed per asset rather than fleet-wide.
+    #
+    # RegistryEntry carried control_circuit_id/auto_cutoff_enabled for this
+    # same purpose once before (still popped for compat in from_dict below).
+    # They were deleted as dead code because nothing was ever wired to
+    # them. This field is different only in that it is wired end to end --
+    # set from the dashboard, read by protection/, published as
+    # MqttMsgType.MOTOR_STOP. Don't delete it as unused without checking
+    # those three.
+    trip_motor_idx: Optional[int] = None
 
     def to_dict(self) -> dict:
         d = asdict(self)
@@ -168,6 +205,13 @@ class NodeNotFoundError(KeyError):
 
 
 class InvalidTransitionError(ValueError):
+    pass
+
+
+class TripMotorInUseError(ValueError):
+    """Raised by set_trip_motor() when another node already owns that motor.
+    Its own type (not a bare ValueError) so api/app.py can map it to a 409
+    rather than the generic 400 every other bad field value gets."""
     pass
 
 
@@ -229,23 +273,61 @@ class _NodeStateMachine(StateMachine):
     # directly is absent for the same reason: resume always re-diagnoses
     # from HEALTHY, it never guesses.
 
-    to_healthy = _.WARNING.to(_.HEALTHY) | _.FAULT.to(_.HEALTHY)
-    to_warning = _.HEALTHY.to(_.WARNING) | _.FAULT.to(_.WARNING)
-    to_fault = _.HEALTHY.to(_.FAULT) | _.WARNING.to(_.FAULT)
+    to_healthy = (
+        _.WARNING.to(_.HEALTHY) | _.FAULT.to(_.HEALTHY)
+        | _.IDLE.to(_.HEALTHY) | _.TRIPPED.to(_.HEALTHY)
+    )
+    to_warning = (
+        _.HEALTHY.to(_.WARNING) | _.FAULT.to(_.WARNING)
+        | _.IDLE.to(_.WARNING) | _.TRIPPED.to(_.WARNING)
+    )
+    to_fault = (
+        _.HEALTHY.to(_.FAULT) | _.WARNING.to(_.FAULT)
+        | _.IDLE.to(_.FAULT) | _.TRIPPED.to(_.FAULT)
+    )
     # All 6 directed edges between the three confirmable statuses: inference
     # (pipeline/inference.py's threshold -> status, S3.6) can jump straight
     # from HEALTHY to FAULT (or back) without passing through WARNING.
+    #
+    # IDLE/TRIPPED are additional sources for all three because that is how
+    # recovery works, and it is the whole reason no "reset protection" button
+    # exists: restarting the machine makes frames score again, and the score
+    # alone decides where it lands. Fix the fault and it returns to HEALTHY;
+    # don't, and it goes back to FAULT and trips again. An operator cannot
+    # restart their way out of a real fault, and nothing here ever restarts
+    # a machine on its own.
+
+    to_idle = (
+        _.HEALTHY.to(_.IDLE) | _.WARNING.to(_.IDLE) | _.FAULT.to(_.IDLE)
+    )
+    # Motor stopped and we did not stop it. Only from the three confirmable
+    # statuses: a node mid-commissioning or paused has no meaningful running
+    # state to lose, and UNCOMMISSIONED -> IDLE would relabel "never set up"
+    # as "switched off", which reads as a regression on the Fleet list.
+
+    to_tripped = _.FAULT.to(_.TRIPPED)
+    # Only ever from FAULT, and only once the gate confirms the machine
+    # actually stopped. A trip published but never confirmed deliberately
+    # leaves the node in FAULT (protection/ marks it trip_failed instead) --
+    # a trip that didn't take is a safety event, and showing TRIPPED for a
+    # machine that is still turning would be the single most dangerous lie
+    # this dashboard could tell.
 
 
 # set_status() is the only caller that picks a transition by an arbitrary
 # NodeStatus argument rather than a fixed method name -- this maps that
 # argument to the one event that's actually legal for it (inference only
-# ever confirms one of the three confirmable statuses, S3.6).
+# ever confirms one of the three confirmable statuses, S3.6; IDLE and
+# TRIPPED come from the gate and protection/ respectively).
 _SET_STATUS_EVENT = {
     NodeStatus.HEALTHY: "to_healthy",
     NodeStatus.WARNING: "to_warning",
     NodeStatus.FAULT: "to_fault",
+    NodeStatus.IDLE: "to_idle",
+    NodeStatus.TRIPPED: "to_tripped",
 }
+
+_SET_STATUS_SETTABLE = ", ".join(sorted(s.value for s in _SET_STATUS_EVENT))
 
 
 class Registry:
@@ -385,6 +467,41 @@ class Registry:
             self._save()
             return entry
 
+    def set_trip_motor(self, node_id: str, motor_idx: Optional[int]) -> RegistryEntry:
+        """Arms (or disarms) this asset's machinery-protection trip output by
+        pointing it at one motor on the rig, 1-based (docs/
+        MOTOR_STOP_PLAN.md). None clears it back to "no trip output", which
+        is the default for every asset.
+
+        Set independently of rename()/set_device_type() for the same reason
+        those two are independent of each other: which physical actuator an
+        asset can stop is unrelated to what it's called or what kind of
+        machine it is.
+
+        One motor, one asset: a motor already claimed by a different node is
+        rejected rather than silently stolen, because two assets pointing at
+        the same motor would make a trip from either of them look like it
+        came from both."""
+        with self._lock_for(node_id):
+            entry = self.get(node_id)
+            if motor_idx is not None:
+                if motor_idx < 1:
+                    raise ValueError(
+                        f"motor_idx must be 1-based and positive, got {motor_idx}")
+                # Deliberately not under the other node's lock: this reads a
+                # plain field off an already-loaded entry, and taking a
+                # second per-node lock here (while holding this node's) is
+                # exactly the shape that deadlocks against a concurrent
+                # set_trip_motor() running the mirror-image comparison.
+                for other_id, other in self._entries.items():
+                    if other_id != node_id and other.trip_motor_idx == motor_idx:
+                        raise TripMotorInUseError(
+                            f"motor {motor_idx} is already the trip output for node "
+                            f"{other_id!r}")
+            entry.trip_motor_idx = motor_idx
+            self._save()
+            return entry
+
     def decommission(self, node_id: str) -> None:
         # Removable from any status -- the dashboard's bin icon (S3.9
         # redesign) is meant to always be available, including for a node
@@ -484,21 +601,22 @@ class Registry:
         workflow (e.g. pipeline/inference.py's threshold -> status, S3.6),
         as opposed to start_commissioning/complete_commissioning below
         which also update other fields as part of their own workflow.
-        Only supports the three confirmable statuses (healthy/warning/
-        fault) -- every other transition has its own dedicated method."""
+        Supports the three confirmable statuses (healthy/warning/fault) plus
+        the two machinery-protection ones (idle/tripped, see NodeStatus) --
+        every other transition has its own dedicated method."""
         with self._lock_for(node_id):
             entry = self.get(node_id)
             event_name = _SET_STATUS_EVENT.get(status)
             if event_name is None:
                 raise InvalidTransitionError(
                     f"cannot set node {node_id!r} to {status.value!r}: set_status only "
-                    "supports healthy, warning, or fault")
+                    f"supports {_SET_STATUS_SETTABLE}")
             try:
                 getattr(_NodeStateMachine(model=entry, state_field="status"), event_name)()
             except TransitionNotAllowed:
                 raise InvalidTransitionError(
-                    f"cannot set node {node_id!r} to {status.value!r}: status is "
-                    f"{entry.status.value!r}, must be healthy, warning, or fault")
+                    f"cannot set node {node_id!r} to {status.value!r} from "
+                    f"{entry.status.value!r}: that transition is not allowed")
             self._save()
             self._notify_status_change(node_id, entry.status)
             return entry
@@ -508,7 +626,8 @@ class Registry:
                                  warning_threshold: Optional[float] = None,
                                  fault_threshold: Optional[float] = None,
                                  scalar_mu: Optional[Tuple[float, ...]] = None,
-                                 scalar_sigma: Optional[Tuple[float, ...]] = None) -> RegistryEntry:
+                                 scalar_sigma: Optional[Tuple[float, ...]] = None,
+                                 running_energy_ref: Optional[float] = None) -> RegistryEntry:
         with self._lock_for(node_id):
             entry = self.get(node_id)
             try:
@@ -531,6 +650,8 @@ class Registry:
                 entry.scalar_mu = scalar_mu
             if scalar_sigma is not None:
                 entry.scalar_sigma = scalar_sigma
+            if running_energy_ref is not None:
+                entry.running_energy_ref = running_energy_ref
             self._save()
             self._notify_status_change(node_id, entry.status)
             return entry

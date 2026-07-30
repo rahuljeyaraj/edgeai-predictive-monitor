@@ -48,7 +48,8 @@ from commissioning import CommissioningError
 from capture import CaptureError
 from ei_client import EIClientError, EITotpRequiredError
 from ei_controller import EIControllerError
-from registry import InvalidTransitionError, NodeNotFoundError, Registry
+from registry import (InvalidTransitionError, NodeNotFoundError, Registry,
+                       TripMotorInUseError)
 from store import HistoryStore
 from retention import DEFAULT_RETENTION_SECONDS, run_retention_loop
 from perf import PerformanceMonitor
@@ -89,6 +90,12 @@ class DeviceTypeBody(BaseModel):
     # same "blank means unset" contract as the capture toolbar's frame-count
     # field.
     device_type: Optional[str] = None
+
+
+class TripMotorBody(BaseModel):
+    # None = clear the trip output back to unarmed, the default for every
+    # asset -- same "blank means unset" contract as DeviceTypeBody above.
+    motor_idx: Optional[int] = None
 
 
 class CaptureStartBody(BaseModel):
@@ -177,6 +184,7 @@ def create_app(registry: Registry, history_store: HistoryStore,
                 telegram_bot_username: Optional[str] = None,
                 ei=None,
                 wifi_status: Optional[WifiStatusPoller] = None,
+                protection=None,
                 on_startup: Optional[callable] = None) -> FastAPI:
     def _perf_payload() -> dict:
         data = app.state.perf_monitor.snapshot().to_dict()
@@ -238,6 +246,7 @@ def create_app(registry: Registry, history_store: HistoryStore,
     app.state.telegram_bot_username = telegram_bot_username
     app.state.ei = ei
     app.state.wifi_status = wifi_status
+    app.state.protection = protection
     app.state.connection_manager = ConnectionManager()
     app.state.loop = None
 
@@ -253,7 +262,18 @@ def create_app(registry: Registry, history_store: HistoryStore,
         # replaces every one-off broadcast_threadsafe call that used to
         # follow a status-changing registry method below.
         entry = registry.get(node_id)
-        broadcast_threadsafe(app, {"type": "registry", "node_id": node_id, "entry": entry.to_dict()})
+        # _node_dict, not entry.to_dict(): a FAULT transition also starts the
+        # protection countdown, and the dashboard needs trip_in_s in the same
+        # push that told it about the fault. Waiting for the next 5s poll would
+        # mean showing FAULT for several seconds with no sign that a trip was
+        # already counting down against it.
+        #
+        # Safe despite _node_dict being defined further down: this only runs on
+        # a real status change, long after create_app() has finished. main.py
+        # registers protection's own listener before create_app, so by the time
+        # this fires the countdown is already recorded.
+        broadcast_threadsafe(app, {"type": "registry", "node_id": node_id,
+                                    "entry": _node_dict(node_id, entry)})
 
     registry.on_status_change(_on_registry_status_change)
 
@@ -328,6 +348,14 @@ def create_app(registry: Registry, history_store: HistoryStore,
             state, collected, target_frames = capture_progress
             d["capture_progress"] = {"state": state, "collected": collected,
                                       "target_frames": target_frames}
+        # Machinery protection (protection/). Always present so the frontend
+        # can render the Protection section without a null check, unlike the
+        # two "absent means nothing to show" blocks above -- "armed: false" is
+        # itself the thing an operator needs to see for an asset with no trip
+        # output, and trip_in_s counts a live countdown down on each poll.
+        if app.state.protection is not None:
+            d["protection"] = dict(app.state.protection.snapshot(node_id),
+                                    armed=app.state.protection.armed(node_id))
         return d
 
     @app.get("/nodes")
@@ -466,6 +494,44 @@ def create_app(registry: Registry, history_store: HistoryStore,
             raise HTTPException(status_code=404, detail=f"unknown node_id {node_id!r}")
         broadcast_threadsafe(app, {"type": "registry", "node_id": node_id, "entry": entry.to_dict()})
         return entry.to_dict()
+
+    @app.post("/nodes/{node_id}/trip_motor")
+    def set_trip_motor(node_id: str, body: TripMotorBody = TripMotorBody()):
+        """Arms this asset's machinery-protection trip output against one motor
+        on the rig, or clears it (docs/MOTOR_STOP_PLAN.md)."""
+        try:
+            entry = app.state.registry.set_trip_motor(node_id, body.motor_idx)
+        except NodeNotFoundError:
+            raise HTTPException(status_code=404, detail=f"unknown node_id {node_id!r}")
+        except TripMotorInUseError as e:
+            # 409, not 400: the request is well-formed, it just conflicts with
+            # another node's existing claim on that motor.
+            raise HTTPException(status_code=409, detail=str(e))
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        broadcast_threadsafe(app, {"type": "registry", "node_id": node_id,
+                                    "entry": _node_dict(node_id, entry)})
+        return _node_dict(node_id, entry)
+
+    @app.post("/nodes/{node_id}/protection/hold")
+    def hold_protection(node_id: str):
+        """Operator override: cancel a pending trip countdown."""
+        if app.state.protection is None:
+            raise HTTPException(status_code=503, detail="protection is not enabled")
+        try:
+            app.state.registry.get(node_id)
+        except NodeNotFoundError:
+            raise HTTPException(status_code=404, detail=f"unknown node_id {node_id!r}")
+        if not app.state.protection.hold(node_id):
+            # Nothing pending -- most likely the countdown already expired
+            # between the operator seeing the button and pressing it. Saying so
+            # is better than reporting a success that stopped nothing.
+            raise HTTPException(status_code=409,
+                                 detail="no trip is pending for this node")
+        entry = app.state.registry.get(node_id)
+        broadcast_threadsafe(app, {"type": "registry", "node_id": node_id,
+                                    "entry": _node_dict(node_id, entry)})
+        return _node_dict(node_id, entry)
 
     @app.post("/nodes/{node_id}/pause")
     def pause_node(node_id: str):

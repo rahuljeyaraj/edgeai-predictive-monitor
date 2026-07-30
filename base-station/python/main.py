@@ -38,18 +38,20 @@ import threading
 
 _PYTHON_DIR = os.path.dirname(os.path.abspath(__file__))
 for _subpackage in ("common", "registry", "pipeline", "history", "monitoring",
-                     "ingestion", "api", "alerts", "network"):
+                     "ingestion", "api", "alerts", "network", "protection"):
     sys.path.insert(0, os.path.join(_PYTHON_DIR, _subpackage))
 
 import uvicorn
 from fastapi.staticfiles import StaticFiles
 
+from typing import Optional
+
 from sensor_frame import BASE_STATION_NODE_ID, SensorFrame
 from spi_reader import SpiConsumer
-from registry import Registry
+from registry import NodeNotFoundError, Registry
 from status_color import color_for
 from wire_protocol import LED_MODE_TO_INT
-from gate import MotorStateGate
+from gate import DEFAULT_RUNNING_FRACTION, MotorStateGate
 from classifier import ClassifierRegistry
 from manager import PipelineManager
 from store import HistoryStore
@@ -59,6 +61,7 @@ from wifi import WifiStatusPoller
 from app import create_app, broadcast_threadsafe
 from commissioning_controller import CommissioningController
 from capture_controller import CaptureController
+from protection import DEFAULT_TRIP_DELAY_S, ProtectionController
 from ei_controller import EIController
 from alert_store import AlertStore
 
@@ -74,9 +77,26 @@ FRONTEND_DIR = os.path.join(_PYTHON_DIR, "frontend")
 DEFAULT_DATA_DIR = os.path.join(os.path.dirname(_PYTHON_DIR), ".cache", "data")
 
 
-def build_gate_factory(threshold: float, debounce_frames: int):
-    def factory() -> MotorStateGate:
-        return MotorStateGate(threshold=threshold, debounce_frames=debounce_frames)
+def build_gate_factory(registry: Registry, threshold: float, debounce_frames: int,
+                        running_fraction: float):
+    """Builds per-node running/stopped gates whose threshold scales from that
+    node's own commissioned running energy (pipeline/gate.py's module
+    docstring explains why an absolute one can't work). Takes node_id rather
+    than being zero-arg so the returned gate can look its own node's
+    reference up fresh on every frame -- gates outlive a re-commissioning."""
+    def factory(node_id: str) -> MotorStateGate:
+        def energy_ref() -> Optional[float]:
+            try:
+                return registry.get(node_id).running_energy_ref
+            except NodeNotFoundError:
+                # A gate can outlive its registry entry by a frame or two
+                # (decommission evicts the entry before the pipeline), and a
+                # gate is not the place to surface that -- fall back to the
+                # absolute threshold for the one frame it can still matter.
+                return None
+        return MotorStateGate(threshold=threshold, debounce_frames=debounce_frames,
+                               energy_ref_provider=energy_ref,
+                               running_fraction=running_fraction)
     return factory
 
 
@@ -278,10 +298,33 @@ def main():
     parser.add_argument("--mqtt-port", type=int, default=1883)
 
     parser.add_argument("--gate-threshold", type=float, default=0.05,
-                         help="RMS energy threshold for running/stopped")
+                         help="Absolute RMS running/stopped threshold, used ONLY as a "
+                              "fallback for nodes commissioned before "
+                              "running_energy_ref existed. Commissioned nodes scale "
+                              "from their own baseline instead (see "
+                              "--gate-running-fraction); this value is far below any "
+                              "real accel scale on purpose, so an un-migrated node "
+                              "keeps reading RUNNING exactly as it did before.")
+    parser.add_argument("--gate-running-fraction", type=float,
+                         default=DEFAULT_RUNNING_FRACTION,
+                         help="Fraction of a node's commissioned running energy below "
+                              "which it reads stopped. Tune per rig: it must sit under "
+                              "how much a neighbouring motor leaks through the shared "
+                              "frame, but above the sensor's own noise floor.")
     parser.add_argument("--gate-debounce-frames", type=int, default=3)
     parser.add_argument("--status-debounce-frames", type=int, default=3)
     parser.add_argument("--min-commission-frames", type=int, default=50)
+
+    parser.add_argument("--trip-host-node-id", default="motor_rig",
+                         help="MQTT topic identity of the host that owns the rig's "
+                              "serial port, i.e. where MOTOR_STOP is published "
+                              "(epm/<id>/cmd). Not a registry node -- it reports no "
+                              "telemetry, it only receives trips.")
+    parser.add_argument("--trip-delay-s", type=float, default=DEFAULT_TRIP_DELAY_S,
+                         help="How long a node must stay in FAULT before its trip "
+                              "output fires. A protection trip with no delay is a "
+                              "nuisance trip; this is also the window an operator has "
+                              "to Hold it.")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
@@ -334,12 +377,22 @@ def main():
     ei_scaling_path = os.path.join(args.data_dir, "ei_scaling.json")
     classifier_registry = ClassifierRegistry(ei_models_dir)
 
-    gate_factory = build_gate_factory(args.gate_threshold, args.gate_debounce_frames)
+    gate_factory = build_gate_factory(registry, args.gate_threshold,
+                                       args.gate_debounce_frames,
+                                       args.gate_running_fraction)
+    # Constructed before the manager (which needs its on_motor_state hook) and
+    # before any MQTT publisher exists -- set_publish_trip() fills that in
+    # later if --mqtt-host is set. Deliberately always constructed: deciding
+    # whether a stopped machine reads IDLE or TRIPPED needs no broker, and
+    # IDLE closes a gap that predates the trip feature.
+    protection = ProtectionController(registry, trip_delay_s=args.trip_delay_s)
+    registry.on_status_change(protection.on_status_change)
+
     manager = PipelineManager(
         registry, gate_factory, perf_monitor=perf_monitor, history_store=history,
         status_debounce_frames=args.status_debounce_frames, on_score=on_score,
         classifier_registry=classifier_registry, scaling_path=ei_scaling_path,
-        on_classification=on_classification)
+        on_classification=on_classification, on_motor_state=protection.on_motor_state)
 
     commissioning = CommissioningController(
         registry, models_dir, gate_factory, min_frames=args.min_commission_frames)
@@ -413,6 +466,11 @@ def main():
             target=run_mqtt, args=(args.mqtt_host, args.mqtt_port, on_frame, stop_event),
             daemon=True)
         status_led_publisher = wire_status_led_publishing(registry, args.mqtt_host, args.mqtt_port)
+        # Same publisher, same connection -- MOTOR_STOP and STATUS_LED are
+        # both base-station -> node commands on the same topic pattern.
+        protection.set_publish_trip(
+            lambda motor_idx: status_led_publisher.publish_motor_stop(
+                args.trip_host_node_id, motor_idx))
 
     def start_ingestion() -> None:
         # Called from create_app's lifespan, after app.state.loop is set --
@@ -434,7 +492,8 @@ def main():
                       perf_monitor=perf_monitor, gpu_perf=gpu_perf, spi_consumer=spi_consumer,
                       alert_store=alert_store, telegram_bot=telegram_bot,
                       telegram_bot_username=telegram_bot_username, ei=ei_controller,
-                      wifi_status=wifi_status, on_startup=start_ingestion)
+                      wifi_status=wifi_status, protection=protection,
+                      on_startup=start_ingestion)
 
     # Mounted after every REST/WebSocket route above is registered, so
     # this catch-all static handler can never shadow them.

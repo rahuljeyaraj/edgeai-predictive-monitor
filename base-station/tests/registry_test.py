@@ -12,11 +12,13 @@ redesign's always-enabled bin icon).
 Run with PYTHONPATH covering base-station/python/registry:
     PYTHONPATH=base-station/python/registry python3 base-station/tests/registry_test.py
 """
+import json
 import sys
 import tempfile
 import os
 
-from registry import Registry, SensorChannel, NodeStatus, NodeNotFoundError
+from registry import (InvalidTransitionError, NodeNotFoundError, NodeStatus,
+                       Registry, SensorChannel, TripMotorInUseError)
 
 
 def main():
@@ -97,9 +99,179 @@ def main():
     print("RESULT: PASS - add/rename/pause/decommission all survive a reload")
 
 
+# ---------------------------------------------------------------------
+# Machinery protection: trip_motor_idx + the IDLE/TRIPPED statuses
+# (docs/MOTOR_STOP_PLAN.md)
+# ---------------------------------------------------------------------
+
+def commissioned(registry, node_id):
+    """Walk the real state machine to HEALTHY -- the protection transitions
+    only exist relative to a legitimately commissioned node."""
+    registry.add(node_id)
+    registry.start_commissioning(node_id)
+    registry.stop_collecting(node_id)
+    registry.complete_commissioning(node_id, f"/tmp/{node_id}.pt")
+
+
+def fresh_registry():
+    tmp_dir = tempfile.mkdtemp(prefix="registry_protection_test_")
+    path = os.path.join(tmp_dir, "registry.json")
+    return Registry(path), path
+
+
+def test_trip_motor_defaults_unset_and_round_trips():
+    registry, path = fresh_registry()
+    commissioned(registry, "node-1")
+    # Unarmed by default: most monitored points have no actuator, so
+    # protection is opt-in per asset rather than fleet-wide.
+    assert registry.get("node-1").trip_motor_idx is None
+
+    registry.set_trip_motor("node-1", 2)
+    assert registry.get("node-1").trip_motor_idx == 2
+    assert Registry(path).get("node-1").trip_motor_idx == 2, "must survive a reload"
+
+    registry.set_trip_motor("node-1", None)
+    assert registry.get("node-1").trip_motor_idx is None
+    print("trip_motor_idx defaults unset, persists, and clears: PASS")
+
+
+def test_one_motor_cannot_be_claimed_by_two_assets():
+    registry, _ = fresh_registry()
+    commissioned(registry, "node-1")
+    commissioned(registry, "node-2")
+    registry.set_trip_motor("node-1", 1)
+
+    try:
+        registry.set_trip_motor("node-2", 1)
+    except TripMotorInUseError:
+        pass
+    else:
+        raise AssertionError("a second node claiming motor 1 should have been rejected")
+    assert registry.get("node-2").trip_motor_idx is None
+    # Re-setting the same motor on the node that already owns it is fine --
+    # it isn't a conflict with itself.
+    registry.set_trip_motor("node-1", 1)
+    # And it frees up once released.
+    registry.set_trip_motor("node-1", None)
+    registry.set_trip_motor("node-2", 1)
+    assert registry.get("node-2").trip_motor_idx == 1
+    print("one motor, one asset -- claims conflict, releases free it: PASS")
+
+
+def test_zero_and_negative_motor_indexes_rejected():
+    registry, _ = fresh_registry()
+    commissioned(registry, "node-1")
+    for bad in (0, -1):
+        try:
+            registry.set_trip_motor("node-1", bad)
+        except ValueError:
+            continue
+        raise AssertionError(f"motor_idx={bad} should have been rejected")
+    print("motor indexes are 1-based; 0 and negatives rejected: PASS")
+
+
+def test_idle_and_tripped_transitions():
+    registry, _ = fresh_registry()
+    commissioned(registry, "node-1")
+
+    # A stopped machine is reachable from any of the three confirmable
+    # statuses. Each leg starts from HEALTHY, and the first one is already
+    # there -- a same-status set is not a legal edge (nor a no-op), which is
+    # why inference.py checks for "no change" before ever calling set_status.
+    for start in (None, NodeStatus.WARNING, NodeStatus.FAULT):
+        if start is not None:
+            registry.set_status("node-1", start)
+        registry.set_status("node-1", NodeStatus.IDLE)
+        assert registry.get("node-1").status == NodeStatus.IDLE
+        registry.set_status("node-1", NodeStatus.HEALTHY)
+
+    # TRIPPED only from FAULT: we only ever stop a machine we've faulted.
+    registry.set_status("node-1", NodeStatus.FAULT)
+    registry.set_status("node-1", NodeStatus.TRIPPED)
+    assert registry.get("node-1").status == NodeStatus.TRIPPED
+
+    # Recovery: restarting re-diagnoses from HEALTHY, out of either stopped
+    # state, with no acknowledge step.
+    registry.set_status("node-1", NodeStatus.HEALTHY)
+    assert registry.get("node-1").status == NodeStatus.HEALTHY
+    print("IDLE reachable from all confirmable statuses, TRIPPED only from FAULT: PASS")
+
+
+def test_tripped_not_reachable_from_healthy():
+    """The dangerous case: never claim a machine is stopped without having
+    faulted and confirmed it."""
+    registry, _ = fresh_registry()
+    commissioned(registry, "node-1")
+    try:
+        registry.set_status("node-1", NodeStatus.TRIPPED)
+    except InvalidTransitionError:
+        pass
+    else:
+        raise AssertionError("HEALTHY -> TRIPPED should not be allowed")
+    assert registry.get("node-1").status == NodeStatus.HEALTHY
+    print("HEALTHY -> TRIPPED is rejected: PASS")
+
+
+def test_uncommissioned_node_cannot_go_idle():
+    """"Never set up" must not be relabelled as "switched off"."""
+    registry, _ = fresh_registry()
+    registry.add("node-1")
+    try:
+        registry.set_status("node-1", NodeStatus.IDLE)
+    except InvalidTransitionError:
+        pass
+    else:
+        raise AssertionError("UNCOMMISSIONED -> IDLE should not be allowed")
+    assert registry.get("node-1").status == NodeStatus.UNCOMMISSIONED
+    print("an uncommissioned node cannot be reported IDLE: PASS")
+
+
+def test_running_energy_ref_round_trips():
+    registry, path = fresh_registry()
+    registry.add("node-1")
+    assert registry.get("node-1").running_energy_ref is None
+    registry.start_commissioning("node-1")
+    registry.stop_collecting("node-1")
+    registry.complete_commissioning("node-1", "/tmp/node-1.pt",
+                                     running_energy_ref=12345.0)
+    assert registry.get("node-1").running_energy_ref == 12345.0
+    assert Registry(path).get("node-1").running_energy_ref == 12345.0
+    print("running_energy_ref is calibrated at commissioning and persists: PASS")
+
+
+def test_legacy_entry_without_new_fields_still_loads():
+    """An on-disk registry written before these fields existed must keep
+    loading -- the same backward-compat contract that still pops
+    control_circuit_id/auto_cutoff_enabled."""
+    registry, path = fresh_registry()
+    commissioned(registry, "node-1")
+    with open(path) as f:
+        raw = json.load(f)
+    raw["node-1"].pop("trip_motor_idx")
+    raw["node-1"].pop("running_energy_ref")
+    raw["node-1"]["control_circuit_id"] = "legacy"
+    raw["node-1"]["auto_cutoff_enabled"] = True
+    with open(path, "w") as f:
+        json.dump(raw, f)
+
+    entry = Registry(path).get("node-1")
+    assert entry.trip_motor_idx is None
+    assert entry.running_energy_ref is None
+    print("a registry written before these fields existed still loads: PASS")
+
+
 if __name__ == "__main__":
     try:
         main()
+        test_trip_motor_defaults_unset_and_round_trips()
+        test_one_motor_cannot_be_claimed_by_two_assets()
+        test_zero_and_negative_motor_indexes_rejected()
+        test_idle_and_tripped_transitions()
+        test_tripped_not_reachable_from_healthy()
+        test_uncommissioned_node_cannot_go_idle()
+        test_running_energy_ref_round_trips()
+        test_legacy_entry_without_new_fields_still_loads()
+        print("RESULT: PASS - trip mapping and the IDLE/TRIPPED statuses behave")
     except AssertionError as e:
         print(f"RESULT: FAIL - {e}")
         sys.exit(1)

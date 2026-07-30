@@ -1,0 +1,251 @@
+#!/usr/bin/env python3
+"""
+Machinery-protection ladder (docs/MOTOR_STOP_PLAN.md, python/protection/):
+FAULT -> delayed trip -> published stop -> confirmed TRIPPED, plus the
+IDLE-vs-TRIPPED distinction, the Hold override, and the failed-trip case.
+
+Pure logic, no hardware and no broker: publish_trip is a recording stub, and
+the confirmation that normally arrives from the vibration gate is delivered
+by calling on_motor_state() directly (that's exactly what
+pipeline/manager.py does with it).
+
+Timings are deliberately tiny so the whole file runs in about a second --
+the production defaults are 10s/3s.
+
+Run with PYTHONPATH covering base-station/python/{registry,protection}:
+    PYTHONPATH=base-station/python/registry:base-station/python/protection \\
+        python3 base-station/tests/protection_test.py
+"""
+import os
+import sys
+import tempfile
+import time
+
+from registry import NodeStatus, Registry
+from protection import ProtectionController
+
+NODE_ID = "node-1"
+OTHER_NODE_ID = "node-2"
+
+TRIP_DELAY_S = 0.15
+# Enough for a Timer thread to actually run its callback, without making the
+# suite slow. Timers are not precise, so every wait here is generous.
+SETTLE_S = 0.25
+# Comfortably longer than SETTLE_S, so a test that waits for the trip to be
+# published still has the confirmation window open afterwards. Only the
+# failed-trip test wants a window short enough to expire.
+CONFIRM_WINDOW_S = 2.0
+SHORT_CONFIRM_WINDOW_S = 0.1
+
+
+def build(trip_motor_idx=1, with_publisher=True,
+           confirm_window_s=CONFIRM_WINDOW_S):
+    """A commissioned, HEALTHY node plus a ProtectionController wired to it,
+    with the trip output armed against `trip_motor_idx` (None = unarmed)."""
+    tmp_dir = tempfile.mkdtemp(prefix="protection_test_")
+    registry = Registry(os.path.join(tmp_dir, "registry.json"))
+    registry.add(NODE_ID)
+    # Walk the real state machine to HEALTHY rather than assigning .status --
+    # the transitions under test only exist relative to a legitimate one.
+    registry.start_commissioning(NODE_ID)
+    registry.stop_collecting(NODE_ID)
+    registry.complete_commissioning(NODE_ID, "/tmp/does-not-need-to-exist.pt")
+    if trip_motor_idx is not None:
+        registry.set_trip_motor(NODE_ID, trip_motor_idx)
+
+    published = []
+    protection = ProtectionController(
+        registry,
+        publish_trip=(lambda idx: published.append(idx)) if with_publisher else None,
+        trip_delay_s=TRIP_DELAY_S, confirm_window_s=confirm_window_s)
+    registry.on_status_change(protection.on_status_change)
+    return registry, protection, published
+
+
+def status(registry) -> NodeStatus:
+    return registry.get(NODE_ID).status
+
+
+def test_operator_stop_reads_idle_not_tripped():
+    registry, protection, published = build(trip_motor_idx=None)
+
+    protection.on_motor_state(NODE_ID, running=False)
+
+    assert status(registry) == NodeStatus.IDLE, status(registry)
+    assert published == [], published
+    print("a machine stopped by an operator reads IDLE, nothing published: PASS")
+
+
+def test_restart_returns_to_healthy_from_idle():
+    registry, protection, _ = build(trip_motor_idx=None)
+    protection.on_motor_state(NODE_ID, running=False)
+    assert status(registry) == NodeStatus.IDLE, status(registry)
+
+    protection.on_motor_state(NODE_ID, running=True)
+
+    # This is the whole recovery path: no acknowledge, no reset button. It
+    # also guards the specific bug that IDLE would otherwise stick forever --
+    # InferencePipeline's cached status never became IDLE, so a healthy score
+    # after the restart would read as "no change" and never re-confirm.
+    assert status(registry) == NodeStatus.HEALTHY, status(registry)
+    print("restarting the machine returns it to HEALTHY with no operator action: PASS")
+
+
+def test_fault_trips_after_the_delay_and_confirms():
+    registry, protection, published = build(trip_motor_idx=2)
+
+    registry.set_status(NODE_ID, NodeStatus.FAULT)
+    # Still FAULT during the countdown, and nothing published yet -- the delay
+    # is what stops a transient from shutting the machine down.
+    assert published == [], published
+    assert status(registry) == NodeStatus.FAULT, status(registry)
+    snap = protection.snapshot(NODE_ID)
+    assert snap["trip_in_s"] is not None and snap["trip_in_s"] > 0, snap
+    print("FAULT starts a visible countdown without tripping immediately: PASS")
+
+    time.sleep(TRIP_DELAY_S + SETTLE_S)
+    assert published == [2], published
+    # The trip was sent but the machine has not been observed stopping yet, so
+    # it must NOT read TRIPPED. Claiming a machine is stopped while it is
+    # still turning is the one thing this must never do.
+    assert status(registry) == NodeStatus.FAULT, status(registry)
+    print("trip published on expiry; status stays FAULT until the stop is confirmed: PASS")
+
+    protection.on_motor_state(NODE_ID, running=False)
+    assert status(registry) == NodeStatus.TRIPPED, status(registry)
+    assert protection.snapshot(NODE_ID)["trip_failed"] is False
+    assert protection.snapshot(NODE_ID)["tripped_at"] is not None
+    print("gate-confirmed stop promotes FAULT -> TRIPPED: PASS")
+
+
+def test_unconfirmed_trip_is_reported_failed_and_stays_fault():
+    registry, protection, published = build(
+        trip_motor_idx=1, confirm_window_s=SHORT_CONFIRM_WINDOW_S)
+
+    registry.set_status(NODE_ID, NodeStatus.FAULT)
+    # Never call on_motor_state -- simulating a rig host that didn't act, or
+    # neighbouring machines shaking the frame hard enough to hold the gate
+    # above its running fraction.
+    time.sleep(TRIP_DELAY_S + SHORT_CONFIRM_WINDOW_S + SETTLE_S)
+
+    assert published == [1], published
+    assert status(registry) == NodeStatus.FAULT, status(registry)
+    assert protection.snapshot(NODE_ID)["trip_failed"] is True, protection.snapshot(NODE_ID)
+    print("a trip that never took reads FAULT + trip_failed, never TRIPPED: PASS")
+
+
+def test_hold_cancels_a_pending_trip():
+    registry, protection, published = build(trip_motor_idx=1)
+
+    registry.set_status(NODE_ID, NodeStatus.FAULT)
+    assert protection.hold(NODE_ID) is True
+    time.sleep(TRIP_DELAY_S + SETTLE_S)
+
+    assert published == [], published
+    assert status(registry) == NodeStatus.FAULT, status(registry)
+    assert protection.snapshot(NODE_ID)["trip_in_s"] is None
+    # Nothing left to cancel the second time -- the REST layer turns this into
+    # a 409 rather than reporting a success that stopped nothing.
+    assert protection.hold(NODE_ID) is False
+    print("Hold cancels the pending trip and leaves the machine running: PASS")
+
+
+def test_recovering_before_the_delay_expires_abandons_the_trip():
+    registry, protection, published = build(trip_motor_idx=1)
+
+    registry.set_status(NODE_ID, NodeStatus.FAULT)
+    registry.set_status(NODE_ID, NodeStatus.HEALTHY)
+    time.sleep(TRIP_DELAY_S + SETTLE_S)
+
+    assert published == [], published
+    assert status(registry) == NodeStatus.HEALTHY, status(registry)
+    print("a score that recovers mid-countdown abandons the trip: PASS")
+
+
+def test_fault_flap_does_not_restart_or_double_the_countdown():
+    registry, protection, published = build(trip_motor_idx=1)
+
+    registry.set_status(NODE_ID, NodeStatus.FAULT)
+    first = protection.snapshot(NODE_ID)["trip_in_s"]
+    time.sleep(TRIP_DELAY_S / 2)
+    # WARNING -> FAULT again mid-countdown. The WARNING cancels it and the
+    # fresh FAULT starts a new one; what must never happen is two timers
+    # racing, i.e. two published trips.
+    registry.set_status(NODE_ID, NodeStatus.WARNING)
+    registry.set_status(NODE_ID, NodeStatus.FAULT)
+    time.sleep(TRIP_DELAY_S + SETTLE_S)
+
+    assert first is not None
+    assert published == [1], published
+    print("flapping in and out of FAULT publishes exactly one trip: PASS")
+
+
+def test_unarmed_node_never_trips():
+    registry, protection, published = build(trip_motor_idx=None)
+
+    registry.set_status(NODE_ID, NodeStatus.FAULT)
+    time.sleep(TRIP_DELAY_S + SETTLE_S)
+
+    assert published == [], published
+    assert status(registry) == NodeStatus.FAULT, status(registry)
+    snap = protection.snapshot(NODE_ID)
+    assert snap["trip_in_s"] is None, snap
+    assert protection.armed(NODE_ID) is False
+    print("an asset with no trip output faults normally and never trips: PASS")
+
+
+def test_no_publisher_still_reports_idle_but_cannot_trip():
+    registry, protection, _ = build(trip_motor_idx=1, with_publisher=False)
+
+    # armed() is False despite a motor being mapped: there's nothing to
+    # publish through. This is the --mqtt-host-absent deployment, and IDLE
+    # reporting must still work there because it closes a gap that predates
+    # the trip feature entirely.
+    assert protection.armed(NODE_ID) is False
+    registry.set_status(NODE_ID, NodeStatus.FAULT)
+    time.sleep(TRIP_DELAY_S + SETTLE_S)
+    assert status(registry) == NodeStatus.FAULT, status(registry)
+
+    protection.on_motor_state(NODE_ID, running=False)
+    assert status(registry) == NodeStatus.IDLE, status(registry)
+    print("with no publisher: no trips, but IDLE reporting still works: PASS")
+
+
+def test_tripped_node_restarted_without_a_fix_trips_again():
+    registry, protection, published = build(trip_motor_idx=1)
+
+    registry.set_status(NODE_ID, NodeStatus.FAULT)
+    time.sleep(TRIP_DELAY_S + SETTLE_S)
+    protection.on_motor_state(NODE_ID, running=False)
+    assert status(registry) == NodeStatus.TRIPPED, status(registry)
+
+    # Operator restarts it without fixing anything: back to HEALTHY, then the
+    # score re-confirms FAULT and it trips a second time. You cannot restart
+    # your way out of a real fault.
+    protection.on_motor_state(NODE_ID, running=True)
+    assert status(registry) == NodeStatus.HEALTHY, status(registry)
+    assert protection.snapshot(NODE_ID)["tripped_at"] is None
+
+    registry.set_status(NODE_ID, NodeStatus.FAULT)
+    time.sleep(TRIP_DELAY_S + SETTLE_S)
+    assert published == [1, 1], published
+    print("restarting a tripped machine that is still faulty trips it again: PASS")
+
+
+if __name__ == "__main__":
+    try:
+        test_operator_stop_reads_idle_not_tripped()
+        test_restart_returns_to_healthy_from_idle()
+        test_fault_trips_after_the_delay_and_confirms()
+        test_unconfirmed_trip_is_reported_failed_and_stays_fault()
+        test_hold_cancels_a_pending_trip()
+        test_recovering_before_the_delay_expires_abandons_the_trip()
+        test_fault_flap_does_not_restart_or_double_the_countdown()
+        test_unarmed_node_never_trips()
+        test_no_publisher_still_reports_idle_but_cannot_trip()
+        test_tripped_node_restarted_without_a_fix_trips_again()
+        print("RESULT: PASS - protection ladder, IDLE/TRIPPED split, Hold and "
+              "failed-trip handling all behave")
+    except AssertionError as e:
+        print(f"RESULT: FAIL - {e}")
+        sys.exit(1)

@@ -17,7 +17,7 @@ from typing import Callable, List, Optional, Tuple
 
 from sensor_frame import SensorFrame
 from registry import NodeStatus, Registry
-from gate import MotorState, MotorStateGate
+from gate import MotorState, MotorStateGate, compute_energy
 from features import build_feature_vector, standardize_scalars
 from autoencoder import (build_autoencoder, reconstruction_error, save_model,
                           train_autoencoder)
@@ -69,6 +69,14 @@ class CommissioningSession:
         self._epochs = epochs
         self._collected: List[Tuple[float, ...]] = []
         self._frozen: List[Tuple[float, ...]] = []
+        # gate.py compute_energy() per collected frame, kept alongside
+        # self._collected (same index, appended together) so train() can
+        # calibrate this node's running/stopped gate reference from the same
+        # known-running batch it fits the model on -- the one moment we can
+        # be sure what "this machine, turning" measures for this sensor at
+        # this mounting point. Frozen with the batch by stop_collecting().
+        self._energies: List[float] = []
+        self._frozen_energies: List[float] = []
         # Where each collected vector's scalar tail starts -- constant for
         # the whole session (same node, same sensor_config throughout), set
         # from build_feature_vector()'s own return each frame rather than
@@ -88,6 +96,7 @@ class CommissioningSession:
         # session-local CommissioningError.
         self._registry.start_commissioning(self._node_id)
         self._collected = []
+        self._energies = []
         self._spectral_dim = None
 
     def feed_frame(self, frame: SensorFrame) -> None:
@@ -108,6 +117,7 @@ class CommissioningSession:
         vector, spectral_dim = build_feature_vector(frame, entry.sensor_config, entry.input_dim)
         self._spectral_dim = spectral_dim
         self._collected.append(vector)
+        self._energies.append(compute_energy(frame))
 
     def stop_collecting(self) -> None:
         """Explicit stop trigger (S3.5, dashboard redesign S6: "Stop &
@@ -128,6 +138,7 @@ class CommissioningSession:
 
         self._registry.stop_collecting(self._node_id)
         self._frozen = list(self._collected)
+        self._frozen_energies = list(self._energies)
 
     def train(self, on_epoch: Optional[Callable[[int, int], None]] = None) -> str:
         """Fits the autoencoder on the batch frozen by stop_collecting(),
@@ -170,12 +181,23 @@ class CommissioningSession:
         healthy_scores = [reconstruction_error(model, vector) for vector in standardized]
         warning_threshold, fault_threshold = _thresholds_from_healthy(healthy_scores)
 
+        # Median, not mean: the batch is whatever the machine did during
+        # commissioning, so a few frames caught during spin-up (or a
+        # transient knock) shouldn't drag the reference the gate scales from.
+        # None when the batch somehow carries no energies at all, which
+        # leaves the entry's existing reference untouched
+        # (complete_commissioning ignores None) rather than writing a zero
+        # that would make gate.py fall back for this node forever.
+        running_energy_ref = (statistics.median(self._frozen_energies)
+                               if self._frozen_energies else None)
+
         os.makedirs(self._models_dir, exist_ok=True)
         model_path = os.path.join(self._models_dir, f"{self._node_id}.pt")
         save_model(model, model_path)
         self._registry.complete_commissioning(
             self._node_id, model_path,
             warning_threshold=warning_threshold, fault_threshold=fault_threshold,
-            scalar_mu=scalar_mu, scalar_sigma=scalar_sigma)
+            scalar_mu=scalar_mu, scalar_sigma=scalar_sigma,
+            running_energy_ref=running_energy_ref)
 
         return model_path

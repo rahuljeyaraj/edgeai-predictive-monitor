@@ -34,6 +34,20 @@ _YELLOW_WARNING_BREATHE = LedCommand(rgb="#f59e0b", mode="breathe", period_ms=15
 _RED_FAULT_STROBE = LedCommand(rgb="#ff0000", mode="strobe", period_ms=200)
 _GREY_PAUSED = LedCommand(rgb="#717171", mode="const", period_ms=0)
 _GREY_OFFLINE = LedCommand(rgb="#4d4d4d", mode="const", period_ms=0)
+# Machinery-protection states (docs/MOTOR_STOP_PLAN.md).
+#
+# IDLE is pure-primary blue, following this file's own near-primary rule --
+# and blue rather than another grey because "switched off by an operator" is
+# a normal, healthy condition, while the greys above both mean "you are not
+# getting data from this node".
+_BLUE_IDLE = LedCommand(rgb="#0000ff", mode="const", period_ms=0)
+# TRIPPED reuses FAULT's red and differs only in strobe period: 200ms reads
+# as an urgent alarm, 1000ms as a deliberate, latched "I already acted".
+# Deliberately NOT a new mode -- const/breathe/strobe is the whole vocabulary
+# both the MQTT payload (wire_protocol.LED_MODE_TO_INT) and the MCU display
+# firmware understand, so a slow blink has to be a slow strobe or it would
+# mean re-flashing every node.
+_RED_TRIPPED_SLOW = LedCommand(rgb="#ff0000", mode="strobe", period_ms=1000)
 
 # Every NodeStatus a node can actually be pushed while still reachable over
 # MQTT to receive it. OFFLINE is included defensively even though nothing
@@ -49,6 +63,8 @@ _LED_BY_STATUS = {
     NodeStatus.FAULT: _RED_FAULT_STROBE,
     NodeStatus.PAUSED: _GREY_PAUSED,
     NodeStatus.OFFLINE: _GREY_OFFLINE,
+    NodeStatus.IDLE: _BLUE_IDLE,
+    NodeStatus.TRIPPED: _RED_TRIPPED_SLOW,
 }
 
 

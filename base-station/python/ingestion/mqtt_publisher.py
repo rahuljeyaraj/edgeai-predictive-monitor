@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
 """Ported from edgeai-predictive-monitor-unoq/mpu/ingestion/mqtt_publisher.py.
-Base station -> satellite node command publishing: the publish-side
-counterpart to mqtt_subscriber.py's subscribe-only client. Today this
-only carries STATUS_LED (0x08) -- pushed whenever Registry.on_status_change
-fires (main.py wires that up) -- so a node's own status LED always
-reflects what the dashboard currently shows without the node ever
-polling the REST API.
+Base station -> node command publishing: the publish-side counterpart to
+mqtt_subscriber.py's subscribe-only client. Two commands today:
 
-Payload is binary: [TYPE: 1B][display_rgb_payload] (common/wire_protocol.py).
+  STATUS_LED (0x08) -- pushed whenever Registry.on_status_change fires
+      (main.py wires that up), so a node's own status LED always reflects
+      what the dashboard currently shows without the node ever polling the
+      REST API.
+  MOTOR_STOP (0x09) -- the machinery-protection trip (protection/), pushed
+      to whichever host owns the rig's serial port.
+
+Payload is binary: [TYPE: 1B][PAYLOAD] (common/wire_protocol.py).
 
 Kept as its own client (rather than extending MqttSubscriber into one
 bidirectional class) since main.py only ever needs one of these per
@@ -22,6 +25,7 @@ from wire_protocol import (
     LED_MODE_TO_INT,
     MqttMsgType,
     encode_display_rgb_payload,
+    encode_motor_stop_payload,
     encode_mqtt_message,
     rgb_hex_to_int,
 )
@@ -48,6 +52,24 @@ class MqttPublisher:
         payload = encode_display_rgb_payload(rgb_hex_to_int(rgb), LED_MODE_TO_INT[mode], period_ms)
         message = encode_mqtt_message(MqttMsgType.STATUS_LED, payload)
         topic = CMD_TOPIC_FMT.format(node_id=node_id)
+        self._client.publish(topic, message, qos=1)
+
+    def publish_motor_stop(self, node_id: str, motor_idx: int) -> None:
+        """Machinery-protection trip (docs/MOTOR_STOP_PLAN.md): tells whatever
+        host owns the rig's serial port to stop one motor.
+
+        node_id here is the *rig host's* topic identity, not the monitored
+        asset's -- the asset that faulted and the machine that gets stopped are
+        different things, and only the caller (protection/) knows the mapping
+        between them.
+
+        Fire-and-forget like publish_status(): paho's publish() queues rather
+        than blocking, which is what makes it safe to call from
+        Registry.on_status_change's synchronous, lock-holding context."""
+        payload = encode_motor_stop_payload(motor_idx)
+        message = encode_mqtt_message(MqttMsgType.MOTOR_STOP, payload)
+        topic = CMD_TOPIC_FMT.format(node_id=node_id)
+        logger.info("publishing MOTOR_STOP motor=%d to %s", motor_idx, topic)
         self._client.publish(topic, message, qos=1)
 
     def stop(self) -> None:

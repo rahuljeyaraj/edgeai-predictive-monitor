@@ -28,7 +28,12 @@ def main():
     assert color_for(NodeStatus.COMMISSIONING_TRAINING) == ("#22d3ee", "const", 0)
     print("discovered/in-progress statuses map to cyan const: PASS")
 
-    assert color_for(NodeStatus.HEALTHY) == ("#10b981", "const", 0)
+    # Near-primary, NOT the frontend's Tailwind palette: emerald-500 #10b981
+    # and red-500 #ef4444 were confirmed on real hardware to render bluish
+    # and pink respectively on an uncorrected WS2812. See status_color.py's
+    # module docstring. This test asserted the old screen colors long after
+    # the code was retuned, so it had been failing silently.
+    assert color_for(NodeStatus.HEALTHY) == ("#00ff00", "const", 0)
     print("healthy maps to green const: PASS")
 
     warning = color_for(NodeStatus.WARNING)
@@ -36,10 +41,22 @@ def main():
     print("warning maps to yellow breathe: PASS")
 
     fault = color_for(NodeStatus.FAULT)
-    assert fault.rgb == "#ef4444" and fault.mode == "strobe", fault
+    assert fault.rgb == "#ff0000" and fault.mode == "strobe", fault
     print("fault maps to red strobe: PASS")
 
-    print("RESULT: PASS - status_color.color_for matches the dashboard's own status colors")
+    idle = color_for(NodeStatus.IDLE)
+    assert idle == ("#0000ff", "const", 0), idle
+    print("idle maps to blue const: PASS")
+
+    # Same red as FAULT, distinguished only by a slower strobe -- an urgent
+    # alarm vs a latched "already acted". Asserting the period explicitly
+    # because that difference IS the whole signal to an operator.
+    tripped = color_for(NodeStatus.TRIPPED)
+    assert tripped.rgb == "#ff0000" and tripped.mode == "strobe", tripped
+    assert tripped.period_ms > fault.period_ms, (tripped, fault)
+    print("tripped maps to red strobe, slower than fault: PASS")
+
+    print("RESULT: PASS - status_color.color_for matches the hardware-tuned status colors")
 
 
 if __name__ == "__main__":

@@ -38,7 +38,9 @@ from store import HistoryStore
 from manager import PipelineManager
 
 
-def default_gate_factory() -> MotorStateGate:
+def default_gate_factory(node_id: str = "n") -> MotorStateGate:
+    # Absolute-threshold mode (no energy_ref_provider): these tests assert the
+    # gate's own debounce/threshold behaviour, not per-node calibration.
     return MotorStateGate(threshold=0.05, debounce_frames=3)
 
 
@@ -162,7 +164,7 @@ def test_commissioned_node_routes_through_inference_and_writes_history():
                                      warning_threshold=0.05, fault_threshold=0.2)
 
     manager = PipelineManager(
-        registry, lambda: MotorStateGate(threshold=0.5, debounce_frames=1),
+        registry, lambda node_id: MotorStateGate(threshold=0.5, debounce_frames=1),
         history_store=history, status_debounce_frames=1)
 
     # Before this frame the node has no per-motor pipeline yet -- route()
@@ -221,7 +223,7 @@ def test_recommissioning_rebuilds_stale_inference_pipeline():
                                      warning_threshold=1e8, fault_threshold=1e9)
 
     manager = PipelineManager(
-        registry, lambda: MotorStateGate(threshold=0.5, debounce_frames=1),
+        registry, lambda node_id: MotorStateGate(threshold=0.5, debounce_frames=1),
         history_store=history, status_debounce_frames=1)
 
     # Builds and caches the pipeline against the first commissioning's
@@ -269,7 +271,7 @@ def test_paused_node_is_not_scored():
                                      warning_threshold=0.05, fault_threshold=0.2)
 
     manager = PipelineManager(
-        registry, lambda: MotorStateGate(threshold=0.5, debounce_frames=1),
+        registry, lambda node_id: MotorStateGate(threshold=0.5, debounce_frames=1),
         history_store=history, status_debounce_frames=1)
 
     # Score once while running so there's a baseline last_anomaly_score to
@@ -325,7 +327,7 @@ def test_resume_resyncs_stale_confirmed_status():
                                      warning_threshold=0.05, fault_threshold=0.2)
 
     manager = PipelineManager(
-        registry, lambda: MotorStateGate(threshold=0.5, debounce_frames=1),
+        registry, lambda node_id: MotorStateGate(threshold=0.5, debounce_frames=1),
         history_store=history, status_debounce_frames=1)
 
     # Drive the node to a confirmed FAULT, caching an InferencePipeline
@@ -554,7 +556,7 @@ def test_classification_runs_without_commissioning():
     registry, classifier_registry, scaling_path = classifier_env({"bearing": 0.2, "healthy": 0.8})
     events = []
     manager = PipelineManager(
-        registry, lambda: MotorStateGate(threshold=0.5, debounce_frames=1),
+        registry, lambda node_id: MotorStateGate(threshold=0.5, debounce_frames=1),
         classifier_registry=classifier_registry, scaling_path=scaling_path,
         on_classification=lambda node_id, ts, result: events.append((node_id, ts, result)))
 
@@ -577,7 +579,7 @@ def test_classification_skipped_with_no_device_type():
     registry, classifier_registry, scaling_path = classifier_env({"bearing": 0.2, "healthy": 0.8})
     registry.set_device_type(NODE_ID, None)
     manager = PipelineManager(
-        registry, lambda: MotorStateGate(threshold=0.5, debounce_frames=1),
+        registry, lambda node_id: MotorStateGate(threshold=0.5, debounce_frames=1),
         classifier_registry=classifier_registry, scaling_path=scaling_path)
 
     manager.route(scored_frame(HEALTHY_BINS, timestamp=0.0))
@@ -590,7 +592,7 @@ def test_classification_skipped_with_no_fetched_model():
     registry, classifier_registry, scaling_path = classifier_env({"bearing": 0.2, "healthy": 0.8})
     registry.set_device_type(NODE_ID, "some-other-type")  # linked but no model fetched for THIS type
     manager = PipelineManager(
-        registry, lambda: MotorStateGate(threshold=0.5, debounce_frames=1),
+        registry, lambda node_id: MotorStateGate(threshold=0.5, debounce_frames=1),
         classifier_registry=classifier_registry, scaling_path=scaling_path)
 
     manager.route(scored_frame(HEALTHY_BINS, timestamp=0.0))
@@ -618,7 +620,7 @@ def test_classification_frozen_while_paused():
     registry.complete_commissioning(NODE_ID, model_path, warning_threshold=1e8, fault_threshold=1e9)
 
     manager = PipelineManager(
-        registry, lambda: MotorStateGate(threshold=0.5, debounce_frames=1),
+        registry, lambda node_id: MotorStateGate(threshold=0.5, debounce_frames=1),
         classifier_registry=classifier_registry, scaling_path=scaling_path)
 
     manager.route(scored_frame(HEALTHY_BINS, timestamp=0.0))

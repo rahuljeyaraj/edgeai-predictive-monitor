@@ -46,7 +46,7 @@ MIC_SCALARS = {"rms_mic": 1.0, "kurtosis_mic": 1.0, "std_mic": 1.0,
                "peak_mic": 1.0, "crest_factor_mic": 1.0, "skewness_mic": 1.0}
 
 
-def gate_factory() -> MotorStateGate:
+def gate_factory(node_id: str = "n") -> MotorStateGate:
     return MotorStateGate(threshold=0.5, debounce_frames=1)
 
 

@@ -24,11 +24,17 @@ OFFLINE_AFTER_S = 30
 # uncommissioned/commissioning_* are "New" (their own dashboard flow, no point
 # duplicating on a hard-to-read display), and PAUSED is intentional/expected.
 # Neither belongs in an at-a-glance fleet-health readout.
+# IDLE joins them for the same reason PAUSED is here: a machine an operator
+# switched off is an expected condition, not a fleet-health problem, and this
+# display exists to answer "is anything wrong". TRIPPED is the opposite -- it
+# means this system stopped a machine, which is the single most important
+# thing the fleet can be doing, so it counts and ranks above FAULT below.
 _UNCOUNTED = frozenset({
     NodeStatus.UNCOMMISSIONED,
     NodeStatus.COMMISSIONING_COLLECTING,
     NodeStatus.COMMISSIONING_TRAINING,
     NodeStatus.PAUSED,
+    NodeStatus.IDLE,
 })
 
 # Shorthand words for the matrix (not the NodeStatus vocabulary used
@@ -43,6 +49,7 @@ _HEALTHY_WORD = "OK"
 _FAULT_WORD = "FLT"
 _WARNING_WORD = "WRN"
 _OFFLINE_WORD = "OFF"
+_TRIPPED_WORD = "TRP"
 
 
 def fleet_status_text(entries: Iterable[RegistryEntry],
@@ -55,7 +62,7 @@ def fleet_status_text(entries: Iterable[RegistryEntry],
     if now is None:
         now = time.time()
 
-    healthy = warning = fault = offline = 0
+    healthy = warning = fault = offline = tripped = 0
     for entry in entries:
         if entry.status in _UNCOUNTED:
             continue
@@ -73,19 +80,25 @@ def fleet_status_text(entries: Iterable[RegistryEntry],
             warning += 1
         elif entry.status == NodeStatus.FAULT:
             fault += 1
+        elif entry.status == NodeStatus.TRIPPED:
+            tripped += 1
 
-    if healthy == 0 and warning == 0 and fault == 0 and offline == 0:
+    if healthy == 0 and warning == 0 and fault == 0 and offline == 0 and tripped == 0:
         # Empty fleet, or nothing commissioned yet -> blank display.
         return ""
-    if warning == 0 and fault == 0 and offline == 0:
+    if warning == 0 and fault == 0 and offline == 0 and tripped == 0:
         # Everything healthy -> just the count (doubles as a fleet-size
         # readout), not a bare "ALL GOOD".
         return f"{healthy}{_HEALTHY_WORD}"
     # Anything wrong: nonzero buckets, fixed severity order
-    # fault -> warning -> offline, healthy last if nonzero. The word
-    # shortening (OK/FLT/WRN/OFF) made room to keep healthy in the message
-    # even here, instead of dropping it (§3 revision).
+    # tripped -> fault -> warning -> offline, healthy last if nonzero. The word
+    # shortening (OK/TRP/FLT/WRN/OFF) made room to keep healthy in the message
+    # even here, instead of dropping it (§3 revision). TRIPPED leads because a
+    # machine this system has physically stopped outranks one that is merely
+    # faulted -- it's the one state that already had a real-world consequence.
     parts = []
+    if tripped:
+        parts.append(f"{tripped}{_TRIPPED_WORD}")
     if fault:
         parts.append(f"{fault}{_FAULT_WORD}")
     if warning:

@@ -120,12 +120,13 @@ class MotorPipeline:
     node_id, owned by PipelineManager."""
 
     def __init__(self, node_id: str, registry: Registry,
-                 gate_factory: Callable[[], MotorStateGate],
+                 gate_factory: Callable[[str], MotorStateGate],
                  debounce_frames: int, history_store: Optional["HistoryStore"],
                  on_score: Optional[Callable[[str, float, float, NodeStatus], None]] = None,
                  classifier_registry: Optional["ClassifierRegistry"] = None,
                  scaling_path: Optional[str] = None,
-                 on_classification: Optional[Callable[[str, float, dict], None]] = None):
+                 on_classification: Optional[Callable[[str, float, dict], None]] = None,
+                 on_motor_state: Optional[Callable[[str, bool], None]] = None):
         self.node_id = node_id
         self.frame_count = 0
         self._registry = registry
@@ -145,10 +146,17 @@ class MotorPipeline:
         # debouncing the same frames independently is a little duplicated
         # state, but far simpler than threading a shared gate through
         # InferencePipeline's constructor just to avoid it.
-        self._classification_gate = gate_factory()
+        self._classification_gate = gate_factory(node_id)
         self._inference: Optional[InferencePipeline] = None
         self._commissioned_at: Optional[float] = None
         self._paused_since_last_frame = False
+        self._on_motor_state = on_motor_state
+        # Edge-triggered, so protection/ hears each stop/start once rather
+        # than on every frame. None until the gate has confirmed RUNNING at
+        # least once -- see _report_motor_state for why the initial STOPPED
+        # default must not be reported as a real observation.
+        self._motor_running: Optional[bool] = None
+        self._seen_running = False
 
     def handle_frame(self, frame: SensorFrame, status: NodeStatus) -> None:
         self.frame_count += 1
@@ -185,7 +193,7 @@ class MotorPipeline:
             # set_status() underneath.
             try:
                 self._inference = InferencePipeline(
-                    self._registry, self.node_id, self._gate_factory(),
+                    self._registry, self.node_id, self._gate_factory(self.node_id),
                     self._debounce_frames)
             except InferenceError:
                 # Registry said model_path was set but the file vanished
@@ -208,6 +216,7 @@ class MotorPipeline:
         self._paused_since_last_frame = False
 
         score = self._inference.handle_frame(frame)
+        self._report_motor_state(self._inference.motor_state)
         if score is not None:
             self._registry.record_anomaly_score(self.node_id, score)
             if self._history_store is not None:
@@ -223,6 +232,42 @@ class MotorPipeline:
                 # waterfall/spectrum WS push, even though scoring itself
                 # already runs per gated frame).
                 self._on_score(self.node_id, frame.timestamp, score, self._inference.status)
+
+    def _report_motor_state(self, state: MotorState) -> None:
+        """Fire on_motor_state only when the confirmed running/stopped state
+        actually changes, so protection/ sees one event per stop rather than
+        one per frame.
+
+        Suppressed until the gate has confirmed RUNNING at least once:
+        MotorStateGate starts at STOPPED by construction and needs
+        debounce_frames of agreement to leave it, so the first few frames of
+        every fresh pipeline report STOPPED regardless of what the machine is
+        doing. Reporting that would flash every node through IDLE on each
+        process restart and each re-commission. The cost is that a machine
+        already stopped when this process started stays at its last persisted
+        status until it runs once -- which is honest: we have no observation
+        of it running to compare against yet."""
+        if self._on_motor_state is None:
+            return
+        running = state == MotorState.RUNNING
+        if running:
+            self._seen_running = True
+        elif not self._seen_running:
+            return
+        if running == self._motor_running:
+            return
+        self._motor_running = running
+        if running and self._inference is not None:
+            # The other half of the recovery fix in protection.py's
+            # on_motor_state: that call forces the registry back to HEALTHY,
+            # and this re-syncs this pipeline's own cached confirmed status to
+            # match. Skip it and the two disagree -- the registry reads
+            # HEALTHY while this cache still holds the pre-stop status, so the
+            # first score landing back in that same zone is mistaken for "no
+            # change" and never re-confirms. Identical trap to the
+            # pause/resume one reset_to_healthy() was written for.
+            self._inference.reset_to_healthy()
+        self._on_motor_state(self.node_id, running)
 
     def _maybe_classify(self, frame: SensorFrame, entry: RegistryEntry) -> None:
         """Fault classification (docs/EDGE_IMPULSE_FAULT_CLASSIFICATION_PLAN.md
@@ -280,14 +325,15 @@ class PipelineManager:
     """One instance owns all per-motor pipelines for this process.
     route() is the only entry point ingestion needs to call."""
 
-    def __init__(self, registry: Registry, gate_factory: Callable[[], MotorStateGate],
+    def __init__(self, registry: Registry, gate_factory: Callable[[str], MotorStateGate],
                  perf_monitor: Optional["PerformanceMonitor"] = None,
                  history_store: Optional["HistoryStore"] = None,
                  status_debounce_frames: int = _DEFAULT_STATUS_DEBOUNCE_FRAMES,
                  on_score: Optional[Callable[[str, float, float, NodeStatus], None]] = None,
                  classifier_registry: Optional["ClassifierRegistry"] = None,
                  scaling_path: Optional[str] = None,
-                 on_classification: Optional[Callable[[str, float, dict], None]] = None):
+                 on_classification: Optional[Callable[[str, float, dict], None]] = None,
+                 on_motor_state: Optional[Callable[[str, bool], None]] = None):
         self._registry = registry
         self._gate_factory = gate_factory
         self._perf_monitor = perf_monitor
@@ -297,6 +343,7 @@ class PipelineManager:
         self._classifier_registry = classifier_registry
         self._scaling_path = scaling_path
         self._on_classification = on_classification
+        self._on_motor_state = on_motor_state
         self._pipelines: Dict[str, MotorPipeline] = {}
 
     def route(self, frame: SensorFrame) -> Optional[MotorPipeline]:
@@ -307,7 +354,8 @@ class PipelineManager:
                     frame.node_id, self._registry, self._gate_factory,
                     self._status_debounce_frames, self._history_store,
                     on_score=self._on_score, classifier_registry=self._classifier_registry,
-                    scaling_path=self._scaling_path, on_classification=self._on_classification)
+                    scaling_path=self._scaling_path, on_classification=self._on_classification,
+                    on_motor_state=self._on_motor_state)
                 self._pipelines[frame.node_id] = pipeline
                 sensor_config, input_dim = _infer_sensor_config_and_dim(frame)
                 self._registry.add(frame.node_id, sensor_config=sensor_config, input_dim=input_dim)

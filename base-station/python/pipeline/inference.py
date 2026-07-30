@@ -79,6 +79,15 @@ class InferencePipeline:
         return self._status
 
     @property
+    def motor_state(self) -> MotorState:
+        """The gate's confirmed running/stopped state as of the last
+        handle_frame(). Exposed because a stopped machine is a reportable
+        condition in its own right (registry.NodeStatus.IDLE/TRIPPED), not
+        merely a reason to skip scoring -- this pipeline computes that fact on
+        every frame and used to discard it."""
+        return self._gate.state
+
+    @property
     def last_score(self) -> Optional[float]:
         return self._last_score
 

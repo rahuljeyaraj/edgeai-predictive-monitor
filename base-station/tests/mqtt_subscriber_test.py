@@ -39,7 +39,7 @@ from gate import MotorStateGate
 from manager import PipelineManager
 
 
-def default_gate_factory() -> MotorStateGate:
+def default_gate_factory(node_id: str = "n") -> MotorStateGate:
     return MotorStateGate(threshold=0.05, debounce_frames=3)
 
 TOPIC = "epm/a4cf12/data"
