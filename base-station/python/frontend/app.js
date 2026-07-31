@@ -208,6 +208,46 @@ function tickTripCountdowns() {
 }
 setInterval(tickTripCountdowns, 500);
 
+// Stopped baseline (pipeline/stopped_baseline.py). Lives in the Protection
+// section because that's when an operator has a reason to care: without one,
+// the running/stopped gate can't reliably tell a stopped machine from a
+// running one, so a trip can never confirm and the asset can never read IDLE.
+//
+// The "machine off" instruction rides in the button label rather than a hint
+// line under the control. It is the one thing nothing in software can check
+// (stopped_baseline.py's module docstring), and a capture taken with the
+// machine running teaches the gate the opposite of what it needs.
+function stoppedBaselineRowHtml(entry) {
+  const safeId = escapeHtml(entry.node_id);
+  const progress = entry.stopped_baseline_progress;
+  const measured = entry.stopped_energy_ref !== null
+    && entry.stopped_energy_ref !== undefined;
+
+  let state;
+  let buttons;
+  if (progress) {
+    const enough = progress.collected >= progress.min_frames;
+    state = `Measuring ${progress.collected}/${progress.min_frames}`;
+    buttons =
+      `<button type="button" class="btn-label" data-action="stopped_baseline_stop" `
+      + `data-node-id="${safeId}"${enough ? "" : " disabled"}>Save</button>`
+      + `<button type="button" class="btn-label" data-action="stopped_baseline_cancel" `
+      + `data-node-id="${safeId}">Cancel</button>`;
+  } else {
+    state = measured ? "Measured" : "Not measured";
+    buttons =
+      `<button type="button" class="btn-label" data-action="stopped_baseline_start" `
+      + `data-node-id="${safeId}">${measured ? "Re-measure" : "Measure"} with machine off</button>`;
+  }
+
+  return `<div class="protection__row">
+      <span class="protection__label">Stopped baseline</span>
+      <span class="protection__state${measured || progress ? "" : " protection__state--missing"}" `
+    + `data-baseline-state data-node-id="${safeId}">${escapeHtml(state)}</span>
+      ${buttons}
+    </div>`;
+}
+
 function protectionSectionHtml(entry) {
   const p = entry.protection;
   // Absent only when the backend has no ProtectionController at all -- render
@@ -249,6 +289,7 @@ function protectionSectionHtml(entry) {
       <span class="protection__state${p.trip_failed ? " protection__state--failed" : ""}${countingDown ? " protection__state--counting" : ""}" data-trip-status data-node-id="${safeId}">${escapeHtml(protectionStatusText(entry))}</span>
       <button type="button" class="btn-label btn-label--danger" data-action="protection_hold" data-node-id="${safeId}"${countingDown ? "" : " hidden"}>Hold</button>
     </div>
+    ${stoppedBaselineRowHtml(entry)}
   </div>`;
 }
 
@@ -626,6 +667,11 @@ const ACTION_ENDPOINT = {
   capture_stop: (id) => ["POST", `/nodes/${id}/capture/stop`],
   capture_cancel: (id) => ["POST", `/nodes/${id}/capture/cancel`],
   protection_hold: (id) => ["POST", `/nodes/${id}/protection/hold`],
+  stopped_baseline_start: (id) => ["POST", `/nodes/${id}/stopped_baseline/start`],
+  stopped_baseline_cancel: (id) => ["POST", `/nodes/${id}/stopped_baseline/cancel`],
+  // stopped_baseline_stop is deliberately absent -- it reports back what it
+  // measured, so it goes through saveStoppedBaseline() instead of
+  // runAction()'s fire-and-forget shape. Same reason saveCapture() does.
 };
 
 async function api(method, path, body) {
@@ -699,6 +745,24 @@ async function saveCapture(nodeId, label, count, deviceType) {
   } catch (err) {
     console.error(`Save capture on ${nodeId} failed`, err);
     alert(`Save capture failed: ${err.message}`);
+  }
+  await pollNodes();
+}
+
+// Reports what it measured (and, on failure, *why* the collected frames
+// don't look like a stopped machine), so it doesn't fit runAction's
+// fire-and-forget shape -- same reason saveCapture() above doesn't.
+async function saveStoppedBaseline(nodeId) {
+  try {
+    const data = await api("POST", `/nodes/${nodeId}/stopped_baseline/stop`);
+    const frames = (data.stopped_baseline_result || {}).frames;
+    showToast(`Stopped baseline measured from ${frames} frames`);
+  } catch (err) {
+    console.error(`Save stopped baseline on ${nodeId} failed`, err);
+    // alert, not a toast: the failures here are instructions (the machine
+    // was still moving, keep collecting) and a 4s auto-dismiss would drop
+    // them before they'd been read.
+    alert(err.message);
   }
   await pollNodes();
 }
@@ -1247,6 +1311,10 @@ document.getElementById("fleet-list").addEventListener("click", (e) => {
       startDeviceTypeEdit(nodeId);
       return;
     }
+    if (action === "stopped_baseline_stop") {
+      saveStoppedBaseline(nodeId);
+      return;
+    }
     runAction(action, nodeId);
     return;
   }
@@ -1616,6 +1684,16 @@ Charts.init((msg) => {
       }
     }
     if (msg.state === "stopped") maybeAutoSaveCapture(msg.node_id);
+  } else if (msg.type === "stopped_baseline") {
+    // Pushed per collected frame, not just on transitions -- the count is
+    // what the operator is watching while standing next to a machine they
+    // just switched off, and GET /nodes only refreshes every 5s.
+    const entry = state.lastNodes[msg.node_id];
+    if (entry) {
+      if (msg.state === "idle") delete entry.stopped_baseline_progress;
+      else entry.stopped_baseline_progress = { collected: msg.collected,
+                                                min_frames: msg.min_frames };
+    }
   }
   renderSummary(state.lastNodes);
   if (editingNodeId === null && editingDeviceTypeNodeId === null) renderFleetList(state.lastNodes);

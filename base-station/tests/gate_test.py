@@ -11,7 +11,8 @@ Run with PYTHONPATH covering base-station/python/ingestion and base-station/pyth
 import sys
 
 from sensor_frame import FrameSource, SensorFrame
-from gate import MotorState, MotorStateGate, compute_energy
+from gate import (DEFAULT_STOPPED_MARGIN, MotorState, MotorStateGate, StoppedBaseline,
+                   compute_energy, excess_over_stopped)
 
 THRESHOLD = 1.0
 DEBOUNCE = 3
@@ -185,6 +186,215 @@ def test_invalid_running_fraction_rejected():
     print("running_fraction outside (0,1) is rejected: PASS")
 
 
+# ---------------------------------------------------------------------
+# Stopped baselines (gate.py's module docstring, docs/progress4.md S4)
+#
+# The relative gate above fixed the *scale* problem but not the separation
+# one: on real hardware a stopped rig reads only ~1.2x below a running one,
+# because ~360 of the 384 bins an accel-only frame carries are the KX134's
+# broadband noise floor, which is identical either way.
+#
+# The three tuples below are REAL accel_x spectra measured live off the
+# rig's own /ws feed -- the stopped ones with the motors confirmed
+# physically off, the running one at the 90rpm commissioning baseline.
+# They are here rather than synthesized because synthetic bins are what hid
+# both earlier layers of this bug: gate_test's original single-digit values
+# hid the absolute-threshold bug for a whole shipped release, and no
+# hand-written "stopped" spectrum would have been written with a noise floor
+# 65% as tall as the running one, which is the entire difficulty.
+#
+# RUNNING_FRAME_X is deliberately the QUIETEST of the 45 running frames
+# captured, not a typical one -- the worst case is what a gate has to
+# survive.
+# ---------------------------------------------------------------------
+
+STOPPED_REF_X = (
+    13006, 14388, 13321, 14732, 13727, 13373, 14343, 13447, 14344, 13535,
+    12772, 11915, 13437, 12796, 11519, 12133, 12260, 11101, 12313, 12423,
+    11379, 11180, 10307, 10935, 11405, 10769, 10759, 11063, 10163, 10232,
+    8780, 9526, 9266, 8936, 9673, 8716, 8725, 8691, 8657, 8113, 7627,
+    8500, 8314, 7472, 7528, 7326, 7541, 7268, 6821, 6177, 6669, 6470,
+    6056, 5595, 5456, 5556, 5369, 5750, 5160, 5204, 5206, 4780, 4878,
+    5064, 6171, 5147, 4763, 4575, 4693, 4194, 4011, 4103, 4290, 3562,
+    3760, 3540, 3564, 3393, 3292, 3392, 3275, 2762, 2872, 3263, 3013,
+    3062, 2875, 2859, 2563, 2739, 2514, 2600, 2581, 2438, 2047, 2371,
+    2340, 2389, 1943, 1831, 1838, 1804, 1523, 1492, 1541, 1538, 1339,
+    1359, 1238, 1237, 1205, 1033, 1024, 1066, 940, 829, 788, 802, 670,
+    675, 595, 551, 474, 480, 392, 406, 375, 324,
+)
+
+STOPPED_FRAME_X = (
+    10384, 21071, 10945, 15791, 20983, 11058, 10148, 12275, 13872, 13111,
+    10915, 7725, 14384, 9438, 7561, 10780, 18887, 6644, 9944, 11065,
+    18065, 10598, 13426, 13222, 11339, 5741, 8675, 9698, 9019, 9684,
+    11151, 5213, 9712, 8902, 8701, 4839, 9124, 6954, 11825, 6182, 9108,
+    10827, 9533, 5184, 4482, 8698, 7908, 6112, 3221, 5282, 9200, 3791,
+    4708, 4600, 6654, 6076, 6760, 6046, 5157, 3585, 6495, 6330, 4598,
+    4371, 6549, 5718, 6903, 5171, 5610, 6762, 2577, 6396, 4189, 3202,
+    3498, 5935, 4745, 3626, 1876, 4265, 1997, 3637, 1638, 4451, 4870,
+    3270, 3582, 4316, 2496, 3455, 2177, 2592, 3227, 3656, 2685, 2983,
+    2348, 2757, 1959, 1888, 1633, 2800, 1584, 1244, 1631, 2446, 1386,
+    1237, 1136, 1327, 842, 1279, 726, 693, 1158, 659, 475, 597, 657, 534,
+    606, 603, 393, 282, 513, 420, 405, 407,
+)
+
+RUNNING_FRAME_X = (
+    13130, 13499, 18957, 12371, 6360, 22197, 9073, 22586, 15944, 22662,
+    11990, 17741, 9605, 17350, 14418, 19398, 16644, 31036, 18750, 16749,
+    17199, 20881, 14553, 12185, 16873, 10987, 10452, 13029, 8117, 7229,
+    10416, 7432, 10629, 9065, 12207, 13200, 12115, 11127, 11364, 6663,
+    9342, 12191, 4074, 2691, 7444, 10214, 7240, 7257, 5723, 5544, 6005,
+    5113, 5621, 9269, 5446, 3393, 5144, 6227, 3111, 3212, 5436, 2984,
+    5658, 3127, 7103, 3596, 3279, 3551, 5481, 4083, 2135, 3995, 5304,
+    4303, 3614, 4164, 4546, 4147, 4355, 3204, 2268, 3750, 2273, 1259,
+    2340, 2362, 2387, 3083, 2988, 4531, 2572, 2987, 2579, 3413, 2196,
+    1567, 2453, 2370, 1796, 1819, 1872, 1238, 1570, 1768, 1483, 1125,
+    1248, 1228, 1031, 1214, 646, 1141, 922, 791, 658, 1012, 661, 810, 843,
+    611, 423, 611, 304, 484, 242, 413, 333, 174,
+)
+
+
+def accel_x_frame(bins):
+    return SensorFrame(node_id="node-1", source=FrameSource.SPI, timestamp=0.0,
+                        bins={"accel_x": bins})
+
+
+REAL_STOPPED_FRAME = accel_x_frame(STOPPED_FRAME_X)
+REAL_RUNNING_FRAME = accel_x_frame(RUNNING_FRAME_X)
+# Measured median of the stopped frames' own excess over STOPPED_REF_X --
+# what pipeline/stopped_baseline.py computes and stores as
+# RegistryEntry.stopped_energy_ref.
+REAL_STOPPED_ENERGY = 1489.3
+REAL_BASELINE = StoppedBaseline(spectrum={"accel_x": STOPPED_REF_X},
+                                 energy=REAL_STOPPED_ENERGY)
+
+
+def baseline_gate(baseline, margin=DEFAULT_STOPPED_MARGIN, running_ref=None,
+                   debounce_frames=1):
+    return MotorStateGate(threshold=0.05, debounce_frames=debounce_frames,
+                           initial_state=MotorState.RUNNING,
+                           energy_ref_provider=lambda: running_ref,
+                           stopped_provider=lambda: baseline,
+                           stopped_margin=margin)
+
+
+def test_real_spectra_defeat_the_unsubtracted_gate():
+    """The bug this whole mechanism exists for, as a regression guard.
+    These two frames are a genuinely stopped machine and a genuinely running
+    one, and their raw RMS energies are only ~1.2x apart -- so the
+    running-fraction gate reads the stopped machine as RUNNING, exactly as
+    it did live before baselines existed."""
+    stopped = compute_energy(REAL_STOPPED_FRAME)
+    running = compute_energy(REAL_RUNNING_FRAME)
+    assert running / stopped < 1.3, running / stopped
+    gate = relative_gate(running, fraction=0.15)
+    assert settle(gate, REAL_STOPPED_FRAME) == MotorState.RUNNING, gate.state
+    print(f"real stopped/running spectra are only {running / stopped:.2f}x apart, "
+           "and the unsubtracted gate misses the stop: PASS")
+
+
+def test_stopped_baseline_separates_the_same_real_spectra():
+    """The same two frames, with the noise floor subtracted out."""
+    stopped = compute_energy(REAL_STOPPED_FRAME, REAL_BASELINE)
+    running = compute_energy(REAL_RUNNING_FRAME, REAL_BASELINE)
+    assert running / stopped > 1.9, running / stopped
+    gate = baseline_gate(REAL_BASELINE)
+    assert settle(gate, REAL_RUNNING_FRAME) == MotorState.RUNNING, gate.state
+    assert settle(gate, REAL_STOPPED_FRAME) == MotorState.STOPPED, gate.state
+    print(f"subtracting the measured floor puts them {running / stopped:.2f}x apart "
+           "and the gate reads both correctly: PASS")
+
+
+def test_default_margin_clears_both_sides_on_real_data():
+    """The default margin has to sit above the loudest stopped frame and
+    below the quietest running one, or it just moves the flap somewhere
+    else. Measured live: the loudest of 40 stopped frames came to 2325 on
+    this axis, the quietest of 45 running frames to 3010."""
+    threshold = REAL_STOPPED_ENERGY * DEFAULT_STOPPED_MARGIN
+    loudest_stopped, quietest_running = 2325.0, 3010.3
+    assert loudest_stopped < threshold < quietest_running, threshold
+    print(f"default margin puts the threshold at {threshold:.0f}, between the loudest "
+           f"stopped frame ({loudest_stopped:.0f}) and the quietest running one "
+           f"({quietest_running:.0f}): PASS")
+
+
+def test_baseline_takes_precedence_over_a_running_reference():
+    """A node with both must gate on the baseline. Mixing them -- a
+    subtracted energy against a running-scale threshold -- would put the
+    threshold ~5x too high and read STOPPED forever."""
+    gate = baseline_gate(REAL_BASELINE, running_ref=compute_energy(REAL_RUNNING_FRAME))
+    assert settle(gate, REAL_RUNNING_FRAME) == MotorState.RUNNING, gate.state
+    assert gate.last_threshold == REAL_STOPPED_ENERGY * DEFAULT_STOPPED_MARGIN, \
+        gate.last_threshold
+    print("a baseline wins over a running reference, and sets the threshold: PASS")
+
+
+def test_baseline_that_does_not_fit_the_frame_is_ignored_entirely():
+    """A node whose bin count or sensor_config changed since its baseline
+    was captured. Subtracting the part that still fits would leave a
+    partially-subtracted energy under a fully-subtracted threshold, so the
+    baseline is dropped wholesale and the node falls back."""
+    running_ref = compute_energy(REAL_RUNNING_FRAME)
+    wrong_bin_count = StoppedBaseline(spectrum={"accel_x": STOPPED_REF_X[:64]},
+                                       energy=REAL_STOPPED_ENERGY)
+    wrong_channel = StoppedBaseline(spectrum={"accel_y": STOPPED_REF_X},
+                                     energy=REAL_STOPPED_ENERGY)
+    for baseline in (wrong_bin_count, wrong_channel):
+        assert excess_over_stopped(REAL_STOPPED_FRAME, baseline) is None
+        # Falls all the way back to the running-reference behaviour, which
+        # on this data means missing the stop -- wrong, but *consistently*
+        # wrong, and identical to what the node did before it had a baseline.
+        gate = baseline_gate(baseline, running_ref=running_ref)
+        assert settle(gate, REAL_STOPPED_FRAME) == MotorState.RUNNING, gate.state
+        assert abs(gate.last_threshold - running_ref * 0.15) < 1e-9, gate.last_threshold
+    print("a baseline that doesn't fit the frame is dropped whole, not partly: PASS")
+
+
+def test_zero_energy_baseline_falls_back():
+    """A sensor dead throughout the stopped capture reads a perfectly
+    constant floor, so every later frame's excess would clear a zero
+    threshold and the node would read RUNNING forever."""
+    dead = StoppedBaseline(spectrum={"accel_x": STOPPED_REF_X}, energy=0.0)
+    gate = baseline_gate(dead, running_ref=compute_energy(REAL_RUNNING_FRAME))
+    settle(gate, REAL_STOPPED_FRAME)
+    assert gate.last_threshold != 0.0, gate.last_threshold
+    print("a degenerate zero-energy baseline falls back instead of gating on zero: PASS")
+
+
+def test_excess_is_clamped_at_zero_per_bin():
+    """A bin quieter than the floor carries no evidence of motion. Letting
+    it go negative would let quiet bins cancel out a real line elsewhere."""
+    baseline = StoppedBaseline(spectrum={"accel_x": (100.0, 100.0)}, energy=1.0)
+    excess = excess_over_stopped(accel_x_frame((0.0, 300.0)), baseline)
+    assert excess == [0.0, 200.0], excess
+    print("per-bin excess is clamped at zero, so quiet bins can't cancel loud ones: PASS")
+
+
+def test_baseline_is_reread_every_update():
+    """Same requirement as running_energy_ref: capturing a baseline has to
+    take effect on the next frame, not the next restart, because gates
+    outlive the capture."""
+    current = [None]
+    gate = MotorStateGate(threshold=0.05, debounce_frames=1,
+                          initial_state=MotorState.RUNNING,
+                          energy_ref_provider=lambda: compute_energy(REAL_RUNNING_FRAME),
+                          stopped_provider=lambda: current[0])
+    assert settle(gate, REAL_STOPPED_FRAME) == MotorState.RUNNING, gate.state
+    current[0] = REAL_BASELINE
+    assert settle(gate, REAL_STOPPED_FRAME) == MotorState.STOPPED, gate.state
+    print("a newly captured baseline takes effect on a live gate: PASS")
+
+
+def test_invalid_stopped_margin_rejected():
+    for bad in (1.0, 0.5, 0.0, -1.0):
+        try:
+            MotorStateGate(threshold=0.05, stopped_margin=bad)
+        except ValueError:
+            continue
+        raise AssertionError(f"stopped_margin={bad} should have been rejected")
+    print("stopped_margin at or below 1 is rejected: PASS")
+
+
 if __name__ == "__main__":
     try:
         main()
@@ -197,6 +407,16 @@ if __name__ == "__main__":
         test_energy_and_threshold_are_exposed_for_tuning()
         test_invalid_running_fraction_rejected()
         print("RESULT: PASS - relative per-node gating behaves, absolute fallback intact")
+        test_real_spectra_defeat_the_unsubtracted_gate()
+        test_stopped_baseline_separates_the_same_real_spectra()
+        test_default_margin_clears_both_sides_on_real_data()
+        test_baseline_takes_precedence_over_a_running_reference()
+        test_baseline_that_does_not_fit_the_frame_is_ignored_entirely()
+        test_zero_energy_baseline_falls_back()
+        test_excess_is_clamped_at_zero_per_bin()
+        test_baseline_is_reread_every_update()
+        test_invalid_stopped_margin_rejected()
+        print("RESULT: PASS - stopped baselines separate real stopped/running spectra")
     except AssertionError as e:
         print(f"RESULT: FAIL - {e}")
         sys.exit(1)

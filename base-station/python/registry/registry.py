@@ -161,6 +161,24 @@ class RegistryEntry:
     # MqttMsgType.MOTOR_STOP. Don't delete it as unused without checking
     # those three.
     trip_motor_idx: Optional[int] = None
+    # What this node's sensor measures with its machine deliberately
+    # STOPPED: per channel, the per-bin median magnitude (the mounting
+    # point's own noise floor) and the median energy those same stopped
+    # frames still produce once that floor is subtracted out.
+    # pipeline/stopped_baseline.py captures both together; gate.py reads
+    # them as one StoppedBaseline and gates on them in preference to
+    # running_energy_ref, because the accelerometer's broadband noise makes
+    # a raw RMS nearly identical running or not (gate.py's module docstring
+    # has the measured numbers).
+    #
+    # Both None until an operator captures a baseline, which is not part of
+    # commissioning: it needs the machine off, commissioning needs it on,
+    # and forcing them into one flow would mean a stop/start in the middle
+    # of collecting a training batch. They're deliberately independent of
+    # running_energy_ref rather than replacing it -- capturing a baseline
+    # must not invalidate an existing model or force a retrain.
+    stopped_spectrum_ref: Optional[Dict[str, Tuple[float, ...]]] = None
+    stopped_energy_ref: Optional[float] = None
 
     def to_dict(self) -> dict:
         d = asdict(self)
@@ -197,6 +215,12 @@ class RegistryEntry:
             d["scalar_mu"] = tuple(d["scalar_mu"])
         if d.get("scalar_sigma") is not None:
             d["scalar_sigma"] = tuple(d["scalar_sigma"])
+        # Same round-trip restoration one level deeper: the stopped
+        # baseline is a dict of per-channel bin tuples, and gate.py zips it
+        # against live frame bins.
+        if d.get("stopped_spectrum_ref") is not None:
+            d["stopped_spectrum_ref"] = {chan: tuple(bins) for chan, bins
+                                          in d["stopped_spectrum_ref"].items()}
         return RegistryEntry(**d)
 
 
@@ -499,6 +523,37 @@ class Registry:
                             f"motor {motor_idx} is already the trip output for node "
                             f"{other_id!r}")
             entry.trip_motor_idx = motor_idx
+            self._save()
+            return entry
+
+    def set_stopped_baseline(self, node_id: str,
+                              spectrum_ref: Optional[Dict[str, Tuple[float, ...]]],
+                              energy_ref: Optional[float]) -> RegistryEntry:
+        """Records what this node measures with its machine stopped, or
+        clears it back to "never measured" when passed None (both fields go
+        together -- see RegistryEntry.stopped_spectrum_ref; a spectrum
+        without its energy, or the reverse, would leave gate.py with a
+        floor it can subtract but no scale to threshold against).
+
+        Deliberately not folded into complete_commissioning(): that runs at
+        the end of a batch collected with the machine RUNNING, and this
+        needs it stopped. Writing it separately is also what lets a node
+        gain a baseline without retraining -- see the field's own comment.
+
+        No status transition. A baseline changes how the running/stopped
+        gate reads the next frame, and the pipeline is free to move the
+        node's status itself on the strength of that; forcing one from here
+        would be this method asserting something about the machine it
+        hasn't measured yet."""
+        if (spectrum_ref is None) != (energy_ref is None):
+            raise ValueError(
+                "stopped baseline spectrum_ref and energy_ref must be set or cleared "
+                f"together, got spectrum_ref={'set' if spectrum_ref else None}, "
+                f"energy_ref={energy_ref}")
+        with self._lock_for(node_id):
+            entry = self.get(node_id)
+            entry.stopped_spectrum_ref = spectrum_ref
+            entry.stopped_energy_ref = energy_ref
             self._save()
             return entry
 

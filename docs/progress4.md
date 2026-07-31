@@ -1,5 +1,12 @@
 # Progress 4 — machinery protection trip: confirm-race FIXED, gate energy calibration OPEN (2026-07-30)
 
+> **Superseded in part by [progress5.md](progress5.md).** §4's open gate-energy
+> problem is now root-caused and fixed, and §4's leading hypothesis (a DC term
+> in the FFT bins) turned out to be **wrong** — the firmware already discards
+> bin 0. The real cause was the accelerometer's broadband noise floor
+> dominating an all-bins RMS. §7.2 and §7.3 are done. Everything else in this
+> file still stands.
+
 Condensed handoff for the next session. Predecessor: [progress3.md](progress3.md)
 (RGB ring SPI/DMA work — unrelated to this file, its pixel-0 issue is still
 separately open). [MOTOR_STOP_PLAN.md](MOTOR_STOP_PLAN.md) is **stale** — its

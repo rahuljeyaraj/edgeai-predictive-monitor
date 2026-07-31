@@ -46,6 +46,7 @@ from pydantic import BaseModel
 
 from commissioning import CommissioningError
 from capture import CaptureError
+from stopped_baseline import StoppedBaselineError
 from ei_client import EIClientError, EITotpRequiredError
 from ei_controller import EIControllerError
 from registry import (InvalidTransitionError, NodeNotFoundError, Registry,
@@ -185,6 +186,7 @@ def create_app(registry: Registry, history_store: HistoryStore,
                 ei=None,
                 wifi_status: Optional[WifiStatusPoller] = None,
                 protection=None,
+                stopped_baseline=None,
                 on_startup: Optional[callable] = None) -> FastAPI:
     def _perf_payload() -> dict:
         data = app.state.perf_monitor.snapshot().to_dict()
@@ -247,6 +249,7 @@ def create_app(registry: Registry, history_store: HistoryStore,
     app.state.ei = ei
     app.state.wifi_status = wifi_status
     app.state.protection = protection
+    app.state.stopped_baseline = stopped_baseline
     app.state.connection_manager = ConnectionManager()
     app.state.loop = None
 
@@ -293,6 +296,19 @@ def create_app(registry: Registry, history_store: HistoryStore,
         })
 
     capture.on_state_change(_on_capture_state_change)
+
+    def _on_stopped_baseline_state_change(node_id: str, state: str, collected: int,
+                                           min_frames: int) -> None:
+        # Same centralization reason as the two listeners above: the
+        # collected count advances from the ingestion thread, not from the
+        # REST handler that started the capture.
+        broadcast_threadsafe(app, {
+            "type": "stopped_baseline", "node_id": node_id, "state": state,
+            "collected": collected, "min_frames": min_frames,
+        })
+
+    if stopped_baseline is not None:
+        stopped_baseline.on_state_change(_on_stopped_baseline_state_change)
 
     # Permissive CORS: the dashboard frontend is served from a different
     # origin/port than this REST API in the pre-consolidation deployment,
@@ -356,6 +372,17 @@ def create_app(registry: Registry, history_store: HistoryStore,
         if app.state.protection is not None:
             d["protection"] = dict(app.state.protection.snapshot(node_id),
                                     armed=app.state.protection.armed(node_id))
+        # Only present while a stopped-baseline capture is running, same
+        # "absent means nothing to show" contract as the two progress blocks
+        # above. Whether a node *has* a baseline is already on the entry
+        # (stopped_energy_ref), so the frontend doesn't need this to answer
+        # that -- this is only the live "collecting N/30" readout.
+        if app.state.stopped_baseline is not None:
+            baseline_progress = app.state.stopped_baseline.progress(node_id)
+            if baseline_progress is not None:
+                collected, min_frames = baseline_progress
+                d["stopped_baseline_progress"] = {"collected": collected,
+                                                   "min_frames": min_frames}
         return d
 
     @app.get("/nodes")
@@ -533,6 +560,74 @@ def create_app(registry: Registry, history_store: HistoryStore,
                                     "entry": _node_dict(node_id, entry)})
         return _node_dict(node_id, entry)
 
+    def _require_stopped_baseline():
+        if app.state.stopped_baseline is None:
+            raise HTTPException(status_code=503,
+                                 detail="stopped-baseline capture is not enabled")
+        return app.state.stopped_baseline
+
+    @app.post("/nodes/{node_id}/stopped_baseline/start")
+    def start_stopped_baseline(node_id: str):
+        """Begins measuring this node's sensor noise floor. The machine must
+        be OFF for the whole capture -- nothing here can verify that, see
+        pipeline/stopped_baseline.py."""
+        controller = _require_stopped_baseline()
+        try:
+            controller.start(node_id)
+        except NodeNotFoundError:
+            raise HTTPException(status_code=404, detail=f"unknown node_id {node_id!r}")
+        except StoppedBaselineError as e:
+            raise HTTPException(status_code=409, detail=str(e))
+        entry = app.state.registry.get(node_id)
+        return _node_dict(node_id, entry)
+
+    @app.post("/nodes/{node_id}/stopped_baseline/stop")
+    def stop_stopped_baseline(node_id: str):
+        """Fits the baseline from what's been collected and stores it on the
+        node. 409 (with the reason) if there aren't enough frames yet, or if
+        what was collected doesn't look like a stopped machine -- the
+        capture stays live in both cases so the operator can keep collecting
+        and try again."""
+        controller = _require_stopped_baseline()
+        try:
+            energy_ref, frames = controller.stop(node_id)
+        except NodeNotFoundError:
+            raise HTTPException(status_code=404, detail=f"unknown node_id {node_id!r}")
+        except StoppedBaselineError as e:
+            raise HTTPException(status_code=409, detail=str(e))
+        entry = app.state.registry.get(node_id)
+        broadcast_threadsafe(app, {"type": "registry", "node_id": node_id,
+                                    "entry": _node_dict(node_id, entry)})
+        return dict(_node_dict(node_id, entry),
+                     stopped_baseline_result={"energy_ref": energy_ref, "frames": frames})
+
+    @app.post("/nodes/{node_id}/stopped_baseline/cancel")
+    def cancel_stopped_baseline(node_id: str):
+        """Abandons an in-progress capture. The node keeps whatever baseline
+        it already had."""
+        controller = _require_stopped_baseline()
+        try:
+            app.state.registry.get(node_id)
+        except NodeNotFoundError:
+            raise HTTPException(status_code=404, detail=f"unknown node_id {node_id!r}")
+        controller.cancel(node_id)
+        return _node_dict(node_id, app.state.registry.get(node_id))
+
+    @app.post("/nodes/{node_id}/stopped_baseline/clear")
+    def clear_stopped_baseline(node_id: str):
+        """Forgets a stored baseline, putting the node back on the
+        running_energy_ref gate path. Separate from cancel: that drops an
+        in-progress capture, this drops a finished one -- an operator who
+        re-mounts a sensor needs the second."""
+        _require_stopped_baseline()
+        try:
+            entry = app.state.registry.set_stopped_baseline(node_id, None, None)
+        except NodeNotFoundError:
+            raise HTTPException(status_code=404, detail=f"unknown node_id {node_id!r}")
+        broadcast_threadsafe(app, {"type": "registry", "node_id": node_id,
+                                    "entry": _node_dict(node_id, entry)})
+        return _node_dict(node_id, entry)
+
     @app.post("/nodes/{node_id}/pause")
     def pause_node(node_id: str):
         try:
@@ -565,6 +660,8 @@ def create_app(registry: Registry, history_store: HistoryStore,
         # (see its discard()'s docstring).
         app.state.commissioning.discard(node_id)
         app.state.capture.discard(node_id)
+        if app.state.stopped_baseline is not None:
+            app.state.stopped_baseline.discard(node_id)
         try:
             app.state.manager.decommission(node_id)
         except NodeNotFoundError:

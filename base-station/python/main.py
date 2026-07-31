@@ -51,7 +51,8 @@ from spi_reader import SpiConsumer
 from registry import NodeNotFoundError, Registry
 from status_color import color_for
 from wire_protocol import LED_MODE_TO_INT
-from gate import DEFAULT_RUNNING_FRACTION, MotorStateGate
+from gate import (DEFAULT_RUNNING_FRACTION, DEFAULT_STOPPED_MARGIN, MotorStateGate,
+                   StoppedBaseline)
 from classifier import ClassifierRegistry
 from manager import PipelineManager
 from store import HistoryStore
@@ -61,6 +62,7 @@ from wifi import WifiStatusPoller
 from app import create_app, broadcast_threadsafe
 from commissioning_controller import CommissioningController
 from capture_controller import CaptureController
+from stopped_baseline_controller import StoppedBaselineController
 from protection import DEFAULT_TRIP_DELAY_S, ProtectionController
 from ei_controller import EIController
 from alert_store import AlertStore
@@ -78,25 +80,49 @@ DEFAULT_DATA_DIR = os.path.join(os.path.dirname(_PYTHON_DIR), ".cache", "data")
 
 
 def build_gate_factory(registry: Registry, threshold: float, debounce_frames: int,
-                        running_fraction: float):
-    """Builds per-node running/stopped gates whose threshold scales from that
-    node's own commissioned running energy (pipeline/gate.py's module
-    docstring explains why an absolute one can't work). Takes node_id rather
-    than being zero-arg so the returned gate can look its own node's
-    reference up fresh on every frame -- gates outlive a re-commissioning."""
+                        running_fraction: float, stopped_margin: float):
+    """Builds per-node running/stopped gates that scale their threshold from
+    that node's own measurements rather than an absolute number
+    (pipeline/gate.py's module docstring explains why an absolute one can't
+    work): its stopped baseline where it has one, else its commissioned
+    running energy. Takes node_id rather than being zero-arg so the returned
+    gate can look both up fresh on every frame -- gates outlive both a
+    re-commissioning and a baseline capture."""
     def factory(node_id: str) -> MotorStateGate:
-        def energy_ref() -> Optional[float]:
+        def entry_or_none():
             try:
-                return registry.get(node_id).running_energy_ref
+                return registry.get(node_id)
             except NodeNotFoundError:
                 # A gate can outlive its registry entry by a frame or two
                 # (decommission evicts the entry before the pipeline), and a
                 # gate is not the place to surface that -- fall back to the
                 # absolute threshold for the one frame it can still matter.
                 return None
+
+        def energy_ref() -> Optional[float]:
+            entry = entry_or_none()
+            return entry.running_energy_ref if entry else None
+
+        def stopped_ref() -> Optional[StoppedBaseline]:
+            entry = entry_or_none()
+            if entry is None or entry.stopped_spectrum_ref is None:
+                return None
+            if entry.stopped_energy_ref is None:
+                # Registry.set_stopped_baseline() writes the pair together
+                # and rejects a half-set, so this only happens to an entry
+                # hand-edited on disk. Ignoring the spectrum is the safe
+                # read: gate.py would otherwise subtract a floor and then
+                # threshold it against a running reference on the old,
+                # unsubtracted scale.
+                return None
+            return StoppedBaseline(spectrum=entry.stopped_spectrum_ref,
+                                    energy=entry.stopped_energy_ref)
+
         return MotorStateGate(threshold=threshold, debounce_frames=debounce_frames,
                                energy_ref_provider=energy_ref,
-                               running_fraction=running_fraction)
+                               running_fraction=running_fraction,
+                               stopped_provider=stopped_ref,
+                               stopped_margin=stopped_margin)
     return factory
 
 
@@ -310,7 +336,18 @@ def main():
                          help="Fraction of a node's commissioned running energy below "
                               "which it reads stopped. Tune per rig: it must sit under "
                               "how much a neighbouring motor leaks through the shared "
-                              "frame, but above the sensor's own noise floor.")
+                              "frame, but above the sensor's own noise floor. Only "
+                              "applies to nodes with no stopped baseline -- see "
+                              "--gate-stopped-margin.")
+    parser.add_argument("--gate-stopped-margin", type=float,
+                         default=DEFAULT_STOPPED_MARGIN,
+                         help="How many times its own stopped-baseline energy a node "
+                              "must measure before it reads running. Supersedes "
+                              "--gate-running-fraction for any node that has captured a "
+                              "baseline: it compares against what that machine's silence "
+                              "measures, not against a fraction of its motion, which is "
+                              "what makes the two states actually separable (see "
+                              "pipeline/gate.py).")
     parser.add_argument("--gate-debounce-frames", type=int, default=3)
     parser.add_argument("--status-debounce-frames", type=int, default=3)
     parser.add_argument("--min-commission-frames", type=int, default=50)
@@ -379,7 +416,8 @@ def main():
 
     gate_factory = build_gate_factory(registry, args.gate_threshold,
                                        args.gate_debounce_frames,
-                                       args.gate_running_fraction)
+                                       args.gate_running_fraction,
+                                       args.gate_stopped_margin)
     # Constructed before the manager (which needs its on_motor_state hook) and
     # before any MQTT publisher exists -- set_publish_trip() fills that in
     # later if --mqtt-host is set. Deliberately always constructed: deciding
@@ -402,6 +440,7 @@ def main():
         registry, models_dir, gate_factory, min_frames=args.min_commission_frames)
     captures_dir = os.path.join(args.data_dir, "captures")
     capture = CaptureController(registry, captures_dir, gate_factory)
+    stopped_baseline = StoppedBaselineController(registry)
     ei_controller = EIController(
         registry, os.path.join(args.data_dir, "ei_projects.json"), captures_dir, ei_models_dir,
         ei_scaling_path)
@@ -410,6 +449,7 @@ def main():
         manager.route(frame)
         commissioning.feed_frame(frame)
         capture.feed_frame(frame)
+        stopped_baseline.feed_frame(frame)
         broadcast_threadsafe(app, {
             "type": "spectrum",
             "node_id": frame.node_id,
@@ -497,6 +537,7 @@ def main():
                       alert_store=alert_store, telegram_bot=telegram_bot,
                       telegram_bot_username=telegram_bot_username, ei=ei_controller,
                       wifi_status=wifi_status, protection=protection,
+                      stopped_baseline=stopped_baseline,
                       on_startup=start_ingestion)
 
     # Mounted after every REST/WebSocket route above is registered, so

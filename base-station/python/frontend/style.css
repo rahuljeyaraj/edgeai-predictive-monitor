@@ -1973,7 +1973,10 @@ a.btn-label {
 /* Fixed width so the two rows' values line up into a column without a
    table or grid -- the label text lengths differ. */
 .protection__label {
-  flex: 0 0 96px;
+  /* Wide enough to keep "Stopped baseline" -- the longest label in this
+     section, measured at 123px in the rendered font -- on one line, so all
+     three rows' controls stay aligned. */
+  flex: 0 0 132px;
   font-size: 14px;
   color: #94a3b8;
 }
@@ -2017,6 +2020,14 @@ a.btn-label {
 .protection__state--failed {
   color: var(--color-tripped);
   font-weight: 700;
+}
+
+/* An asset with no stopped baseline can't reliably be told apart from a
+   running one, so a trip armed against it can never confirm. Warning-
+   coloured rather than fault-coloured: nothing is wrong with the machine,
+   the protection just isn't ready yet. */
+.protection__state--missing {
+  color: var(--color-warning);
 }
 
 /* Same "author display beats the [hidden] UA rule at equal specificity" fix
