@@ -1,41 +1,54 @@
-import sys, os
+"""05 -- full system architecture (Chapter 7)."""
+import os
+import sys
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from diagram_lib import Svg, save
+from diagram_lib import Canvas, save, ROLE_LEGEND  # noqa: E402
 
-s = Svg(1300, 700)
+c = Canvas(
+    1320, 740,
+    title="Full system architecture",
+    subtitle="Three kinds of board. Only one of them decides anything.",
+    legend=[(k, ROLE_LEGEND[k]) for k in ("sense", "brain", "tell", "act")],
+    footnotes=[
+        ("Every sensing path — internal SPI or Wi-Fi — delivers the identical frame, so the scoring "
+         "pipeline never learns which kind of node a machine is behind.", None),
+        ("The motor-driver rig is an actuator, not a peer: it accepts stop, and nothing else.", "#B03225"),
+    ],
+)
 
-# base station group
-s.group_box(410, 30, 400, 300, "Base Station — Arduino UNO Q", kind="neutral")
-stm = s.box(450, 65, 320, 95, "STM32U585", ["sampling, FFT,", "scalar stats"], kind="sense", title_size=15)
-qrb = s.box(450, 210, 320, 105, "QRB2210 (Linux)", ["registry + AI pipeline", "+ dashboard server"], kind="brain", title_size=15)
-s.arrow(610, 160, 610, 210, label="LPUART1", width=2)
-s.arrow(610, 210, 610, 160, label=None, width=2)
+# Ordered to match the chips they feed (STM32 on top, QRB2210 below), so the
+# two ingest paths never have to cross each other or share a label lane.
+c.box(34, 180, 250, 106, "Base station's own",
+      ["accel + mic + ring", "+ 8×13 LED matrix"], role="sense")
+c.box(34, 318, 250, 106, "Satellite node × N",
+      ["XIAO ESP32-S3", "accel + mic + ring"], role="sense")
 
-# satellite nodes
-sat = s.box(20, 250, 260, 110, "Satellite Nodes", ["ESP32S3 x N,", "own accel + mic"], kind="sense", title_size=15)
-s.arrow(280, 285, 450, 245, label="Wi-Fi / MQTT", curve=(370, 230))
+c.group(400, 150, 372, 476, "Arduino UNO Q", role="brain")
+c.box(428, 190, 316, 118, "STM32U585 · Zephyr",
+      ["sample → FFT → pool → frame"], role="sense", title_size=15)
+c.box(428, 366, 316, 244, "QRB2210 · Debian Linux",
+      ["", "ingestion + frame routing", "running/stopped gate",
+       "per-machine autoencoder", "fault classifier (TFLite)",
+       "asset registry + history", "protection / trip logic", "dashboard web server"],
+      role="brain", title_size=15)
 
-# outputs
-dash = s.box(900, 30, 300, 85, "Live Dashboard", kind="tell", title_size=15)
-phone = s.box(900, 140, 300, 85, "Phone Alert (Telegram)", kind="tell", title_size=15)
-ring = s.box(900, 250, 300, 85, "Status Ring + LED Matrix", kind="tell", title_size=15)
-rig = s.box(900, 385, 300, 95, "Motor-Driver Rig", ["listener process,", "per-motor stop + latch"], kind="act", title_size=15)
+c.link([(284, 233), (356, 233), (356, 250), (428, 250)], label="SPI · I²S")
+c.link([(284, 371), (356, 371), (356, 404), (428, 404)], label="Wi-Fi / MQTT")
+c.link([(536, 308), (536, 366)], label="LPUART1", both=True)
+c.link([(654, 308), (654, 366)], label="SPI", both=True)
 
-s.arrow(770, 240, 900, 75, label="WS: status + scores", curve=(830, 130))
-s.arrow(770, 250, 900, 182, label="fault message")
-s.arrow(770, 260, 900, 292, label="STATUS_LED")
-s.arrow(770, 280, 900, 420, label="MQTT: STOP <motor>", color="#B23A2E", width=2.4, curve=(830, 350))
+c.box(880, 168, 406, 76, "Live dashboard", ["browser on the shop LAN"], role="tell")
+c.box(880, 262, 406, 76, "Telegram", ["one message per confirmed fault"], role="tell")
+c.box(880, 356, 406, 76, "Status ring + LED matrix", role="tell")
+c.box(880, 470, 406, 130, "Motor-driver rig",
+      ["Arduino Uno + CNC Shield V3", "3 × A4988 · 3 × NEMA-17",
+       "per-motor stop, latched until cleared"], role="act", title_size=16)
 
-m1 = s.box(920, 530, 80, 60, "Motor 1", kind="act", title_size=13)
-m2 = s.box(1020, 530, 80, 60, "Motor 2", kind="act", title_size=13)
-m3 = s.box(1120, 530, 80, 60, "Motor 3", kind="act", title_size=13)
-s.arrow(960, 480, 960, 530, color="#B23A2E", width=2)
-s.arrow(1060, 480, 1060, 530, color="#B23A2E", width=2)
-s.arrow(1160, 480, 1160, 530, color="#B23A2E", width=2)
-s.text(1150, 500, "only the faulted motor stops", size=11.5, anchor="middle", fill="#B23A2E", style="italic")
+c.link([(744, 400), (812, 400), (812, 206), (880, 206)], label="WebSocket")
+c.link([(744, 430), (830, 430), (830, 300), (880, 300)], label="Bot API")
+c.link([(744, 462), (846, 462), (846, 394), (880, 394)], label="STATUS_LED")
+c.link([(744, 522), (812, 522), (812, 535), (880, 535)],
+       label="MQTT · STOP motor N", kind="arrowAct", width=2.4)
 
-s.text(30, 650, "Only the QRB2210 Linux side decides. Every other board senses, displays, or moves.", size=14, style="italic", fill="#333")
-
-save(s, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "05-full-architecture.svg"),
-     os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "05-full-architecture.png"))
-print("done")
+save(c, "05-full-architecture")

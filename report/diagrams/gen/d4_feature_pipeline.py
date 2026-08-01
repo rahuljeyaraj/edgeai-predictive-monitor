@@ -1,31 +1,46 @@
-import sys, os
+"""04 -- one frame's journey from raw samples to a status (Chapter 4)."""
+import os
+import sys
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from diagram_lib import Svg, save
+from diagram_lib import Canvas, save, INK_SOFT  # noqa: E402
 
-s = Svg(1180, 460)
+c = Canvas(
+    1320, 520,
+    title="From a shaking sensor to a status, once per frame",
+    subtitle="The same four steps run for every monitored machine, on its own private model.",
+    footnotes=[
+        ("Thresholds are not constants. Each machine's warning and fault lines are placed above its own "
+         "healthy spread at commissioning: warning = μ + 8σ, fault = μ + 15σ.", None),
+        ("A fault has to persist to be believed — one noisy frame never flips the status on its own.", None),
+    ],
+)
 
-sensor = s.box(20, 150, 180, 110, "Sensor", ["accel (x/y/z) + mic"], kind="sense", title_size=15)
-feat = s.box(240, 150, 220, 110, "Feature Vector", ["FFT spectrum +", "6 scalars (RMS, peak,", "crest, kurtosis...)"], kind="sense", title_size=15)
-ae = s.box(500, 150, 220, 110, "Autoencoder", ["compress -> rebuild", "(trained on healthy", "data only)"], kind="brain", title_size=15)
-score = s.box(760, 150, 200, 110, "Anomaly Score", ["input vs.", "reconstruction gap"], kind="brain", title_size=15)
+c.box(34, 180, 224, 136, "Raw window",
+      ["1024 accel samples", "per axis @ 12.8 kHz,", "2048 mic samples"], role="sense")
+c.box(296, 180, 252, 136, "Feature vector",
+      ["FFT spectrum, peak-", "normalised, plus six", "shape statistics per channel"], role="sense")
+c.box(586, 180, 224, 136, "Autoencoder",
+      ["squeeze it small,", "rebuild it, measure", "how badly that went"], role="brain")
+c.box(848, 180, 204, 136, "Anomaly score",
+      ["one number:", "how unlike normal", "this moment is"], role="brain")
 
-healthy = s.box(1000, 30, 160, 65, "Healthy", kind="tell", title_size=14)
-warning = s.box(1000, 197, 160, 65, "Warning", kind="warn", title_size=14)
-fault = s.box(1000, 365, 160, 65, "Fault", kind="act", title_size=14)
+c.link([(258, 248), (296, 248)])
+c.link([(548, 248), (586, 248)])
+c.link([(810, 248), (848, 248)])
 
-s.arrow(200, 205, 240, 205)
-s.arrow(460, 205, 500, 205)
-s.arrow(720, 205, 760, 205)
-s.arrow(960, 190, 1000, 65, label=None)
-s.arrow(960, 205, 1000, 225, label=None)
-s.arrow(960, 220, 1000, 390, label=None)
+c.box(1092, 150, 194, 58, "Healthy", role="tell")
+c.box(1092, 226, 194, 58, "Warning", role="warn")
+c.box(1092, 302, 194, 58, "Fault", role="act")
 
-s.text(1085, 145, "thresholds set", size=11.5, anchor="middle", fill="#555")
-s.text(1085, 160, "from commissioning spread", size=11.5, anchor="middle", fill="#555")
+c.link([(1052, 220), (1072, 220), (1072, 179), (1092, 179)])
+c.link([(1052, 255), (1092, 255)])
+c.link([(1052, 282), (1072, 282), (1072, 331), (1092, 331)], kind="arrowAct")
 
-s.text(590, 300, "Trained once per machine, on that machine's own healthy data.", size=13, style="italic", fill="#333")
-s.text(590, 325, "A network that's only ever seen normal gets worse at rebuilding anything else.", size=13, style="italic", fill="#333")
+c.lines(422, 348, ["128 bins × (accel x, y, z + mic)",
+                   "+ 6 scalars each  =  536 numbers"], size=11.5, fill=INK_SOFT)
+c.lines(698, 348, ["trained on this one machine's healthy",
+                   "data, on the UNO Q itself"], size=11.5, fill=INK_SOFT)
+c.lines(950, 348, ["reconstruction error —", "big gap means unfamiliar"], size=11.5, fill=INK_SOFT)
 
-save(s, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "04-feature-pipeline.svg"),
-     os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "04-feature-pipeline.png"))
-print("done")
+save(c, "04-feature-pipeline")

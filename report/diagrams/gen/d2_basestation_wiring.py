@@ -1,44 +1,50 @@
-import sys, os
+"""02 -- base station block wiring (Chapter 2). Exact nets are in the KiCad
+schematic; this shows which half of the board each part hangs off."""
+import os
+import sys
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from diagram_lib import Svg, save
+from diagram_lib import Canvas, save  # noqa: E402
 
-s = Svg(1040, 640)
+c = Canvas(
+    1180, 764,
+    title="Base station — what connects where",
+    subtitle="All three peripherals hang off the real-time half of the board. The Linux half never touches a sensor pin.",
+    footnotes=[
+        ("Two internal links, on purpose: small control messages on the UART, bulk spectra on the SPI, "
+         "so a large diagnostic pull can never stall the live status loop.", None),
+        ("Exact nets, net names and header pins: the KiCad schematic in Appendix B.", None),
+    ],
+)
 
-def pin_label(s, x, y, lines, anchor="start"):
-    w = max(6.4 * len(l) for l in lines)
-    if anchor == "end":
-        rx = x - w
-    elif anchor == "middle":
-        rx = x - w / 2
-    else:
-        rx = x
-    s.parts.append(f'<rect x="{rx-4}" y="{y-13}" width="{w+8}" height="{len(lines)*16+6}" fill="#FFFFFF" opacity="0.94" stroke="#dddddd" stroke-width="0.5"/>')
-    for i, l in enumerate(lines):
-        s.text(x, y + i * 16, l, size=11.5, anchor=anchor, family="DejaVu Sans Mono, monospace", fill="#222")
+c.box(34, 150, 268, 128, "KX134-1211",
+      ["3-axis accelerometer", "±8/16/32/64 g, 16-bit", "512-byte hardware FIFO"], role="sense")
+c.box(34, 316, 268, 112, "INMP441",
+      ["I²S MEMS microphone", "24-bit, 61 dBA SNR"], role="sense")
+c.box(34, 466, 268, 100, "WS2812B ring",
+      ["8 addressable pixels", "local status light"], role="tell")
 
-# center: UNO Q
-uno = s.box(390, 250, 260, 150, "Arduino UNO Q", ["STM32U585 side", "(real-time sensing)"], kind="brain", title_size=17)
+c.group(414, 128, 352, 498, "Arduino UNO Q — one board, two brains", role="brain")
+c.box(444, 162, 292, 250, "STM32U585",
+      ["Zephyr RTOS", "", "samples both sensors,", "runs the FFTs,",
+       "computes scalar stats,", "drives both displays"], role="sense", title_size=16)
+c.box(444, 462, 292, 142, "QRB2210",
+      ["Debian Linux, quad-core", "", "models, registry, dashboard"], role="brain", title_size=16)
 
-# top-left: KX134
-kx = s.box(30, 40, 260, 100, "KX134 Accelerometer", ["vibration, SPI"], kind="sense")
-# top-right: INMP441
-mic = s.box(750, 40, 260, 100, "INMP441 Microphone", ["sound, I2S / SAI1"], kind="sense")
-# bottom-right: WS2812
-led = s.box(750, 480, 260, 100, "WS2812 Status Ring", ["8-pixel, local light"], kind="tell")
+c.link([(302, 214), (444, 214)], label="SPI1 · D13 / D12 / D11 + CS D8 + INT D9")
+c.link([(302, 372), (373, 372), (373, 318), (444, 318)], label="SAI1 · PB10 / PB9 / PC1")
+c.link([(302, 516), (373, 516), (373, 388), (444, 388)], label="PB0 · TIM3_CH3 + DMA")
 
-# connectors
-s.arrow(220, 140, 470, 250, color="#33475B")
-pin_label(s, 250, 190, ["SCK D13 / MISO D12 / MOSI D11", "CS   D8  (PB4, GPIO)", "INT  D9  (PB8, buffer-full)"])
+c.link([(534, 412), (534, 462)], label="LPUART1 · 500 kbaud", both=True)
+c.link([(652, 412), (652, 462)], label="SPI · ~40 MHz", both=True)
 
-s.arrow(830, 140, 590, 250, color="#33475B")
-pin_label(s, 820, 190, ["CLK PB10", "WS  PB9", "SD  PC1"], anchor="end")
+c.box(864, 182, 282, 84, "8×13 LED matrix", ["already on the UNO Q"], role="tell")
+c.box(864, 300, 282, 84, "USB-UART console", ["USART1 · D0 / D1, debug only"], role="ghost")
+c.box(864, 470, 282, 126, "Wi-Fi",
+      ["dashboard on :8080", "MQTT broker for satellites", "epm-base.local"], role="brain")
 
-s.arrow(750, 500, 640, 400, color="#33475B")
-pin_label(s, 730, 460, ["DIN  PB0", "(TIM3 CH3)"], anchor="end")
+c.link([(736, 224), (864, 224)])
+c.link([(736, 342), (864, 342)], kind="arrowSoft", dashed=True)
+c.link([(736, 533), (864, 533)], both=True)
 
-s.text(30, 600, "Debug logging runs on a separate USART1 (D0/D1) straight to a host PC — not shown, fully decoupled from the sensor link.",
-       size=12, style="italic", fill="#555555")
-
-save(s, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "02-base-station-wiring.svg"),
-     os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "02-base-station-wiring.png"))
-print("done")
+save(c, "02-base-station-wiring")

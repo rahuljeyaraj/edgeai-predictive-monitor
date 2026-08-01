@@ -1,7 +1,8 @@
 # Report diagrams
 
-Hand-built SVG block diagrams for `REPORT.md` (no graphviz/mermaid — generated
-with plain Python + [cairosvg](https://cairosvg.org/), via `gen/diagram_lib.py`).
+Block diagrams for `REPORT.md`. No graphviz or mermaid on this machine, so
+they're composed in plain Python and rasterised with
+[cairosvg](https://cairosvg.org/), via `gen/diagram_lib.py`.
 
 ## One-time setup
 
@@ -11,41 +12,67 @@ python3 -m venv .venv
 .venv/bin/pip install cairosvg
 ```
 
-## Regenerate a diagram
+## Regenerate
 
-Edit the matching script in `gen/`, then rerun it from inside `gen/`:
+Edit the matching script in `gen/`, then run it from inside `gen/`:
 
 ```sh
 cd report/diagrams/gen
 ../.venv/bin/python d5_full_architecture.py
 ```
 
-Each script writes both the `.svg` and the `.png` next to this README (same
-basename as the script's diagram number). REPORT.md embeds the `.png` files
-(Pandoc's PDF pipeline needs PNG, not raw SVG — see PLANNING.md §6).
+Each script writes both the `.svg` and the `.png` one level up. `REPORT.md`
+embeds the PNGs — Pandoc's PDF pipeline needs raster, not raw SVG.
+
+Regenerate everything:
+
+```sh
+cd report/diagrams/gen
+for f in d*.py; do ../.venv/bin/python "$f"; done
+```
 
 | Script | Output | Used in |
 |---|---|---|
-| `gen/d1_overview.py` | `01-system-at-a-glance.png` | Ch.1 |
-| `gen/d2_basestation_wiring.py` | `02-base-station-wiring.png` | Ch.2 |
-| `gen/d3_satellite_wiring.py` | `03-satellite-node-wiring.png` | Ch.3 |
-| `gen/d4_feature_pipeline.py` | `04-feature-pipeline.png` | Ch.4 |
-| `gen/d5_full_architecture.py` | `05-full-architecture.png` | Ch.7 |
+| `gen/d1_overview.py` | `01-system-at-a-glance.png` | Ch. 1 |
+| `gen/d2_basestation_wiring.py` | `02-base-station-wiring.png` | Ch. 3 |
+| `gen/d3_satellite_wiring.py` | `03-satellite-node-wiring.png` | Ch. 4 |
+| `gen/d4_feature_pipeline.py` | `04-feature-pipeline.png` | Ch. 5 |
+| `gen/d5_full_architecture.py` | `05-full-architecture.png` | Ch. 9 |
+| `gen/d6_asset_lifecycle.py` | `06-asset-lifecycle.png` | Ch. 8 |
+| `gen/d7_trip_sequence.py` | `07-trip-sequence.png` | Ch. 7 |
+| `gen/d8_dashboard_anatomy.py` | `08-dashboard-anatomy.png` | Ch. 8 |
+| `gen/d9_onboarding.py` | `09-onboarding.png` | Ch. 4 |
+
+## What `diagram_lib.py` enforces
+
+The library exists so individual scripts can't reintroduce the defects the first
+generation of these diagrams had:
+
+* **Framed layout.** A `Canvas` reserves a title band and a footnote band, and
+  content is laid out between them — so a caption can never end up sitting on
+  top of an arrowhead.
+* **Measured text.** `text_width()` estimates rendered width, so legend chips,
+  edge labels and group labels are sized to their content. Under-measuring is
+  what let a group's dashed border cut straight through its own title.
+* **Orthogonal routing.** `link()` takes explicit points and `elbow()` jogs on
+  one axis. Diagonals through a block diagram read as sketchy, and were the main
+  source of label collisions.
+* **One palette, one meaning.** `ROLES`: slate = senses, blue = decides,
+  red = acts physically, green = tells a human, amber = degraded, ghost = derived
+  or not-a-decision. The reader learns the colour code once and it holds across
+  all nine diagrams.
 
 ## Editing in a UI instead
 
-Open a `.svg` directly in Inkscape or Figma and edit it there. If you do,
-export/save a matching `.png` (same filename) alongside it by hand — and
-don't rerun the Python script afterward, it will silently overwrite the
-manual edit.
+Open a `.svg` in Inkscape or Figma and edit it there. If you do, export a
+matching `.png` by hand — and don't rerun the Python script afterwards, it will
+silently overwrite the manual edit.
 
 ## The `*-schematic-kicad.png` files
 
-`02b-base-station-schematic-kicad.png`, `03b-satellite-node-schematic-kicad.png`,
-and `06-motor-driver-rig-schematic-kicad.png` are a different animal from
-the diagrams above: real KiCad schematics (actual `.kicad_sch` files,
-symbols + nets, openable in KiCad), not hand-drawn SVG blocks. Source
-lives in `hardware/kicad/` at the repo root, not in this folder's `gen/`.
-They're copied here as plain PNGs so REPORT.md's image paths stay
-relative to this one folder — regenerate from `hardware/kicad/`, then
-recopy, don't edit these PNGs directly.
+`02b-base-station-schematic-kicad.png`, `03b-satellite-node-schematic-kicad.png`
+and `06-motor-driver-rig-schematic-kicad.png` are a different animal: real KiCad
+schematics — actual `.kicad_sch` files with symbols and nets, openable in KiCad —
+not hand-drawn blocks. Source lives in `hardware/kicad/`, not in this folder's
+`gen/`. They're copied here as PNGs so `REPORT.md`'s image paths stay relative to
+one folder. Regenerate from `hardware/kicad/` and recopy; don't edit these PNGs.

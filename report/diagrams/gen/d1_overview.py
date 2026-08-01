@@ -1,51 +1,47 @@
-import sys, os
+"""01 -- system at a glance (Chapter 1)."""
+import os
+import sys
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from diagram_lib import Svg, save
+from diagram_lib import Canvas, save, ROLE_LEGEND  # noqa: E402
 
-s = Svg(1040, 560)
+c = Canvas(
+    1180, 660,
+    title="EdgeAI Predictive Monitor — the whole loop, one picture",
+    subtitle="Every sensing point reports to one base station; the base station is the only thing that decides.",
+    legend=[(k, ROLE_LEGEND[k]) for k in ("sense", "brain", "tell", "act")],
+    footnotes=[
+        ("Sensing → deciding → acting closes without a human in it. Everything left of the "
+         "base station is a sense organ; everything right of it is an output.", None),
+        ("The STOP arrow is the one that makes this Physical AI rather than a very "
+         "well-instrumented dashboard.", "#B03225"),
+    ],
+)
 
-# legend
-s.text(30, 30, "Watches / Notices", size=12, fill="#33475B")
-s.parts.append('<rect x="140" y="18" width="14" height="14" fill="#EEF2F7" stroke="#33475B"/>')
-s.text(170, 30, "Decides", size=12, fill="#1F5FA8")
-s.parts.append('<rect x="240" y="18" width="14" height="14" fill="#DCEAFB" stroke="#1F5FA8"/>')
-s.text(260, 30, "", size=12)
-s.text(330, 30, "Acts", size=12, fill="#B23A2E")
-s.parts.append('<rect x="370" y="18" width="14" height="14" fill="#FBE3E1" stroke="#B23A2E"/>')
-s.text(400, 30, "", size=12)
-s.text(460, 30, "Tells a human", size=12, fill="#2E7D46")
-s.parts.append('<rect x="580" y="18" width="14" height="14" fill="#E8F5EA" stroke="#2E7D46"/>')
+c.box(34, 168, 258, 92, "Sensor pod",
+      ["accelerometer + microphone,", "wired to the base station itself"], role="sense")
+c.box(34, 296, 258, 104, "Satellite nodes",
+      ["same two sensors, one per", "extra machine, an ESP32-S3", "each, joined over Wi-Fi"], role="sense")
 
-# left column: sensing sources
-pod = s.box(30, 90, 210, 80, "Sensor Pod", ["accelerometer + microphone", "on the base station"], kind="sense")
-sat = s.box(30, 210, 210, 90, "Satellite Nodes", ["accelerometer + microphone", "one per extra machine", "Wi-Fi"], kind="sense")
+c.box(400, 176, 300, 216, "Base station",
+      ["Arduino UNO Q", "", "asset registry", "per-machine anomaly model",
+       "running/stopped gate", "fault classifier", "trip decision"],
+      role="brain", title_size=17)
 
-# center: base station brain
-brain = s.box(340, 130, 260, 180, "Base Station", ["registry + AI pipeline", "(commissioning, scoring,", "gate, trip logic)"], kind="brain", title_size=17)
+c.box(834, 150, 312, 66, "Live dashboard", role="tell")
+c.box(834, 236, 312, 66, "Phone alert (Telegram)", role="tell")
+c.box(834, 322, 312, 66, "Status ring + LED matrix", role="tell")
+c.box(834, 432, 312, 96, "Motor power",
+      ["stopped on a confirmed fault,", "stays refused until cleared by hand"],
+      role="act", title_size=16)
 
-# right column: outputs
-dash = s.box(720, 60, 260, 70, "Live Dashboard", kind="tell")
-phone = s.box(720, 150, 260, 70, "Phone Alert (Telegram)", kind="tell")
-led = s.box(720, 240, 260, 70, "Status Ring + LED Matrix", kind="tell")
-motor = s.box(680, 370, 340, 90, "Motor Power", ["cut on confirmed fault", "stays off until cleared"], kind="act", title_size=16)
+c.link([(292, 214), (346, 214), (346, 226), (400, 226)], label="sensor frames")
+c.link([(292, 348), (346, 348), (346, 340), (400, 340)], label="Wi-Fi / MQTT")
 
-# arrows in
-s.arrow(240, 130, 340, 190, label="sensor frames")
-s.arrow(240, 255, 340, 250, label="Wi-Fi / MQTT")
+c.link([(700, 216), (768, 216), (768, 183), (834, 183)], label="status + scores")
+c.link([(700, 269), (834, 269)], label="fault message")
+c.link([(700, 322), (768, 322), (768, 355), (834, 355)], label="colour + mode")
+c.link([(700, 372), (744, 372), (744, 480), (834, 480)],
+       label="STOP  motor N", kind="arrowAct", width=2.4)
 
-# arrows out
-s.arrow(600, 180, 720, 95, label="status + scores")
-s.arrow(600, 210, 720, 185)
-s.arrow(600, 240, 720, 275)
-s.arrow(600, 280, 680, 400, label="STOP command", color="#B23A2E", width=2.4)
-
-# caption strip: the point of the whole picture
-s.parts.append('<line x1="30" y1="480" x2="1010" y2="480" stroke="#cccccc" stroke-width="1"/>')
-s.text(30, 510, "Sensing -> deciding -> acting, in one loop, with no human required at the moment it matters.",
-       size=14, style="italic", fill="#333333")
-s.text(30, 535, "The STOP command is the one arrow that makes this Physical AI rather than a dashboard.",
-       size=12.5, fill="#B23A2E")
-
-save(s, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "01-system-at-a-glance.svg"),
-     os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "01-system-at-a-glance.png"))
-print("done")
+save(c, "01-system-at-a-glance")
