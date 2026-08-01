@@ -26,18 +26,21 @@
 
 /* One-time setup (currently: allocates the mutex guarding the MQTT
  * client). Called by threads/transport_task.h's transport_task_start()
- * before it creates the background task that actually connects WiFi
- * (blocking, retries indefinitely) and the MQTT client, subscribes this
- * node's cmd topic, and services incoming STATUS_LED commands - mirrors
- * mcu/'s own split, where main.c calls transport_thread_start() (which
- * calls hal_transport.h's transport_init() internally), not
- * transport_init() directly. Returns 0, or a negative errno. */
+ * before it creates the background task that owns the provision/connect/
+ * recover state machine (docs/WIFI_ONBOARDING_PLAN.md S2) and the MQTT
+ * client, subscribes this node's cmd topic, and services incoming
+ * STATUS_LED commands - mirrors mcu/'s own split, where main.c calls
+ * transport_thread_start() (which calls hal_transport.h's transport_init()
+ * internally), not transport_init() directly. Returns 0, or a negative
+ * errno. */
 int transport_init(void);
 
 /* This node's MAC-derived id (6 lowercase hex chars, Appendix B S3) -
- * empty ("") until the background task (transport_task_start()) has
- * connected WiFi and derived it; valid from then on. Used to build the
- * outgoing envelope's "node_id" field and to log the node's identity. */
+ * valid from the first loop iteration of the background task
+ * (transport_task_start()): derived from the factory WiFi MAC, which
+ * needs no prior WiFi connection to read. Used to build the outgoing
+ * envelope's "node_id" field, this node's provisioning AP SSID, and to
+ * log its identity. */
 const char *transport_node_id(void);
 
 /* Publishes a complete generic section-list telemetry frame (built by

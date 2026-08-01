@@ -2,8 +2,10 @@
 
 Status: **§1 (base station) implemented + live-verified 2026-07-29**, including
 Round 2's captive-portal auto-open (confirmed working on a real phone) and
-Round 3's scan/messaging fixes below. §2/§3 (satellite/sim onboarding) remain
-design-only. Companion to
+Round 3's scan/messaging fixes below. **§2 (satellite) implemented 2026-08-01,
+built + compiles clean, NOT yet live-verified on real hardware** — see
+"Implementation notes (§2, satellite)" below. §3 (sim onboarding) remains
+out of scope (no onboarding needed, see §3). Companion to
 [SENSOR_TELEMETRY_FRAME_PLAN.md](SENSOR_TELEMETRY_FRAME_PLAN.md) and
 [EDGE_IMPULSE_FAULT_CLASSIFICATION_PLAN.md](EDGE_IMPULSE_FAULT_CLASSIFICATION_PLAN.md).
 
@@ -194,6 +196,60 @@ satellites) the extra engineering for BLE-based provisioning isn't justified.
 Per-device AP+portal means a phone/laptop must join each device's network one at a
 time, which gets tedious past roughly 10 devices — noted here as a **documented
 future upgrade path** if a real deployment scales to dozens of satellites.
+
+**Resolved (2026-08-01):** built as designed above, with one deliberate deviation
+— see "Implementation notes" below.
+
+### Implementation notes (§2, satellite, 2026-08-01)
+
+- **Concurrent AP+STA, not full-switch** (deviates from the base station's
+  single-radio design): ESP32-S3 supports `WIFI_MODE_APSTA` natively, so the
+  satellite keeps its AP up *while* testing a submitted STA join and only tears it
+  down once the join is **confirmed good** (with a ~4s grace period so the portal's
+  success response reaches the phone before the AP link itself goes away). A failed/
+  wrong-password attempt never disconnects the technician — they stay on the portal,
+  see a real error inline, retry without rejoining anything. This is the concrete
+  fix for the exact race the base station's own onboarding hit (Round 2/3's
+  "Failed to fetch" / "this page may close" issues) — made possible here
+  specifically because the satellite doesn't share the base station's single-radio
+  constraint.
+- **Captive-portal auto-open** uses the ESP32-native equivalent of the base
+  station's dnsmasq trick: `DNSServer` wildcard-resolves every DNS lookup to the
+  AP's own IP, and the `WebServer` answers any unmatched path — including each OS's
+  own connectivity-check probe URL (`/generate_204`, `/hotspot-detect.html`,
+  `/ncsi.txt`, `/connecttest.txt`, etc.) — with a 302 redirect back to `/`, matching
+  what actually worked live for the base station (a redirect, not a bare 200 page,
+  is what reliably triggers the OS's automatic captive-portal browser).
+- **State machine** (`satellite/src/threads/transport_task.cpp`): `BOOT_STA_ATTEMPT`
+  (saved creds, bounded 15s reconnect) → `CONNECTED`, or → `PROVISIONING` (AP+portal
+  up) on failure. A submission moves `PROVISIONING` → `STA_TESTING` (bounded 15s
+  join, AP stays up) → `CONNECTED` on success (credentials persisted only now, never
+  on an unverified submission) or back to `PROVISIONING` with an inline error on
+  failure. `CONNECTED` → `RECOVERING` on WiFi loss (silent `WiFi.reconnect()` retries
+  for 60s, MQTT-only blips don't trigger this) → back to `CONNECTED` if it self-heals,
+  or → `PROVISIONING` (AP reopens, no reboot) if the window expires; background
+  reconnect attempts continue even with the AP up, so a network coming back on its
+  own drops the AP again without a technician submitting anything.
+- **Credentials**: ESP32 NVS via `Preferences.h` (`satellite/include/hal/
+  hal_credentials.h`, `satellite/src/drivers/nvs_credentials.cpp`), namespace
+  `epm_net` — no external dependency needed, bundled with the arduino-esp32 core,
+  matching this port's existing minimal-dependency style.
+- **Dev-bench escape hatch**: `WIFI_SSID`/`WIFI_PASSWORD` stay in `app_config.h` as
+  compile-time overrides; if both are set via `build_flags` away from their
+  `"CHANGE_ME"` placeholders, NVS is auto-seeded from them on first boot and the
+  portal is skipped — avoids the AP+form dance on this project's 2 real bench boards
+  during frequent reflash cycles. No-op for a real deployment build, which passes
+  neither flag.
+- **RGB status colors** reuse the base station's own `status_color.py` tuples
+  wherever the semantics already match (same color language a technician has
+  already learned from the dashboard) — WARNING's amber for a failed join attempt,
+  NEW's cyan for freshly connected, OFFLINE's grey for silent recovery — plus one
+  new hue (magenta) for the one genuinely new concept, local AP/provisioning mode.
+- **Not yet done**: live-verified on real ESP32-S3 hardware (compiles clean,
+  `-Wall -Wextra` warning-free, RAM 33.5%/Flash 23.5% used) — needs a real join
+  test against `EPM-BaseStation`, a wrong-password retry-in-place test, a WiFi-loss
+  recovery test, and an iOS + Android captive-portal auto-open check (probe/redirect
+  behavior varies by OS, same caveat the base station's own Round 2/3 testing found).
 
 ## 3. Simulated satellites
 

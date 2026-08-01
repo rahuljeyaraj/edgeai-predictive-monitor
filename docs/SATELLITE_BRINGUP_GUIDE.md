@@ -92,22 +92,41 @@ Everything for the node lives under [satellite/](../satellite/). It's an
 Arduino/PlatformIO project. Full detail in
 [satellite/README.md](../satellite/README.md).
 
-**Config you'll actually touch** — [satellite/include/app_config.h](../satellite/include/app_config.h):
+**WiFi/MQTT credentials are no longer compiled in.** As of
+[docs/WIFI_ONBOARDING_PLAN.md](WIFI_ONBOARDING_PLAN.md) §2 the node stores them at
+runtime in NVS flash, set either by joining the node's own captive portal (the
+normal path — see §5a below) or via a **dev-bench shortcut** in
+[satellite/include/app_config.h](../satellite/include/app_config.h) that this guide
+still uses, since it's the fastest path for bring-up:
 
 | Setting | What it does |
 |---|---|
-| `WIFI_SSID` / `WIFI_PASSWORD` | which WiFi to join |
-| `MQTT_BROKER_HOST` / `MQTT_BROKER_PORT` | where the desktop broker is |
+| `WIFI_SSID` / `WIFI_PASSWORD` | dev-bench shortcut: if both are set to real values (not the `"CHANGE_ME"` placeholder), the node auto-seeds NVS with them on its **first** boot only and skips the portal entirely |
+| `MQTT_BROKER_HOST` / `MQTT_BROKER_PORT` | same shortcut, plus doubles as the portal form's broker-field prefill (default `epm-base.local` — irrelevant for desktop bring-up, always override to your desktop's IP, §4b) |
 | `MIC_SENSOR_ENABLED` (0/1) | turn the mic task on/off |
 | `ACCEL_SENSOR_ENABLED` (0/1) | turn the accel task on/off |
 
 The two `*_ENABLED` flags are how we bring sensors up one at a time.
 
+> 🔑 **NVS persists across `pio run -t upload`.** A plain reflash does not touch
+> saved credentials — the seed-from-`app_config.h` step only fires on a genuinely
+> first boot (nothing in NVS yet). So once a board has joined your desktop once
+> (either path), later stages in this guide that just flash new sensor config
+> **won't** re-prompt for WiFi or re-run the portal. If you need a clean slate
+> (e.g. testing the portal itself, or switching a board to a different desktop),
+> erase flash first: `pio run -t erase` (wipes everything, including the app —
+> reflash after).
+
 **The firmware = 5 FreeRTOS tasks**, started in this order by
 [satellite/src/main.cpp](../satellite/src/main.cpp):
 
-1. **transport** — owns WiFi + MQTT. Publishes telemetry, receives LED commands.
-   → [transport_task.cpp](../satellite/src/threads/transport_task.cpp)
+1. **transport** — owns WiFi + MQTT, including the provision/connect/recover state
+   machine (join saved creds → connect; no/failed creds → own AP + captive portal;
+   dropped WiFi → silent retry, then AP again). Publishes telemetry, receives LED
+   commands.
+   → [transport_task.cpp](../satellite/src/threads/transport_task.cpp),
+   [hal_provisioning.h](../satellite/include/hal/hal_provisioning.h),
+   [hal_credentials.h](../satellite/include/hal/hal_credentials.h)
 2. **rgb_display** — drives the WS2812 ring from `STATUS_LED` commands.
    → [rgb_display_task.cpp](../satellite/src/threads/rgb_display_task.cpp) / [rgb_ws2812.cpp](../satellite/src/drivers/rgb_ws2812.cpp)
 3. **mic_sampler** — reads the INMP441 over I2S, runs an FFT.
@@ -202,7 +221,10 @@ for the rest of the guide — when your real board publishes, it shows up here t
 
 ### 5a. Point the board at your desktop
 
-Edit [satellite/include/app_config.h](../satellite/include/app_config.h):
+Two ways to get credentials onto the board. Either works; pick one.
+
+**Option A — dev-bench shortcut (what this guide uses).** Edit
+[satellite/include/app_config.h](../satellite/include/app_config.h):
 
 ```c
 #define WIFI_SSID         "YourWiFiName"
@@ -210,12 +232,34 @@ Edit [satellite/include/app_config.h](../satellite/include/app_config.h):
 #define MQTT_BROKER_HOST  "192.168.1.50"   // the desktop IP from Section 4b
 ```
 
-The defaults (`EPM-BaseStation` / `10.42.0.1`) assume the real UNO Q — replace
-them.
+The defaults are all `"CHANGE_ME"` / `"epm-base.local"` — replace them with real
+values and the node will auto-seed NVS with these on its first boot after flashing
+(see the NVS note in Section 3) and skip the portal entirely.
 
 > 🔒 Don't commit your WiFi password. If you'd rather not touch the file, you can
-> pass these as build flags in `platformio.ini` instead (see the README) — but
-> editing `app_config.h` is the simplest for bring-up.
+> pass these as build flags in `platformio.ini` instead (see the README) — the
+> effect is identical either way, since both just become the compiled `#define`.
+
+**Option B — the real captive portal** (what a deployed node actually uses, no
+`app_config.h` edit at all): leave `app_config.h` untouched, flash, and once booted
+the node has no saved creds so it starts its own AP instead. Join it from your
+phone/laptop:
+
+1. The node's serial log prints its AP SSID: `EPM-SAT-<node_id>` (node_id is its
+   MAC-derived id, same one Stage 2 below teaches you to read).
+2. Join that WiFi network. A login-style page should **auto-open** (same "airport
+   WiFi" captive-portal experience as the base station) — if it doesn't, browse to
+   `http://192.168.4.1`.
+3. Fill in: your desktop's WiFi SSID/password, and **MQTT broker address = your
+   desktop's IP from Section 4b** (the prefilled `epm-base.local` only resolves on
+   the real UNO Q's network, not your desktop).
+4. Submit. The page tests the join without disconnecting you — on success it says
+   so and the node's own AP switches off a few seconds later; on failure (e.g. typo
+   in the password) it shows an error inline and you can retry immediately, still
+   connected.
+
+Use Option B specifically if you want to exercise the onboarding feature itself,
+or once boards start production builds that don't compile in real credentials.
 
 ### 5b. USB / flashing basics
 
@@ -278,26 +322,54 @@ edgeai-predictive-monitor satellite node booted
 
 **Goal:** the board joins WiFi and connects to the broker. (Still sensors-off.)
 
-Nothing to change — same build. Just watch the serial log after boot:
+Nothing to change — same build. Just watch the serial log after boot.
 
-**✅ You should see:**
+**If you used Option A (app_config.h shortcut), you should see:**
 
 ```
-[transport] connecting to WiFi SSID "YourWiFiName"...
-[transport] WiFi connected, IP=192.168.1.xx
+[transport] seeded NVS from compiled-in WIFI_SSID/WIFI_PASSWORD (dev-bench escape hatch)
+[transport] attempting WiFi join to "YourWiFiName"...
+[transport] WiFi joined, IP=192.168.1.xx
 [transport] connecting to MQTT broker 192.168.1.50:1883 as "a1b2c3"...
 [transport] MQTT connected, subscribed to epm/a1b2c3/cmd
 ```
 
-**That `a1b2c3` is your node_id — note it down.**
+The first "seeded NVS" line only prints on a genuinely first boot (Section 3's NVS
+note) — a later reflash of the same build goes straight to "attempting WiFi join".
+
+**If you used Option B (captive portal),** the log instead shows the node's own AP
+coming up (no "attempting WiFi join" until you actually submit the form):
+
+```
+[transport] WiFi join timed out    <- only if this followed a failed saved-creds attempt; skip on a true first boot
+```
+
+then, after you submit the portal form from your phone:
+
+```
+[transport] attempting WiFi join to "YourWiFiName"...
+[transport] WiFi joined, IP=192.168.1.xx
+[transport] connecting to MQTT broker 192.168.1.50:1883 as "a1b2c3"...
+[transport] MQTT connected, subscribed to epm/a1b2c3/cmd
+```
+
+**That `a1b2c3` is your node_id — note it down.** It's also in the AP SSID
+(`EPM-SAT-a1b2c3`) if you used Option B.
+
+**Ring color while this is happening** (Option B, or any later re-provision):
+magenta slow breathe = AP up, waiting for a submission; magenta fast breathe =
+testing a submitted join; amber breathe = last attempt failed, portal still up,
+retry; solid cyan = joined, about to hand off to normal operation.
 
 Troubleshooting:
 
 | Symptom | Cause / fix |
 |---|---|
-| `still waiting for WiFi...` repeating | Wrong SSID/password, or board not on 2.4 GHz. The ESP32-S3 is 2.4 GHz only. |
-| WiFi connects, but no "MQTT connected" | Wrong `MQTT_BROKER_HOST` IP, broker not listening on `0.0.0.0`, or firewall. Recheck Section 4a. From the desktop try `mosquitto_sub -h <desktop-ip> -t test` to prove the broker is reachable by IP, not just localhost. |
+| `WiFi join timed out`, ring goes back to magenta breathe | Wrong SSID/password, or board not on 2.4 GHz (ESP32-S3 is 2.4 GHz only). Bounded to 15s now, not indefinite — if using Option A, fix `app_config.h` and reflash; NVS won't have saved a failed attempt, so it'll seed again from the corrected values. If using Option B, just resubmit the portal form with the fix — the AP is still up. |
+| WiFi joins, but no "MQTT connected" | Wrong desktop IP in the broker field/`MQTT_BROKER_HOST`, broker not listening on `0.0.0.0`, or firewall. Recheck Section 4a. From the desktop try `mosquitto_sub -h <desktop-ip> -t test` to prove the broker is reachable by IP, not just localhost. |
 | `MQTT connect failed, rc=...` | Broker reachable but rejecting. Confirm `allow_anonymous true`. |
+| Ring stuck on magenta slow breathe forever | Node has no saved creds and nobody's submitted the portal form yet — expected if you're using Option B and haven't joined `EPM-SAT-<id>` yet. |
+| Portal page doesn't auto-open on your phone | Auto-open behavior depends on the OS's captive-portal probe; browse to `http://192.168.4.1` manually as a fallback. |
 
 > The node won't appear on the dashboard yet — with both sensors off it only
 > sends empty "heartbeat" frames (no spectrum data), which the dashboard skips.
@@ -436,13 +508,15 @@ watch the dashboard:
 | What you see | Where | Likely cause |
 |---|---|---|
 | No onboard heartbeat LED | board | boot halted — read the last serial line for which `*_start failed` |
-| `still waiting for WiFi...` | serial | wrong WiFi creds / not 2.4 GHz |
+| `WiFi join timed out`, ring magenta breathe | serial / ring | wrong WiFi creds / not 2.4 GHz — fix and reflash (Option A) or resubmit the portal form (Option B) |
+| Ring stuck magenta slow breathe | ring | no saved creds yet and nobody's joined `EPM-SAT-<id>` + submitted the form (Option B, before submission) |
 | WiFi OK, no MQTT | serial | wrong desktop IP, broker not on `0.0.0.0`, firewall |
 | Node absent from dashboard | dashboard | no *data* frames — check `mosquitto_sub`, check a sensor is enabled |
 | `WHO_AM_I mismatch` | serial | KX134 SPI wiring (CS/INT1/SCK/MISO/MOSI) |
 | `[mic_i2s] ... failed` | serial | INMP441 I2S wiring (WS/BCLK/SD) |
 | Flat mic spectrum | dashboard | INMP441 L/R not tied to GND |
 | Node freezes after enabling a new sensor | dashboard | forgot the registry reset (Stage 5) |
+| Reflash didn't pick up new `app_config.h` WiFi/broker values | serial | NVS already has creds from an earlier boot — the seed step only fires once (Section 3). `pio run -t erase` for a clean slate. |
 
 ---
 
@@ -452,7 +526,8 @@ watch the dashboard:
 
 ```sh
 pio run                 # build
-pio run -t upload       # flash
+pio run -t upload       # flash (keeps saved WiFi/MQTT creds in NVS - see Section 3)
+pio run -t erase        # wipe flash incl. NVS - forces re-provisioning; reflash after
 pio device monitor      # serial log @ 115200
 ```
 
@@ -473,14 +548,18 @@ hostname -I | awk '{print $1}'                      # desktop IP for the board
 | `epm/<node_id>/cmd`  | desktop → node | `STATUS_LED` (`[0x08][rgb u32 LE][mode u8][period u16 LE]`) |
 
 **Config knobs** — [satellite/include/app_config.h](../satellite/include/app_config.h):
-`WIFI_SSID`, `WIFI_PASSWORD`, `MQTT_BROKER_HOST`, `MQTT_BROKER_PORT`,
-`MIC_SENSOR_ENABLED`, `ACCEL_SENSOR_ENABLED`.
+`WIFI_SSID`, `WIFI_PASSWORD` (dev-bench shortcut, first-boot-only), `MQTT_BROKER_HOST`,
+`MQTT_BROKER_PORT`, `MIC_SENSOR_ENABLED`, `ACCEL_SENSOR_ENABLED`.
 
-**Two rules to remember:**
+**Three rules to remember:**
 1. Enable a sensor only when it's wired — a broken enabled sensor halts boot.
 2. Reset the registry whenever you change the enabled-sensor set.
+3. Saved WiFi/MQTT credentials live in NVS, not the flashed app — a plain reflash
+   keeps them. `pio run -t erase` for a clean slate (Section 3).
 
 **Deeper reading:** [satellite/README.md](../satellite/README.md),
-[docs/SENSOR_TELEMETRY_FRAME_PLAN.md](SENSOR_TELEMETRY_FRAME_PLAN.md).
+[docs/SENSOR_TELEMETRY_FRAME_PLAN.md](SENSOR_TELEMETRY_FRAME_PLAN.md),
+[docs/WIFI_ONBOARDING_PLAN.md](WIFI_ONBOARDING_PLAN.md) §2 (satellite onboarding
+design + implementation notes).
 </content>
 </invoke>

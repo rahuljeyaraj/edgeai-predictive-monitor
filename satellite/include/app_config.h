@@ -12,26 +12,38 @@
 
 /* ---- WiFi / MQTT ----
  *
- * Per docs/Appendix_A_Network_Selection_Rationale.md and Appendix B S3:
- * the UNO Q hosts its own 2.4GHz AP (SSID "EPM-BaseStation") and runs the
- * Mosquitto broker at 10.42.0.1. WIFI_PASSWORD has no documented value
- * (deployment-time secret, not committed anywhere in this repo) - replace
- * the placeholder below before flashing. Overridable via build_flags
- * (-D WIFI_SSID=... etc.) instead of editing this file directly, if
- * preferred, since these are per-deployment values, not firmware
- * behavior. */
+ * Runtime-provisioned as of docs/WIFI_ONBOARDING_PLAN.md S2: a node with
+ * no saved NVS credentials starts its own AP (PROVISIONING_AP_SSID_PREFIX
+ * + this node's MAC-derived id) and serves a one-page captive-portal form
+ * asking for SSID/password/MQTT broker address - see
+ * hal/hal_provisioning.h and hal/hal_credentials.h. WIFI_SSID/
+ * WIFI_PASSWORD below are NOT the normal provisioning path; they're a
+ * dev-bench shortcut only: if both are overridden via build_flags away
+ * from their placeholder defaults, threads/transport_task.cpp auto-seeds
+ * NVS with them on first boot and skips the portal entirely - saves the
+ * AP+form dance on this project's 2 real bench boards during frequent
+ * reflash cycles. A real deployment build passes neither flag, so this is
+ * a no-op in the field. MQTT_BROKER_HOST is the portal form's broker-field
+ * prefill default (mDNS name, not a raw IP - overridable per-field at
+ * provisioning time since mDNS can be VLAN-blocked on factory WiFi,
+ * S4). */
 #ifndef WIFI_SSID
-#define WIFI_SSID "EPM-BaseStation"
+#define WIFI_SSID "CHANGE_ME"
 #endif
 #ifndef WIFI_PASSWORD
 #define WIFI_PASSWORD "CHANGE_ME"
 #endif
 #ifndef MQTT_BROKER_HOST
-#define MQTT_BROKER_HOST "10.42.0.1"
+#define MQTT_BROKER_HOST "epm-base.local"
 #endif
 #ifndef MQTT_BROKER_PORT
 #define MQTT_BROKER_PORT 1883
 #endif
+
+/* AP SSID this node broadcasts while unprovisioned/re-provisioning:
+ * PROVISIONING_AP_SSID_PREFIX + the node's MAC-derived id (e.g.
+ * "EPM-SAT-a1b2c3"), per docs/WIFI_ONBOARDING_PLAN.md S2. */
+#define PROVISIONING_AP_SSID_PREFIX "EPM-SAT-"
 
 /* Per-sensor enable/disable - mirrors mcu/'s MIC_SENSOR_ENABLED/
  * ACCEL_SENSOR_ENABLED exactly (app_config.h there). 0 disables that
