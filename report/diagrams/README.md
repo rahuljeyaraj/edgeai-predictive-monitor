@@ -38,3 +38,14 @@ Open a `.svg` directly in Inkscape or Figma and edit it there. If you do,
 export/save a matching `.png` (same filename) alongside it by hand — and
 don't rerun the Python script afterward, it will silently overwrite the
 manual edit.
+
+## The `*-schematic-kicad.png` files
+
+`02b-base-station-schematic-kicad.png`, `03b-satellite-node-schematic-kicad.png`,
+and `06-motor-driver-rig-schematic-kicad.png` are a different animal from
+the diagrams above: real KiCad schematics (actual `.kicad_sch` files,
+symbols + nets, openable in KiCad), not hand-drawn SVG blocks. Source
+lives in `hardware/kicad/` at the repo root, not in this folder's `gen/`.
+They're copied here as plain PNGs so REPORT.md's image paths stay
+relative to this one folder — regenerate from `hardware/kicad/`, then
+recopy, don't edit these PNGs directly.

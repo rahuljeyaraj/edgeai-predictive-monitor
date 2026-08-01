@@ -190,6 +190,12 @@ Three things get wired to the UNO Q's STM32U585 side:
 
 ![Base station wiring: KX134, INMP441, and the WS2812 ring, each labeled with the STM32U585 pins they connect to](diagrams/02-base-station-wiring.png)
 
+For anyone wiring this up, the same connections as a proper KiCad
+schematic — every net labeled with the exact header pin from the table
+above:
+
+![Base station schematic (KiCad): UNO Q, KX134, INMP441, and WS2812 ring with every net labeled by header pin](diagrams/02b-base-station-schematic-kicad.png)
+
 ## 2.4 Seeing It Work
 
 Flash the STM32U585 side with the sketch in `base-station/sketch/`
@@ -280,6 +286,10 @@ than the base station's, but it's exactly this, every time:
 | WS2812 ring data in | D5 | |
 
 ![Satellite node wiring: KX134, INMP441, and the WS2812 ring, each labeled with the XIAO ESP32S3 pins they connect to](diagrams/03-satellite-node-wiring.png)
+
+And the same, as a KiCad schematic:
+
+![Satellite node schematic (KiCad): XIAO ESP32S3, KX134, INMP441, and WS2812 ring with every net labeled by GPIO](diagrams/03b-satellite-node-schematic-kicad.png)
 
 One thing a satellite node *doesn't* have: the base station's LED matrix.
 The ring alone carries its status — one light, not two, is plenty for a
@@ -885,6 +895,8 @@ per-unit pin or ID configuration needed beyond the wiring itself.
 | Motor 1 (X) STEP / DIR | D2 / D5 | |
 | Motor 2 (Y) STEP / DIR | D3 / D6 | |
 | Motor 3 (Z) STEP / DIR | D4 / D7 | |
+
+![Motor-driver rig schematic (KiCad): Arduino Uno + CNC Shield V3, three A4988/DRV8825 drivers on a shared ~ENABLE line, three NEMA-17 motors, and the 12-24V supply](diagrams/06-motor-driver-rig-schematic-kicad.png)
 
 Driver current limit (the small potentiometer on each A4988/DRV8825) must
 be set before running — under-current skips steps, over-current
