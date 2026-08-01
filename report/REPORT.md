@@ -124,9 +124,7 @@ is worth exactly as much as a machine that only says "I'm fine":
 | Fault-type classifier (Edge Impulse, shared per machine type) | Built, accuracy still improving — an active research track, not the safety path |
 | Per-motor relay (independent shutoff per machine) | Planned, not yet built |
 
-> **[DIAGRAM: system-at-a-glance block diagram — sensor pod, base
-> station, satellite nodes, dashboard/phone, and the motor-stop signal,
-> all in one picture]**
+![System at a glance: sensor pod and satellite nodes feed the base station, which fans out to dashboard, phone, status light, and — on a confirmed fault — a motor-stop command](diagrams/01-system-at-a-glance.png)
 
 ## 1.3 Why This Counts as Physical AI, Not Just a Smart Dashboard
 
@@ -190,8 +188,7 @@ Three things get wired to the UNO Q's STM32U585 side:
 | INMP441 microphone | SAI1 clock / frame-sync / data | PB10 / PB9 / PC1 |
 | WS2812 status ring | Data in | PB0 (TIM3 channel 3) |
 
-> **[DIAGRAM: base station wiring diagram — UNO Q silhouette with each
-> sensor and its pins labeled, matching the table above]**
+![Base station wiring: KX134, INMP441, and the WS2812 ring, each labeled with the STM32U585 pins they connect to](diagrams/02-base-station-wiring.png)
 
 ## 2.4 Seeing It Work
 
@@ -282,8 +279,7 @@ than the base station's, but it's exactly this, every time:
 | INMP441 SD (data in) | D4 | |
 | WS2812 ring data in | D5 | |
 
-> **[DIAGRAM: satellite node wiring diagram — XIAO ESP32S3 silhouette,
-> pins labeled per the table above]**
+![Satellite node wiring: KX134, INMP441, and the WS2812 ring, each labeled with the XIAO ESP32S3 pins they connect to](diagrams/03-satellite-node-wiring.png)
 
 One thing a satellite node *doesn't* have: the base station's LED matrix.
 The ring alone carries its status — one light, not two, is plenty for a
@@ -358,8 +354,7 @@ and noticeably worse at rebuilding anything else. That gap between
 "what came in" and "what the network thinks normal should look like" is
 the **anomaly score**.
 
-> **[DIAGRAM: feature pipeline — sensor → FFT + scalars → autoencoder →
-> anomaly score]**
+![Feature pipeline: sensor to feature vector to autoencoder to anomaly score to healthy/warning/fault status](diagrams/04-feature-pipeline.png)
 
 ## 4.3 From Score to Status
 
@@ -559,9 +554,7 @@ inference, where the dashboard is served, and where a decision to trip
 a motor gets made — every other board is either a sense organ or a
 muscle, not a decision-maker.
 
-> **[DIAGRAM: full architecture — sensor nodes, base station Linux
-> "brain," dashboard/phone, motor-driver rig, with data direction
-> arrows]**
+![Full architecture: satellite nodes and the base station's own STM32U585 feed the QRB2210 Linux brain, which drives the dashboard, phone alerts, status lights, and — on a confirmed fault — the motor-driver rig](diagrams/05-full-architecture.png)
 
 ## 7.2 Sensor Sample to Dashboard Pixel
 
