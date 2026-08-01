@@ -38,6 +38,7 @@ tools/satellite_node_sim.py, or mosquitto_pub with raw bytes) against a
 running Mosquitto broker; confirm a new pipeline is created and routed
 exactly as SPI frames are.
 """
+import json
 import logging
 import queue
 import threading
@@ -55,6 +56,14 @@ logger = logging.getLogger(__name__)
 
 DATA_TOPIC_FILTER = "epm/+/data"
 
+# The rig host's retained self-description (docs/UNIFIED_COMMISSIONING_PLAN.md
+# S3.2, protection/trip_outputs.py). JSON, not the binary [TYPE][PAYLOAD]
+# envelope the /cmd direction uses: that envelope exists because commands are
+# consumed by MCU firmware with no JSON parser, whereas this announce is
+# written by a Python host script and read by this Python process, is
+# variable-length and self-describing by nature, and is never on a hot path.
+OUTPUTS_TOPIC_FILTER = "epm/+/outputs"
+
 # Bounds the handoff queue between paho's network thread and the frame-
 # processing worker (see MqttSubscriber's class docstring) -- a safety net
 # against unbounded memory growth if processing ever falls consistently
@@ -71,18 +80,40 @@ class MalformedMessageError(Exception):
     which only counts actual parse failures)."""
 
 
-def _node_id_from_topic(topic: str) -> str:
-    """epm/<node_id>/data -> <node_id>. Topic wildcards only route
+def _node_id_from_topic(topic: str, suffix: str = "data") -> str:
+    """epm/<node_id>/<suffix> -> <node_id>. Topic wildcards only route
     delivery in MQTT; the segment itself is the sole source of node
     identity now that the wire payload carries no node_id field (see
     module docstring)."""
     parts = topic.split("/")
-    if len(parts) != 3 or parts[0] != "epm" or parts[2] != "data":
-        raise MalformedMessageError(f"topic {topic!r} doesn't match epm/<node_id>/data")
+    if len(parts) != 3 or parts[0] != "epm" or parts[2] != suffix:
+        raise MalformedMessageError(f"topic {topic!r} doesn't match epm/<node_id>/{suffix}")
     node_id = parts[1]
     if not node_id:
         raise MalformedMessageError(f"empty node_id in topic {topic!r}")
     return node_id
+
+
+def parse_outputs_message(topic: str, payload: bytes) -> tuple:
+    """epm/<host>/outputs -> (host_node_id, [{"idx": ..., "name": ...}, ...]).
+    Pure parse step, split out from MqttSubscriber for the same reason
+    normalize_spectrum_message() above is: it's exercisable without a broker.
+
+    An empty payload is a valid announce meaning "no outputs" -- that's how a
+    retained announce is cleared on the broker, and it must read as "this rig
+    offers nothing" rather than as a parse failure."""
+    host_node_id = _node_id_from_topic(topic, "outputs")
+    if not payload:
+        return host_node_id, []
+    try:
+        decoded = json.loads(payload)
+    except (UnicodeDecodeError, json.JSONDecodeError) as e:
+        raise MalformedMessageError(f"malformed outputs announce on {topic!r}: {e}") from e
+    outputs = decoded.get("outputs") if isinstance(decoded, dict) else None
+    if not isinstance(outputs, list):
+        raise MalformedMessageError(
+            f"outputs announce on {topic!r} has no \"outputs\" list")
+    return host_node_id, outputs
 
 
 def normalize_spectrum_message(topic: str, payload: bytes,
@@ -172,8 +203,15 @@ class MqttSubscriber:
     step -- both the worker thread and tests call it directly."""
 
     def __init__(self, host: str, port: int, on_frame: Callable[[SensorFrame], None],
-                 client_id: str = ""):
+                 client_id: str = "",
+                 on_outputs: Optional[Callable[[str, list], None]] = None):
+        """on_outputs(host_node_id, outputs): the rig host's retained
+        self-description (OUTPUTS_TOPIC_FILTER). Optional and carried on this
+        same client rather than a second one -- it's one retained message per
+        rig, arriving once on connect, and a whole extra broker connection to
+        receive it would be pure ceremony."""
         self._on_frame = on_frame
+        self._on_outputs = on_outputs
         self._dropped = 0
         self._routing_errors = 0
         self._queue: "queue.Queue" = queue.Queue(maxsize=_QUEUE_MAXSIZE)
@@ -199,6 +237,15 @@ class MqttSubscriber:
 
     def _handle_connect(self, client, userdata, flags, reason_code, properties=None):
         client.subscribe(DATA_TOPIC_FILTER, qos=0)
+        if self._on_outputs is not None:
+            # qos=1, unlike the telemetry stream's qos=0: telemetry is a
+            # continuous flow where a dropped frame is replaced a fraction of
+            # a second later, whereas this is one message that only arrives
+            # again on the next reconnect. Subscribed from on_connect (not
+            # once at construction) for the same reason the data topic is --
+            # a reconnect after a broker restart would otherwise leave this
+            # silently unsubscribed.
+            client.subscribe(OUTPUTS_TOPIC_FILTER, qos=1)
 
     def _enqueue_message(self, client, userdata, msg) -> None:
         """The actual paho on_message callback -- runs on paho's shared
@@ -218,6 +265,9 @@ class MqttSubscriber:
         """Fully parse + route one message -- called from _process_loop's
         worker thread in normal operation, or directly by tests that want
         synchronous, single-threaded behavior (no queue/worker involved)."""
+        if msg.topic.endswith("/outputs"):
+            self._handle_outputs(msg)
+            return
         try:
             frame = normalize_spectrum_message(msg.topic, msg.payload)
         except MalformedMessageError:
@@ -239,6 +289,26 @@ class MqttSubscriber:
             self._routing_errors += 1
             logger.exception("on_frame failed for node_id=%r topic=%r -- frame dropped",
                               frame.node_id, msg.topic)
+
+    def _handle_outputs(self, msg) -> None:
+        """One rig host's retained outputs announce. Counted as a dropped
+        message on a parse failure, same as a malformed telemetry frame, and
+        never allowed to raise -- this runs on the same worker thread the
+        frame stream does, and a bad announce from a rig must not stop the
+        fleet's telemetry from being processed."""
+        if self._on_outputs is None:
+            return
+        try:
+            host_node_id, outputs = parse_outputs_message(msg.topic, msg.payload)
+        except MalformedMessageError:
+            self._dropped += 1
+            logger.warning("dropping malformed trip-outputs announce on %r", msg.topic)
+            return
+        try:
+            self._on_outputs(host_node_id, outputs)
+        except Exception:
+            self._routing_errors += 1
+            logger.exception("on_outputs failed for host=%r", host_node_id)
 
     def _process_loop(self) -> None:
         """Dedicated worker thread, off paho's network thread (see class

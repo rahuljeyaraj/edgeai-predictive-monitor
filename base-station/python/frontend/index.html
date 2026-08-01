@@ -9,9 +9,16 @@
        just a hard-refresh) picks up the new file. Repeated live-testing
        confusion over "did my CSS/JS change even apply" is why this
        exists (2026-07-24). -->
-  <link rel="stylesheet" href="style.css?v=28">
+  <link rel="stylesheet" href="style.css?v=29">
 </head>
 <body>
+  <!-- Global trip banner (docs/UNIFIED_COMMISSIONING_PLAN.md S4.2). Above
+       the tab nav on purpose, so a countdown, a Hold, or a failed trip is
+       present on Fleet, Classifier, Network and Performance alike -- a trip
+       countdown is an alarm, not a setting, and ten seconds isn't enough
+       time to go looking for the right tile. -->
+  <div class="trip-banner" id="trip-banner" role="alert" hidden></div>
+
   <header class="topbar">
     <h1 class="topbar__title">
       <svg class="topbar__logo" viewBox="0 0 220 66" role="img" aria-label="EdgeAI Predictive Monitor logo">
@@ -91,6 +98,8 @@
   <script src="alerts.js?v=25"></script>
   <script src="classifier.js?v=25"></script>
   <script src="network.js?v=25"></script>
-  <script src="app.js?v=28"></script>
+  <!-- Before app.js: app.js calls Setup.init() at load time. -->
+  <script src="setup.js?v=29"></script>
+  <script src="app.js?v=29"></script>
 </body>
 </html>

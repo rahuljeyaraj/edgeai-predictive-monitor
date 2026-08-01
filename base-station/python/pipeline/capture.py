@@ -93,6 +93,12 @@ def list_captures(captures_dir: str) -> List[dict]:
                 "node_id": payload.get("node_id"),
                 "device_type": payload.get("device_type"),
                 "label": payload.get("label", label),
+                # Which operating condition this batch was recorded under
+                # (docs/UNIFIED_COMMISSIONING_PLAN.md S2.3) -- absent on
+                # every capture saved before setup existed, and on every
+                # manual fault recording, which is why it stays a plain
+                # optional key rather than becoming part of the label.
+                "condition": payload.get("condition"),
                 "timestamp": payload.get("timestamp"),
                 "frame_count": len(payload.get("vectors", [])),
             })
@@ -126,6 +132,46 @@ def load_capture(captures_dir: str, capture_id: str) -> dict:
     duplicating it."""
     with open(_resolve_capture_path(captures_dir, capture_id)) as f:
         return json.load(f)
+
+
+def save_vectors(captures_dir: str, node_id: str, label: str,
+                  vectors: List[Tuple[float, ...]], sensor_config, input_dim: int,
+                  device_type: Optional[str] = None,
+                  condition: Optional[str] = None) -> str:
+    """Writes one labeled batch to disk and returns its path -- the single
+    place this file format is produced. CaptureSession.save() below is one
+    caller; pipeline/commissioning.py is the other, saving each operating
+    condition it collected as its own `healthy` recording
+    (docs/UNIFIED_COMMISSIONING_PLAN.md S2.3). Splitting it out is what
+    keeps those two from drifting into two nearly-identical payload shapes
+    that api/ei_controller.py would then have to tell apart.
+
+    condition rides alongside `label`, deliberately not folded into it: the
+    labels ARE the classifier's class list, so `healthy_no_load` and
+    `healthy_full_load` would hand Edge Impulse two classes that both mean
+    "fine" (S2.3)."""
+    safe_label = normalize_label(label)
+    label_dir = os.path.join(captures_dir, safe_label)
+    os.makedirs(label_dir, exist_ok=True)
+    timestamp = time.time()
+    # Nanosecond precision, not millisecond -- two saves for the same
+    # node can otherwise land in the same millisecond (a fast
+    # start/stop/save cycle, or two conditions saved back to back at the
+    # end of setup) and silently overwrite each other.
+    path = os.path.join(label_dir, f"{time.time_ns()}_{node_id}.json")
+    payload = {
+        "node_id": node_id,
+        "device_type": device_type,
+        "label": safe_label,
+        "condition": condition,
+        "timestamp": timestamp,
+        "sensor_config": sorted(c.value for c in sensor_config),
+        "input_dim": input_dim,
+        "vectors": [list(v) for v in vectors],
+    }
+    with open(path, "w") as f:
+        json.dump(payload, f)
+    return path
 
 
 def rename_capture(captures_dir: str, capture_id: str, new_label: str) -> str:
@@ -243,28 +289,13 @@ class CaptureSession:
         if self._state != "stopped":
             raise CaptureError(
                 f"nothing to save for {self._node_id!r}: call stop() first")
-        safe_label = normalize_label(label)
-
         entry = self._registry.get(self._node_id)
-        label_dir = os.path.join(self._captures_dir, safe_label)
-        os.makedirs(label_dir, exist_ok=True)
-        timestamp = time.time()
-        # Nanosecond precision, not millisecond -- two saves for the same
-        # node can otherwise land in the same millisecond (a fast
-        # start/stop/save cycle, or just two nodes saved back to back) and
-        # silently overwrite each other under the old filename scheme.
-        path = os.path.join(label_dir, f"{time.time_ns()}_{self._node_id}.json")
-        payload = {
-            "node_id": self._node_id,
-            "device_type": entry.device_type,
-            "label": safe_label,
-            "timestamp": timestamp,
-            "sensor_config": sorted(c.value for c in entry.sensor_config),
-            "input_dim": entry.input_dim,
-            "vectors": [list(v) for v in self._frozen],
-        }
-        with open(path, "w") as f:
-            json.dump(payload, f)
+        # No condition= here: a manual recording is a fault sample taken
+        # whenever the machine happens to show one, not one of setup's
+        # deliberately-staged operating conditions (save_vectors' docstring).
+        path = save_vectors(self._captures_dir, self._node_id, label, self._frozen,
+                             entry.sensor_config, entry.input_dim,
+                             device_type=entry.device_type)
 
         self._frozen = []
         self._target_frames = None

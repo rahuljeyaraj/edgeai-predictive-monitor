@@ -15,7 +15,7 @@ import threading
 import time
 from dataclasses import asdict, dataclass, field
 from enum import Enum
-from typing import Dict, FrozenSet, Optional, Tuple
+from typing import Dict, FrozenSet, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -161,6 +161,22 @@ class RegistryEntry:
     # MqttMsgType.MOTOR_STOP. Don't delete it as unused without checking
     # those three.
     trip_motor_idx: Optional[int] = None
+    # When the trip output above was last *proven* to stop this machine, by
+    # actually sending it a stop and watching this node's own gate go quiet
+    # (docs/UNIFIED_COMMISSIONING_PLAN.md S3.3). None means mapped but
+    # unproven -- either an operator picked the output by hand (S3.5's
+    # fallback) or the confirm test has never been run. The distinction is
+    # shown, not hidden: an unverified mapping is exactly what the old
+    # hardcoded dropdown produced silently, and calling that "confirmed"
+    # would be the lie this field exists to prevent.
+    trip_motor_confirmed_at: Optional[float] = None
+    # Names of the operating conditions this node's model was trained across
+    # -- "running" alone for a single-batch commission, or e.g.
+    # ["no_load", "full_load"] when setup collected several (S2.3). Display
+    # only: nothing at runtime can tell which condition a machine is
+    # currently in, which is exactly why the conditions are pooled into one
+    # model rather than given per-condition thresholds.
+    operating_conditions: Optional[List[str]] = None
     # What this node's sensor measures with its machine deliberately
     # STOPPED: per channel, the per-bin median magnitude (the mounting
     # point's own noise floor) and the median energy those same stopped
@@ -279,6 +295,21 @@ class _NodeStateMachine(StateMachine):
     # "fitting the model now" and show real epoch progress for the latter.
 
     complete_commissioning = _.COMMISSIONING_TRAINING.to(_.HEALTHY)
+
+    # Abandoning a collection without training -- setup's Cancel
+    # (docs/UNIFIED_COMMISSIONING_PLAN.md S7's /setup/cancel). Two events
+    # rather than one with a condition, because where a cancelled node
+    # belongs depends on whether it has ever been trained, and
+    # cancel_commissioning() below is the one place that knows:
+    #   never trained -> UNCOMMISSIONED (it genuinely isn't set up)
+    #   re-running setup on a live asset -> HEALTHY, and let the next few
+    #     scored frames re-diagnose it, exactly as resume() does coming out
+    #     of a pause and for the same reason -- we re-measure a status, we
+    #     never guess one back.
+    # Only from COMMISSIONING_COLLECTING: once training has started there is
+    # no thread to call back, so a "cancel" there would be a lie.
+    abandon_commissioning = _.COMMISSIONING_COLLECTING.to(_.UNCOMMISSIONED)
+    revert_commissioning = _.COMMISSIONING_COLLECTING.to(_.HEALTHY)
 
     pause = _.HEALTHY.to(_.PAUSED) | _.WARNING.to(_.PAUSED) | _.FAULT.to(_.PAUSED)
     # COMMISSIONING_COLLECTING/COMMISSIONING_TRAINING -> PAUSED is absent:
@@ -491,11 +522,19 @@ class Registry:
             self._save()
             return entry
 
-    def set_trip_motor(self, node_id: str, motor_idx: Optional[int]) -> RegistryEntry:
+    def set_trip_motor(self, node_id: str, motor_idx: Optional[int],
+                        confirmed_at: Optional[float] = None) -> RegistryEntry:
         """Arms (or disarms) this asset's machinery-protection trip output by
         pointing it at one motor on the rig, 1-based (docs/
         MOTOR_STOP_PLAN.md). None clears it back to "no trip output", which
         is the default for every asset.
+
+        confirmed_at always overwrites trip_motor_confirmed_at, defaulting to
+        None (unproven) rather than being left alone: pointing an asset at a
+        different output invalidates whatever the previous one proved, and
+        carrying an old confirmation forward onto a new mapping is precisely
+        the confirmed-looking guess S3.5 refuses to produce. Only the
+        confirm-by-stopping test (api/app.py) passes a timestamp here.
 
         Set independently of rename()/set_device_type() for the same reason
         those two are independent of each other: which physical actuator an
@@ -523,6 +562,7 @@ class Registry:
                             f"motor {motor_idx} is already the trip output for node "
                             f"{other_id!r}")
             entry.trip_motor_idx = motor_idx
+            entry.trip_motor_confirmed_at = confirmed_at if motor_idx is not None else None
             self._save()
             return entry
 
@@ -651,6 +691,27 @@ class Registry:
             self._notify_status_change(node_id, entry.status)
             return entry
 
+    def cancel_commissioning(self, node_id: str) -> RegistryEntry:
+        """Abandons an in-progress collection, leaving every calibrated field
+        (model_path, thresholds, scalar_mu/sigma, running_energy_ref, the
+        stopped baseline) exactly as it was -- nothing was overwritten yet,
+        since commissioning only writes them in train(). Lands on
+        UNCOMMISSIONED or HEALTHY per abandon_commissioning/
+        revert_commissioning's comment above."""
+        with self._lock_for(node_id):
+            entry = self.get(node_id)
+            machine = _NodeStateMachine(model=entry, state_field="status")
+            event = machine.revert_commissioning if entry.model_path else machine.abandon_commissioning
+            try:
+                event()
+            except TransitionNotAllowed:
+                raise InvalidTransitionError(
+                    f"cannot cancel commissioning for node {node_id!r}: status is "
+                    f"{entry.status.value!r}, must be commissioning_collecting")
+            self._save()
+            self._notify_status_change(node_id, entry.status)
+            return entry
+
     def set_status(self, node_id: str, status: NodeStatus) -> RegistryEntry:
         """Generic status setter for callers outside a specific registry
         workflow (e.g. pipeline/inference.py's threshold -> status, S3.6),
@@ -682,7 +743,8 @@ class Registry:
                                  fault_threshold: Optional[float] = None,
                                  scalar_mu: Optional[Tuple[float, ...]] = None,
                                  scalar_sigma: Optional[Tuple[float, ...]] = None,
-                                 running_energy_ref: Optional[float] = None) -> RegistryEntry:
+                                 running_energy_ref: Optional[float] = None,
+                                 operating_conditions: Optional[List[str]] = None) -> RegistryEntry:
         with self._lock_for(node_id):
             entry = self.get(node_id)
             try:
@@ -707,6 +769,8 @@ class Registry:
                 entry.scalar_sigma = scalar_sigma
             if running_energy_ref is not None:
                 entry.running_energy_ref = running_energy_ref
+            if operating_conditions is not None:
+                entry.operating_conditions = list(operating_conditions)
             self._save()
             self._notify_status_change(node_id, entry.status)
             return entry

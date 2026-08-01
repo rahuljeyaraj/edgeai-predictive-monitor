@@ -22,6 +22,7 @@ Examples:
 """
 
 import argparse
+import json
 import math
 import struct
 import sys
@@ -52,7 +53,21 @@ RAMP_TICK_S = 0.1
 # can't drift silently.
 MQTT_MSG_TYPE_MOTOR_STOP = 0x09
 MOTOR_STOP_PAYLOAD_FMT = "<B"  # motor_idx, 1-based
-CMD_TOPIC_FMT = "epm/{node_id}/cmd"
+
+# Every asset's command topic, not one node's. A trip is addressed by the
+# motor_idx in its payload -- that is what identifies an output on this rig;
+# the node_id in the topic is the *asset that faulted*, which is incidental
+# here. Subscribing to a single node's topic (which this did, from a CLI arg)
+# meant a second monitored asset's trip was published into the void, no matter
+# which output it was mapped to (docs/UNIFIED_COMMISSIONING_PLAN.md S1.1/S3.2).
+CMD_TOPIC_FILTER = "epm/+/cmd"
+
+# This rig's own retained self-description, so the base station stops guessing
+# how many outputs exist (S3.2). Published once on connect and retained, so a
+# base station that starts later still receives it. JSON, unlike the binary
+# command direction above: this is host-to-host, variable-length, and never on
+# a hot path -- no MCU firmware parses it.
+OUTPUTS_TOPIC_FMT = "epm/{node_id}/outputs"
 
 
 def marker(label: str) -> None:
@@ -175,10 +190,11 @@ class Rig:
 
 
 class TripListener:
-    """Subscribes to the base station's command topic and applies MOTOR_STOP
-    to the rig. One-way by construction: nothing here can start a motor or set
-    a speed, so the worst a compromised or confused broker can do is stop the
-    machine -- which is the safe direction.
+    """Subscribes to the base station's command topics, applies MOTOR_STOP to
+    the rig, and announces which outputs this rig has. One-way by
+    construction: nothing here can start a motor or set a speed, so the worst
+    a compromised or confused broker can do is stop the machine -- which is
+    the safe direction.
 
     Optional. With no --mqtt-host the rig stays exactly as standalone as it has
     always been (docs/motor-driver.md S1), which is the point: monitoring is
@@ -191,7 +207,8 @@ class TripListener:
             sys.exit("paho-mqtt not installed (needed for --mqtt-host). "
                       "Run: pip install paho-mqtt")
         self._rig = rig
-        self._topic = CMD_TOPIC_FMT.format(node_id=node_id)
+        self._topic = CMD_TOPIC_FILTER
+        self._outputs_topic = OUTPUTS_TOPIC_FMT.format(node_id=node_id)
         self._client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
         self._client.on_connect = self._on_connect
         self._client.on_message = self._on_message
@@ -206,26 +223,15 @@ class TripListener:
         self._client.loop_start()
         marker(f"TRIP LISTENER armed on {self._host}:{self._port} -> {self._topic}")
 
-    def stop(self) -> None:
-        self._client.loop_stop()
-        self._client.disconnect()
-
-    def _on_connect(self, client, userdata, flags, reason_code, properties=None):
-        # Subscribe from on_connect, not once at construction: a reconnect
-        # after a broker restart otherwise leaves this silently unsubscribed
-        # and the trip would never arrive.
-        if reason_code == 0:
-            client.subscribe(self._topic, qos=1)
-            marker("TRIP LISTENER connected to broker")
-        else:
-            marker(f"TRIP LISTENER connect failed (reason={reason_code})")
-
     def _on_message(self, client, userdata, message):
         data = message.payload
         if len(data) < 2 or data[0] != MQTT_MSG_TYPE_MOTOR_STOP:
             return  # not a trip -- e.g. a STATUS_LED meant for a real node
         motor_idx = struct.unpack(MOTOR_STOP_PAYLOAD_FMT, data[1:2])[0]
         if motor_idx not in MOTOR_IDS:
+            # Now that this subscribes to every asset's cmd topic, this is
+            # also the normal case for a trip belonging to another rig on the
+            # same broker -- not only a misconfiguration.
             marker(f"TRIP IGNORED: motor {motor_idx} is not on this rig")
             return
         marker(f"*** TRIP RECEIVED: stopping motor {motor_idx} ***")
@@ -236,6 +242,36 @@ class TripListener:
             return
         marker(f"motor {motor_idx} stopped -- restart it by hand "
                 f"(this script will not)")
+
+    def stop(self) -> None:
+        self._client.loop_stop()
+        self._client.disconnect()
+
+    def _on_connect(self, client, userdata, flags, reason_code, properties=None):
+        # Subscribe from on_connect, not once at construction: a reconnect
+        # after a broker restart otherwise leaves this silently unsubscribed
+        # and the trip would never arrive.
+        if reason_code == 0:
+            client.subscribe(self._topic, qos=1)
+            self._announce_outputs()
+            marker("TRIP LISTENER connected to broker")
+        else:
+            marker(f"TRIP LISTENER connect failed (reason={reason_code})")
+
+    def _announce_outputs(self) -> None:
+        """Tell the base station what this rig actually has (S3.2). Retained,
+        and republished on every reconnect, so the announce survives a base
+        station restart without this script restarting too.
+
+        MOTOR_IDS is the single source of truth for the fleet now -- the rig
+        already refused unknown indices (_on_message above), it just never
+        told anyone, which is how the dashboard ended up carrying a hardcoded
+        copy that offered three motors to a one-motor factory."""
+        payload = json.dumps({
+            "outputs": [{"idx": idx, "name": f"Motor {idx}"} for idx in MOTOR_IDS],
+        })
+        self._client.publish(self._outputs_topic, payload, qos=1, retain=True)
+        marker(f"ANNOUNCED outputs {list(MOTOR_IDS)} on {self._outputs_topic}")
 
 
 def run_profile(rig: Rig, args) -> None:
@@ -282,8 +318,12 @@ def main() -> None:
                          "motor when one arrives (one-way: trips only, never speeds).")
     p.add_argument("--mqtt-port", type=int, default=1883)
     p.add_argument("--trip-node-id", default="motor_rig",
-                    help="This rig host's MQTT identity; must match the base "
-                         "station's --trip-host-node-id.")
+                    help="This rig host's MQTT identity, used to announce which "
+                         "outputs it has (epm/<id>/outputs); must match the base "
+                         "station's --trip-host-node-id. Trips themselves are now "
+                         "received on every asset's topic and routed by the "
+                         "motor index in the payload, so this no longer decides "
+                         "which trips arrive.")
     p.add_argument("--hold-open", action="store_true",
                     help="Skip the scripted profile and just idle with the trip "
                          "listener armed, for driving the motors from elsewhere "

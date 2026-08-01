@@ -63,7 +63,9 @@ from app import create_app, broadcast_threadsafe
 from commissioning_controller import CommissioningController
 from capture_controller import CaptureController
 from stopped_baseline_controller import StoppedBaselineController
+from setup_controller import SetupController
 from protection import DEFAULT_TRIP_DELAY_S, ProtectionController
+from trip_outputs import TripOutputStore
 from ei_controller import EIController
 from alert_store import AlertStore
 
@@ -126,10 +128,11 @@ def build_gate_factory(registry: Registry, threshold: float, debounce_frames: in
     return factory
 
 
-def run_mqtt(host: str, port: int, on_frame, stop_event: threading.Event):
+def run_mqtt(host: str, port: int, on_frame, stop_event: threading.Event,
+              on_outputs=None):
     from mqtt_subscriber import MqttSubscriber
 
-    subscriber = MqttSubscriber(host, port, on_frame=on_frame)
+    subscriber = MqttSubscriber(host, port, on_frame=on_frame, on_outputs=on_outputs)
     subscriber.start()
     stop_event.wait()
     subscriber.stop()
@@ -436,11 +439,21 @@ def main():
     # protection.py's _fire_trip for why the edge alone isn't enough.
     protection.set_motor_state_query(manager.is_running)
 
-    commissioning = CommissioningController(
-        registry, models_dir, gate_factory, min_frames=args.min_commission_frames)
     captures_dir = os.path.join(args.data_dir, "captures")
+    # captures_dir: each operating condition setup collects is also kept as a
+    # `healthy` recording for the fault classifier (docs/
+    # UNIFIED_COMMISSIONING_PLAN.md S2.3) -- same directory the Record drawer
+    # writes to, since they're the same kind of artifact.
+    commissioning = CommissioningController(
+        registry, models_dir, gate_factory, min_frames=args.min_commission_frames,
+        captures_dir=captures_dir)
     capture = CaptureController(registry, captures_dir, gate_factory)
     stopped_baseline = StoppedBaselineController(registry)
+    # The guided flow itself owns no collection of its own -- it sequences
+    # the three controllers above plus protection (see setup_controller.py).
+    setup = SetupController(registry, commissioning, stopped_baseline=stopped_baseline,
+                             protection=protection)
+    trip_outputs = TripOutputStore()
     ei_controller = EIController(
         registry, os.path.join(args.data_dir, "ei_projects.json"), captures_dir, ei_models_dir,
         ei_scaling_path)
@@ -507,7 +520,8 @@ def main():
     status_led_publisher = None
     if args.mqtt_host:
         mqtt_thread = threading.Thread(
-            target=run_mqtt, args=(args.mqtt_host, args.mqtt_port, on_frame, stop_event),
+            target=run_mqtt, args=(args.mqtt_host, args.mqtt_port, on_frame, stop_event,
+                                    trip_outputs.announce),
             daemon=True)
         status_led_publisher = wire_status_led_publishing(registry, args.mqtt_host, args.mqtt_port)
         # Same publisher, same connection -- MOTOR_STOP and STATUS_LED are
@@ -537,7 +551,8 @@ def main():
                       alert_store=alert_store, telegram_bot=telegram_bot,
                       telegram_bot_username=telegram_bot_username, ei=ei_controller,
                       wifi_status=wifi_status, protection=protection,
-                      stopped_baseline=stopped_baseline,
+                      stopped_baseline=stopped_baseline, setup=setup,
+                      trip_outputs=trip_outputs,
                       on_startup=start_ingestion)
 
     # Mounted after every REST/WebSocket route above is registered, so

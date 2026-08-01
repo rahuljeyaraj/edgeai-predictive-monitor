@@ -5,7 +5,7 @@ see docs/CLAUDE_CODE_START_PROMPT_fastapi_migration.md Step 4) since it
 was never part of that module's HTTP-framework-specific code -- it's
 framework-agnostic glue that api/app.py's route handlers also use.
 """
-from typing import Callable, Dict, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 from registry import Registry
 from gate import MotorStateGate
@@ -22,22 +22,50 @@ class CommissioningController:
 
     def __init__(self, registry: Registry, models_dir: str,
                  gate_factory: Callable[[str], MotorStateGate], min_frames: int = 50,
-                 epochs: int = 300):
+                 epochs: int = 300, captures_dir: Optional[str] = None):
         self._registry = registry
         self._models_dir = models_dir
         self._gate_factory = gate_factory
         self._min_frames = min_frames
         self._epochs = epochs
+        self._captures_dir = captures_dir
         self._sessions: Dict[str, CommissioningSession] = {}
+
+    @property
+    def min_frames(self) -> int:
+        """What one operating condition needs before it can be closed --
+        read by api/setup_controller.py so setup's step 4 doesn't keep its
+        own second copy of the number."""
+        return self._min_frames
 
     def start(self, node_id: str) -> None:
         if node_id in self._sessions:
             raise CommissioningError(f"commissioning already in progress for {node_id!r}")
         session = CommissioningSession(self._registry, self._models_dir, node_id,
                                         self._gate_factory(node_id), self._min_frames,
-                                        self._epochs)
+                                        self._epochs, captures_dir=self._captures_dir)
         session.start()
         self._sessions[node_id] = session
+
+    def start_condition(self, node_id: str, name: str) -> None:
+        """Closes the operating condition currently collecting and opens a
+        named new one (docs/UNIFIED_COMMISSIONING_PLAN.md S2.3). Same
+        leave-the-session-in-place-on-error contract as stop_collecting()
+        below: too few frames raises without closing anything, so the
+        operator can keep the machine running and try again."""
+        session = self._sessions.get(node_id)
+        if session is None:
+            raise CommissioningError(f"no active commissioning session for {node_id!r}")
+        session.start_condition(name)
+
+    def condition_counts(self, node_id: str) -> Optional[List[Tuple[str, int]]]:
+        """Per-condition (name, frames) for a node's active session, or None
+        if it has none -- setup's step 4 shows one live counter per
+        condition, which progress() below (a single total) can't express."""
+        session = self._sessions.get(node_id)
+        if session is None:
+            return None
+        return session.condition_counts
 
     def feed_frame(self, frame) -> None:
         """Called by whatever owns the live frame stream for every

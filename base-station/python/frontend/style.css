@@ -266,19 +266,6 @@ body {
   border-bottom-right-radius: 0;
 }
 
-/* Brief pulse (jumpToFleetForAssetClass(), 2026-07-24 round 8) -- the
-   Record drawer's "Go to Fleet" button lands the operator back on this
-   row, which otherwise looks unchanged from every other row in the list;
-   this is what actually draws the eye to which one it meant. */
-@keyframes motor-row-highlight-pulse {
-  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--color-new) 55%, transparent); }
-  50% { box-shadow: 0 0 0 6px color-mix(in srgb, var(--color-new) 0%, transparent); }
-}
-
-.motor-row--highlight {
-  animation: motor-row-highlight-pulse 0.8s ease-out 2;
-}
-
 .motor-row__main {
   display: grid;
   /* Third column added 2026-07-24 for the asset-class pill, next to the
@@ -1981,45 +1968,9 @@ a.btn-label {
   color: #94a3b8;
 }
 
-.protection__select {
-  flex: 0 1 260px;
-  padding: 7px 10px;
-  font-size: 14px;
-  font-family: inherit;
-  color: #e2e8f0;
-  background-color: #0f172a;
-  border: 1px solid #334155;
-  border-radius: 6px;
-}
-
-.protection__select:focus {
-  outline: none;
-  border-color: var(--color-idle);
-}
-
-.protection__select option:disabled {
-  color: #64748b;
-}
-
 .protection__state {
   font-size: 14px;
   color: #e2e8f0;
-}
-
-/* A live countdown and a failed trip are the two states that must pull the
-   eye. Counting-down borrows --color-fault (the alarm is still current);
-   failed uses the darker tripped red plus bold, because "we tried to stop
-   this machine and it did not stop" is the most serious line this panel
-   can show. */
-.protection__state--counting {
-  color: var(--color-fault);
-  font-variant-numeric: tabular-nums;
-  font-weight: 600;
-}
-
-.protection__state--failed {
-  color: var(--color-tripped);
-  font-weight: 700;
 }
 
 /* An asset with no stopped baseline can't reliably be told apart from a
@@ -2030,13 +1981,459 @@ a.btn-label {
   color: var(--color-warning);
 }
 
-/* Same "author display beats the [hidden] UA rule at equal specificity" fix
-   this file already needs for .device-type-suggestions, .motor-row__capture-
-   suggestions and .record-drawer: .btn-label sets display:inline-flex, which
-   wins over the browser's `[hidden] { display: none }`, so the Hold button
-   stayed visible with no trip pending. It must only exist while a countdown
-   is actually running -- offering to Hold a trip that already fired (or was
-   never scheduled) is a button that silently does nothing. */
-.protection .btn-label[hidden] {
+
+/* ---------------------------------------------------------------------
+   Global trip banner (docs/UNIFIED_COMMISSIONING_PLAN.md S4.2)
+
+   Above the tab nav, so it is present on every tab. Full-bleed and
+   unmissable by design: this is the one place in the app where the user
+   has seconds, not minutes, and the previous home for it (an expanded
+   tile's Protection section) could be three clicks away.
+   --------------------------------------------------------------------- */
+.trip-banner {
+  display: flex;
+  flex-direction: column;
+}
+
+/* Author display beats the UA's `[hidden] { display: none }` at equal
+   specificity -- the same fix this file already needs for the drawer and
+   both suggestion boxes. */
+.trip-banner[hidden] {
   display: none;
+}
+
+.trip-banner__line {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 10px 24px;
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 15px;
+  font-weight: 600;
+  color: #f8fafc;
+  border-bottom: 1px solid rgba(15, 23, 42, 0.35);
+}
+
+.trip-banner__text {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+/* A countdown is the live alarm, so it takes the fault red and pulses --
+   the only animated element in the app, reserved for the one state that is
+   counting down against a decision the operator still has time to make. */
+.trip-banner__line--countdown {
+  background-color: var(--color-fault);
+  animation: trip-banner-pulse 1s ease-in-out infinite;
+}
+
+@keyframes trip-banner-pulse {
+  0%, 100% { background-color: var(--color-fault); }
+  50% { background-color: color-mix(in srgb, var(--color-fault) 72%, #0f172a); }
+}
+
+/* "We tried to stop this machine and it did not stop" -- the most severe
+   thing this system can report. Deeper red, no animation (it is not
+   counting toward anything; it is a standing fact), and no dismiss until
+   the operator acknowledges it. */
+.trip-banner__line--failed {
+  background-color: var(--color-tripped);
+  border-bottom: 2px solid #7f1d1d;
+}
+
+/* Settled states: the machine is stopped, or it is faulted with nothing
+   wired to stop it. Both are acknowledgements rather than alarms, so they
+   are tinted rather than filled. */
+.trip-banner__line--tripped {
+  background-color: color-mix(in srgb, var(--color-tripped) 28%, #1e293b);
+  color: #fecaca;
+}
+
+.trip-banner__line--unarmed {
+  background-color: color-mix(in srgb, var(--color-warning) 22%, #1e293b);
+  color: #fde68a;
+  font-weight: 500;
+}
+
+.trip-banner__hold {
+  flex: 0 0 auto;
+  height: 32px;
+  padding: 0 20px;
+  font-family: inherit;
+  font-size: 15px;
+  font-weight: 700;
+  color: #0f172a;
+  background-color: #f8fafc;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.trip-banner__hold:hover {
+  background-color: #e2e8f0;
+}
+
+.trip-banner__dismiss {
+  flex: 0 0 auto;
+  width: 28px;
+  height: 28px;
+  font-size: 20px;
+  line-height: 1;
+  color: inherit;
+  background: none;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  opacity: 0.7;
+}
+
+.trip-banner__dismiss:hover {
+  opacity: 1;
+  background-color: rgba(248, 250, 252, 0.12);
+}
+
+/* Armed indicator on the collapsed row (S4.3) -- a glyph, no text. It says
+   this asset carries a trip output, nothing more; which output, and whether
+   it was proven, live in the expanded panel. */
+.motor-row__armed {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  color: #64748b;
+}
+
+/* "Change in setup" -- a link, not a button: it navigates into the flow
+   that owns these settings rather than changing anything itself. */
+.protection__change {
+  align-self: flex-start;
+  padding: 0;
+  font-family: inherit;
+  font-size: 13px;
+  color: #60a5fa;
+  background: none;
+  border: none;
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+.protection__change:hover {
+  color: #93c5fd;
+}
+
+/* ---------------------------------------------------------------------
+   Guided setup, inside the asset drawer (S5.1)
+
+   A vertical step list: the current step is expanded, completed ones
+   collapse to a check plus a one-line result and stay clickable, because
+   re-entering one on its own is a supported thing to do.
+   --------------------------------------------------------------------- */
+.setup-body {
+  gap: 0;
+}
+
+/* Every action in here either moves the flow or drives a machine, so the
+   whole list goes inert while one is in flight rather than letting two
+   race. */
+.setup-body.is-busy {
+  pointer-events: none;
+  opacity: 0.65;
+}
+
+.setup-steps {
+  display: flex;
+  flex-direction: column;
+}
+
+.setup-step {
+  border-bottom: 1px solid #334155;
+}
+
+.setup-step__head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 12px 0;
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 15px;
+  color: #94a3b8;
+  text-align: left;
+  background: none;
+  border: none;
+  cursor: pointer;
+}
+
+.setup-step.is-current > .setup-step__head {
+  color: #f8fafc;
+  font-weight: 600;
+  cursor: default;
+}
+
+.setup-step__num {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 24px;
+  height: 24px;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  color: #94a3b8;
+  background-color: #334155;
+  border-radius: 50%;
+}
+
+.setup-step.is-current > .setup-step__head .setup-step__num {
+  color: #f8fafc;
+  background-color: #3987e5;
+}
+
+.setup-step.is-done:not(.is-current) > .setup-step__head .setup-step__num {
+  color: #0f172a;
+  background-color: var(--color-healthy);
+}
+
+.setup-step__title {
+  flex: 0 1 auto;
+}
+
+/* The one-line result a completed step collapses to ("Off — measured"). */
+.setup-step__result {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  color: #64748b;
+  text-align: right;
+}
+
+.setup-step__body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 4px 0 18px 36px;
+}
+
+/* Instructions, not decoration: this is the surface an operator reads while
+   standing at the machine, so it gets real body-text size rather than the
+   fine print a hint line usually gets. */
+.setup-step__hint {
+  margin: 0;
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+  color: #cbd5e1;
+}
+
+.setup-step__live {
+  margin: 0;
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+  color: #f8fafc;
+}
+
+.setup-step__ok {
+  margin: 0;
+  font-size: 14px;
+  color: var(--color-healthy);
+}
+
+/* Both a step error and a failed confirm test land here. Warning, not
+   fault: nothing is broken -- the step is still open, and retrying in place
+   is the expected next move. */
+.setup-step__warn {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--color-warning);
+}
+
+.setup-step__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.setup-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.setup-field > span {
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 13px;
+  color: #94a3b8;
+}
+
+.setup-field input {
+  padding: 8px 10px;
+  font-family: inherit;
+  font-size: 15px;
+  color: #e2e8f0;
+  background-color: #0f172a;
+  border: 1px solid #334155;
+  border-radius: 6px;
+}
+
+.setup-field input:focus {
+  outline: none;
+  border-color: #3987e5;
+}
+
+/* Existing asset classes as one-tap chips -- the field gets easier as the
+   fleet grows, which is the whole argument for making it mandatory. */
+.setup-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.setup-chip {
+  padding: 4px 10px;
+  font-family: inherit;
+  font-size: 13px;
+  color: #cbd5e1;
+  background-color: #1e293b;
+  border: 1px solid #334155;
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.setup-chip.is-selected {
+  color: #f8fafc;
+  border-color: #3987e5;
+  background-color: color-mix(in srgb, #3987e5 22%, #1e293b);
+}
+
+.setup-outputs,
+.setup-conditions {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.setup-output {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  padding: 8px 10px;
+  font-size: 14px;
+  color: #e2e8f0;
+  background-color: #0f172a;
+  border: 1px solid #334155;
+  border-radius: 6px;
+}
+
+.setup-output.is-current {
+  border-color: #3987e5;
+}
+
+/* The output's own name gets a whole line, and the buttons the next one.
+   Sharing one line looked fine until a real rig announced against the real
+   drawer width: "Test" plus "Use without testing" leave ~30px, and the name
+   shrank to a two-line "Mo/1" -- unreadable, and it is the one thing on the
+   row the operator has to match against the machine in front of them. */
+.setup-output__name {
+  flex: 1 0 100%;
+  min-width: 0;
+}
+
+/* One output, one asset: a claim by another asset is shown rather than left
+   to surface as a 409 after the operator picks it. */
+.setup-output__claim {
+  font-size: 12px;
+  color: var(--color-warning);
+}
+
+.setup-output__manual {
+  font-size: 12px;
+}
+
+.setup-condition {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 10px;
+  font-size: 14px;
+  color: #cbd5e1;
+  background-color: #0f172a;
+  border: 1px solid #334155;
+  border-radius: 6px;
+}
+
+.setup-condition.is-current {
+  border-color: #3987e5;
+}
+
+.setup-condition__name {
+  flex: 1 1 auto;
+}
+
+.setup-condition__count {
+  font-variant-numeric: tabular-nums;
+  color: #94a3b8;
+}
+
+.setup-condition__count.is-done {
+  color: var(--color-healthy);
+}
+
+.setup-progress {
+  height: 8px;
+  background-color: #0f172a;
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.setup-progress__fill {
+  height: 100%;
+  background-color: #3987e5;
+  transition: width 0.3s ease-out;
+}
+
+.setup-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+}
+
+.setup-summary > div {
+  display: flex;
+  gap: 12px;
+  font-size: 14px;
+}
+
+.setup-summary dt {
+  flex: 0 0 110px;
+  color: #94a3b8;
+}
+
+.setup-summary dd {
+  margin: 0;
+  color: #e2e8f0;
+}
+
+/* "Cancel setup" and "Re-run setup" -- quiet, out of the way, and never
+   confusable with the step's own primary action. */
+.setup-cancel {
+  align-self: flex-start;
+  margin-top: 16px;
+  padding: 0;
+  font-family: inherit;
+  font-size: 13px;
+  color: #94a3b8;
+  background: none;
+  border: none;
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+.setup-cancel:hover {
+  color: #e2e8f0;
 }

@@ -36,6 +36,7 @@ import asyncio
 import logging
 import os
 import threading
+import time
 from contextlib import asynccontextmanager
 from typing import List, Optional
 
@@ -47,10 +48,12 @@ from pydantic import BaseModel
 from commissioning import CommissioningError
 from capture import CaptureError
 from stopped_baseline import StoppedBaselineError
+from setup_controller import SetupError
 from ei_client import EIClientError, EITotpRequiredError
 from ei_controller import EIControllerError
 from registry import (InvalidTransitionError, NodeNotFoundError, Registry,
                        TripMotorInUseError)
+from protection import ProtectionError
 from store import HistoryStore
 from retention import DEFAULT_RETENTION_SECONDS, run_retention_loop
 from perf import PerformanceMonitor
@@ -97,6 +100,30 @@ class TripMotorBody(BaseModel):
     # None = clear the trip output back to unarmed, the default for every
     # asset -- same "blank means unset" contract as DeviceTypeBody above.
     motor_idx: Optional[int] = None
+
+
+class TripMotorConfirmBody(BaseModel):
+    # Required, unlike TripMotorBody's: there is no such thing as testing
+    # "no output".
+    motor_idx: int
+
+
+class SetupStartBody(BaseModel):
+    # None = open on the first step this asset hasn't satisfied. A named
+    # step jumps straight there (docs/UNIFIED_COMMISSIONING_PLAN.md S10 Q2).
+    step: Optional[str] = None
+
+
+class SetupAdvanceBody(BaseModel):
+    # Only step 1 reads these; every other step's inputs were already
+    # committed by the sub-session it drives (a stopped baseline, a
+    # collected condition), so its advance carries no body at all.
+    device_name: Optional[str] = None
+    device_type: Optional[str] = None
+
+
+class SetupConditionBody(BaseModel):
+    name: str
 
 
 class CaptureStartBody(BaseModel):
@@ -187,6 +214,8 @@ def create_app(registry: Registry, history_store: HistoryStore,
                 wifi_status: Optional[WifiStatusPoller] = None,
                 protection=None,
                 stopped_baseline=None,
+                setup=None,
+                trip_outputs=None,
                 on_startup: Optional[callable] = None) -> FastAPI:
     def _perf_payload() -> dict:
         data = app.state.perf_monitor.snapshot().to_dict()
@@ -250,6 +279,8 @@ def create_app(registry: Registry, history_store: HistoryStore,
     app.state.wifi_status = wifi_status
     app.state.protection = protection
     app.state.stopped_baseline = stopped_baseline
+    app.state.setup = setup
+    app.state.trip_outputs = trip_outputs
     app.state.connection_manager = ConnectionManager()
     app.state.loop = None
 
@@ -309,6 +340,17 @@ def create_app(registry: Registry, history_store: HistoryStore,
 
     if stopped_baseline is not None:
         stopped_baseline.on_state_change(_on_stopped_baseline_state_change)
+
+    def _on_setup_change(node_id: str, snapshot: Optional[dict]) -> None:
+        # Same centralization reason as the three listeners above: a setup
+        # step also completes from outside a REST handler (training
+        # finishing on its own background thread), so no route handler can
+        # be the one broadcasting. `setup: null` means the flow ended --
+        # cancelled, or the node was decommissioned underneath it.
+        broadcast_threadsafe(app, {"type": "setup", "node_id": node_id, "setup": snapshot})
+
+    if setup is not None:
+        setup.on_change(_on_setup_change)
 
     # Permissive CORS: the dashboard frontend is served from a different
     # origin/port than this REST API in the pre-consolidation deployment,
@@ -383,6 +425,14 @@ def create_app(registry: Registry, history_store: HistoryStore,
                 collected, min_frames = baseline_progress
                 d["stopped_baseline_progress"] = {"collected": collected,
                                                    "min_frames": min_frames}
+        # Which step this asset's guided setup is on, if any -- same "absent
+        # means nothing to show" contract as the progress blocks above, and
+        # the same reason they ride here: the tile's one setup button
+        # ("Set up" / "Setup - step 4 of 6") needs no second fetch.
+        if app.state.setup is not None:
+            setup_progress = app.state.setup.progress(node_id)
+            if setup_progress is not None:
+                d["setup_progress"] = setup_progress
         return d
 
     @app.get("/nodes")
@@ -662,6 +712,8 @@ def create_app(registry: Registry, history_store: HistoryStore,
         app.state.capture.discard(node_id)
         if app.state.stopped_baseline is not None:
             app.state.stopped_baseline.discard(node_id)
+        if app.state.setup is not None:
+            app.state.setup.discard(node_id)
         try:
             app.state.manager.decommission(node_id)
         except NodeNotFoundError:
@@ -684,6 +736,55 @@ def create_app(registry: Registry, history_store: HistoryStore,
         # fired _on_registry_status_change above (via registry.start_commissioning()).
         return entry.to_dict()
 
+    def _start_training(node_id: str) -> None:
+        """Runs the (slow, fixed-epoch) fit on a background thread, streaming
+        `training_progress` over /ws. Shared by POST /commission/stop and
+        setup's own step 4 -> 5 advance, so setup doesn't grow a second
+        training path that could drift from this one."""
+
+        def on_epoch(epoch: int, total_epochs: int) -> None:
+            # Throttled to roughly 20 broadcasts regardless of epoch count
+            # (always epoch 1 and the final epoch) so a 300+ epoch run
+            # doesn't flood the socket.
+            step = max(1, total_epochs // 20)
+            if epoch == 1 or epoch == total_epochs or epoch % step == 0:
+                broadcast_threadsafe(app, {
+                    "type": "training_progress", "node_id": node_id,
+                    "epoch": epoch, "total_epochs": total_epochs,
+                })
+
+        def run_training() -> None:
+            try:
+                app.state.commissioning.run_training(node_id, on_epoch=on_epoch)
+            except (CommissioningError, InvalidTransitionError) as e:
+                # Left in COMMISSIONING_TRAINING with the session retained
+                # (CommissioningController.run_training's contract) -- no
+                # established retry path for a mid-training failure yet,
+                # so surface it in the logs rather than silently stranding
+                # or auto-recovering the node. A setup in flight is told
+                # too, so the drawer shows the reason on the step instead
+                # of a spinner that never ends.
+                logger.exception("training failed for node %r", node_id)
+                if app.state.setup is not None:
+                    app.state.setup.finish_training(node_id, error=str(e))
+                return
+            # Wipe this node's history now that a new model/calibration is in
+            # place -- a recommission overwrites model_path in place (S6 open
+            # question #6) rather than versioning it, but the old anomaly-
+            # score trend was scored against the *previous* model/thresholds
+            # and would otherwise sit in the dashboard's graph looking like
+            # current data. Covers a first-time commission too (no-op: there's
+            # nothing to delete yet). No broadcast_threadsafe here --
+            # complete_commissioning() already fired _on_registry_status_change
+            # above (HEALTHY), which the frontend uses as its own signal to
+            # clear the client-side buffer in step (frontend/charts.js's
+            # applyThresholds()).
+            app.state.history_store.delete(node_id)
+            if app.state.setup is not None:
+                app.state.setup.finish_training(node_id)
+
+        threading.Thread(target=run_training, daemon=True).start()
+
     @app.post("/nodes/{node_id}/commission/stop")
     def stop_commissioning(node_id: str):
         # Two-phase per dashboard redesign S6: stop_collecting() is fast
@@ -701,44 +802,156 @@ def create_app(registry: Registry, history_store: HistoryStore,
         entry = app.state.registry.get(node_id)
         # No broadcast_threadsafe here -- stop_collecting() already fired
         # _on_registry_status_change above (COMMISSIONING_TRAINING).
-
-        def on_epoch(epoch: int, total_epochs: int) -> None:
-            # Throttled to roughly 20 broadcasts regardless of epoch count
-            # (always epoch 1 and the final epoch) so a 300+ epoch run
-            # doesn't flood the socket.
-            step = max(1, total_epochs // 20)
-            if epoch == 1 or epoch == total_epochs or epoch % step == 0:
-                broadcast_threadsafe(app, {
-                    "type": "training_progress", "node_id": node_id,
-                    "epoch": epoch, "total_epochs": total_epochs,
-                })
-
-        def run_training() -> None:
-            try:
-                app.state.commissioning.run_training(node_id, on_epoch=on_epoch)
-            except (CommissioningError, InvalidTransitionError):
-                # Left in COMMISSIONING_TRAINING with the session retained
-                # (CommissioningController.run_training's contract) -- no
-                # established retry path for a mid-training failure yet,
-                # so surface it in the logs rather than silently stranding
-                # or auto-recovering the node.
-                logger.exception("training failed for node %r", node_id)
-                return
-            # Wipe this node's history now that a new model/calibration is in
-            # place -- a recommission overwrites model_path in place (S6 open
-            # question #6) rather than versioning it, but the old anomaly-
-            # score trend was scored against the *previous* model/thresholds
-            # and would otherwise sit in the dashboard's graph looking like
-            # current data. Covers a first-time commission too (no-op: there's
-            # nothing to delete yet). No broadcast_threadsafe here --
-            # complete_commissioning() already fired _on_registry_status_change
-            # above (HEALTHY), which the frontend uses as its own signal to
-            # clear the client-side buffer in step (frontend/charts.js's
-            # applyThresholds()).
-            app.state.history_store.delete(node_id)
-
-        threading.Thread(target=run_training, daemon=True).start()
+        _start_training(node_id)
         return entry.to_dict()
+
+    # Guided setup (docs/UNIFIED_COMMISSIONING_PLAN.md) -- one flow that
+    # sequences the four scattered ones. Additions only: every route these
+    # steps drive (stopped_baseline/*, commission/*, trip_motor) still works
+    # standalone, which is what lets a single step be re-entered on its own
+    # (S2.1) without walking the whole wizard.
+    def _require_setup():
+        if app.state.setup is None:
+            raise HTTPException(status_code=503, detail="guided setup is not enabled")
+        return app.state.setup
+
+    def _setup_response(node_id: str, snapshot) -> dict:
+        # Always paired with the node entry: every step's controls read from
+        # the registry (name, asset class, trip output, baseline), so
+        # returning the step state alone would make the drawer immediately
+        # re-fetch the node anyway.
+        return {"setup": snapshot, "node": _node_dict(node_id, app.state.registry.get(node_id))}
+
+    @app.get("/nodes/{node_id}/setup")
+    def get_setup(node_id: str):
+        controller = _require_setup()
+        try:
+            app.state.registry.get(node_id)
+        except NodeNotFoundError:
+            raise HTTPException(status_code=404, detail=f"unknown node_id {node_id!r}")
+        return _setup_response(node_id, controller.snapshot(node_id))
+
+    @app.post("/nodes/{node_id}/setup/start")
+    def start_setup(node_id: str, body: SetupStartBody = SetupStartBody()):
+        """Enters setup, or re-enters it (`Re-run setup`)."""
+        controller = _require_setup()
+        try:
+            snapshot = controller.start(node_id, body.step)
+        except NodeNotFoundError:
+            raise HTTPException(status_code=404, detail=f"unknown node_id {node_id!r}")
+        except SetupError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        return _setup_response(node_id, snapshot)
+
+    @app.post("/nodes/{node_id}/setup/advance")
+    def advance_setup(node_id: str, body: SetupAdvanceBody = SetupAdvanceBody()):
+        """Completes the current step. 409 (with an operator-readable
+        reason) when its precondition isn't met -- the step stays open for a
+        retry, same contract stopped_baseline/stop and commission/stop
+        already have."""
+        controller = _require_setup()
+        was_conditions = (controller.progress(node_id) or {}).get("step")
+        try:
+            snapshot = controller.advance(node_id, device_name=body.device_name,
+                                           device_type=body.device_type)
+        except NodeNotFoundError:
+            raise HTTPException(status_code=404, detail=f"unknown node_id {node_id!r}")
+        except SetupError as e:
+            raise HTTPException(status_code=409, detail=str(e))
+        # Leaving step 4 froze the batch; the fit itself runs off the request
+        # thread exactly as POST /commission/stop's does, and the flow lands
+        # on Done when it finishes (SetupController.finish_training).
+        if was_conditions == "conditions":
+            _start_training(node_id)
+        return _setup_response(node_id, snapshot)
+
+    @app.post("/nodes/{node_id}/setup/skip")
+    def skip_setup_step(node_id: str):
+        controller = _require_setup()
+        try:
+            snapshot = controller.skip(node_id)
+        except NodeNotFoundError:
+            raise HTTPException(status_code=404, detail=f"unknown node_id {node_id!r}")
+        except SetupError as e:
+            raise HTTPException(status_code=409, detail=str(e))
+        return _setup_response(node_id, snapshot)
+
+    @app.post("/nodes/{node_id}/setup/cancel")
+    def cancel_setup(node_id: str):
+        controller = _require_setup()
+        controller.cancel(node_id)
+        return _setup_response(node_id, controller.snapshot(node_id))
+
+    @app.post("/nodes/{node_id}/setup/condition")
+    def start_setup_condition(node_id: str, body: SetupConditionBody):
+        """Starts collecting one named operating condition, closing whichever
+        one was collecting before it (S2.3)."""
+        controller = _require_setup()
+        try:
+            snapshot = controller.add_condition(node_id, body.name)
+        except NodeNotFoundError:
+            raise HTTPException(status_code=404, detail=f"unknown node_id {node_id!r}")
+        except SetupError as e:
+            raise HTTPException(status_code=409, detail=str(e))
+        return _setup_response(node_id, snapshot)
+
+    @app.get("/trip_outputs")
+    def get_trip_outputs():
+        """What the rig says it has, plus who already claims each output
+        (docs/UNIFIED_COMMISSIONING_PLAN.md S3.2). An empty list is a normal
+        answer -- no rig has announced (or it's running an older
+        run_demo.py), which is what setup's manual fallback covers."""
+        outputs = app.state.trip_outputs.snapshot() if app.state.trip_outputs else []
+        claimed = {entry.trip_motor_idx: node_id
+                   for node_id, entry in app.state.registry.list().items()
+                   if entry.trip_motor_idx is not None}
+        return {"outputs": [dict(output, claimed_by=claimed.get(output["idx"]))
+                            for output in outputs]}
+
+    @app.post("/nodes/{node_id}/trip_motor/confirm")
+    def confirm_trip_motor(node_id: str, body: TripMotorConfirmBody):
+        """Runs the stop-and-watch test (S3.3): send this output a stop and
+        watch this node's own gate. Returns as soon as the stop is published
+        -- the answer takes seconds and arrives as a `trip_confirm` broadcast,
+        so it can't sit on a request thread.
+
+        A 409 here means the test couldn't be run at all (most often: the
+        machine isn't running, and a stopped machine would appear to confirm
+        whichever output we tried). A test that runs and fails is a normal
+        result, not an error -- it says this is the wrong output."""
+        if app.state.protection is None:
+            raise HTTPException(status_code=503, detail="protection is not enabled")
+        try:
+            app.state.registry.get(node_id)
+        except NodeNotFoundError:
+            raise HTTPException(status_code=404, detail=f"unknown node_id {node_id!r}")
+
+        def on_result(confirmed: bool, message: str) -> None:
+            if confirmed:
+                # Recorded only on success. A failed test deliberately leaves
+                # the mapping alone rather than storing an unconfirmed guess
+                # the operator didn't ask for.
+                try:
+                    app.state.registry.set_trip_motor(node_id, body.motor_idx,
+                                                       confirmed_at=time.time())
+                except (NodeNotFoundError, TripMotorInUseError, ValueError) as e:
+                    broadcast_threadsafe(app, {
+                        "type": "trip_confirm", "node_id": node_id,
+                        "motor_idx": body.motor_idx, "confirmed": False,
+                        "message": str(e)})
+                    return
+            broadcast_threadsafe(app, {
+                "type": "trip_confirm", "node_id": node_id, "motor_idx": body.motor_idx,
+                "confirmed": confirmed, "message": message})
+            entry = app.state.registry.get(node_id)
+            broadcast_threadsafe(app, {"type": "registry", "node_id": node_id,
+                                        "entry": _node_dict(node_id, entry)})
+
+        try:
+            app.state.protection.confirm_trip_output(node_id, body.motor_idx, on_result)
+        except ProtectionError as e:
+            raise HTTPException(status_code=409, detail=str(e))
+        return {"node_id": node_id, "motor_idx": body.motor_idx, "testing": True}
 
     # Capture + label (docs/EDGE_IMPULSE_DASHBOARD_WORKFLOW_PLAN.md S2) --
     # independent of commissioning/NodeStatus entirely, so unlike every

@@ -148,10 +148,11 @@ const STATUS_LABEL = {
 // Machinery protection (docs/MOTOR_STOP_PLAN.md)
 // ---------------------------------------------------------------------
 
-// How many motors the rig exposes. Unavoidably a second copy of
-// motor-driver/run_demo.py's MOTOR_IDS -- that's a standalone script on a
-// different machine, with no shared module to import from. Keep in sync.
-const TRIP_MOTOR_COUNT = 3;
+// The hardcoded TRIP_MOTOR_COUNT that used to live here is gone
+// (docs/UNIFIED_COMMISSIONING_PLAN.md S3.2). It was a hand-copy of
+// motor-driver/run_demo.py's MOTOR_IDS, so a factory with one motor saw
+// three options, two of which were nonsense. The rig announces its own
+// outputs now and setup.js reads them from GET /trip_outputs.
 
 // nodeId -> epoch ms the trip fires at. The server sends a remaining-seconds
 // figure, but GET /nodes only refreshes every 5s, so a 10s countdown would
@@ -175,204 +176,188 @@ function tripSecondsLeft(nodeId) {
   return Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
 }
 
-function protectionStatusText(entry) {
+// ---------------------------------------------------------------------
+// Global trip banner (docs/UNIFIED_COMMISSIONING_PLAN.md S4.2)
+//
+// Cold config lives in the drawer; hot state lives out front. A trip
+// countdown is an alarm, not a setting: ten seconds is not enough time to
+// remember which asset, find its tile, expand it and scroll to Protection,
+// which is where the countdown and Hold used to be. This banner sits above
+// the tab nav, so it's present on Fleet, Classifier, Network and
+// Performance alike -- the local counterpart to the Telegram alert that
+// already fires.
+// ---------------------------------------------------------------------
+
+const tripBanner = document.getElementById("trip-banner");
+
+// Acknowledged post-trip lines, so a resolved event stops shouting. Only
+// the *settled* states are dismissible: a live countdown and a failed trip
+// are not, because both are still true and still need a decision.
+const dismissedTripNodes = new Set();
+
+function tripBannerLine(entry) {
   const p = entry.protection || {};
   const left = tripSecondsLeft(entry.node_id);
-  if (left !== null) return `Tripping in ${left}s…`;
-  if (p.trip_failed) return "Trip failed — machine still running";
-  if (entry.status === "tripped") {
-    const when = p.tripped_at
-      ? new Date(p.tripped_at * 1000).toLocaleTimeString()
-      : null;
-    return when ? `Tripped ${when} · confirmed stopped` : "Tripped · confirmed stopped";
+  const name = entry.device_name || entry.node_id;
+  if (left !== null) {
+    return { kind: "countdown", text: `${name} — tripping in ${left}s`, hold: true };
   }
-  if (!p.armed) return "Not armed";
-  return "Armed";
+  if (p.trip_failed) {
+    // The most severe state this system can report, and it used to be
+    // buried in a collapsed panel. Persistent until acknowledged.
+    return { kind: "failed", text: `${name} — trip failed, machine still running` };
+  }
+  if (entry.status === "tripped") {
+    const when = p.tripped_at ? new Date(p.tripped_at * 1000).toLocaleTimeString() : null;
+    return { kind: "tripped", text: `Tripped — ${name}${when ? ` at ${when}` : ""}, confirmed stopped`,
+             dismissible: true };
+  }
+  if (entry.status === "fault" && !p.armed) {
+    // S10 Q4: a faulted asset with nothing wired to stop it still belongs
+    // here -- quieter, and with no Hold, because there's nothing to hold.
+    return { kind: "unarmed", text: `${name} — faulty, no trip output wired`, dismissible: true };
+  }
+  return null;
 }
 
-// Re-renders only the status line's text, never the whole row: a full
-// re-render every 500ms would blow away the <select>'s focus and any open
-// dropdown out from under the operator.
-function tickTripCountdowns() {
-  for (const el of document.querySelectorAll("[data-trip-status]")) {
-    const nodeId = el.dataset.nodeId;
+function renderTripBanner() {
+  if (!tripBanner) return;
+  const lines = [];
+  for (const entry of Object.values(state.lastNodes)) {
+    const line = tripBannerLine(entry);
+    if (!line) continue;
+    if (line.dismissible && dismissedTripNodes.has(entry.node_id)) continue;
+    lines.push({ ...line, nodeId: entry.node_id });
+  }
+  // A node that has moved on from whatever was dismissed can raise its
+  // voice again next time -- otherwise one acknowledgement would silence
+  // every future trip on that asset.
+  for (const nodeId of dismissedTripNodes) {
     const entry = state.lastNodes[nodeId];
-    if (!entry) continue;
-    const text = protectionStatusText(entry);
-    if (el.textContent !== text) el.textContent = text;
-    // The Hold button is only meaningful while a countdown is actually
-    // running, so it disappears the moment the trip fires.
-    const hold = document.querySelector(`[data-action="protection_hold"][data-node-id="${CSS.escape(nodeId)}"]`);
-    if (hold) hold.hidden = tripSecondsLeft(nodeId) === null;
+    if (!entry || !tripBannerLine(entry)) dismissedTripNodes.delete(nodeId);
+  }
+
+  tripBanner.hidden = lines.length === 0;
+  tripBanner.innerHTML = lines.map((line) => {
+    const safeId = escapeHtml(line.nodeId);
+    return `<div class="trip-banner__line trip-banner__line--${line.kind}" data-node-id="${safeId}">
+      <span class="trip-banner__text" data-trip-text data-node-id="${safeId}">${escapeHtml(line.text)}</span>
+      ${line.hold ? `<button type="button" class="trip-banner__hold" data-action="protection_hold" data-node-id="${safeId}">Hold</button>` : ""}
+      ${line.dismissible ? `<button type="button" class="trip-banner__dismiss" data-action="trip_dismiss" data-node-id="${safeId}" aria-label="Dismiss">&times;</button>` : ""}
+    </div>`;
+  }).join("");
+}
+
+// Re-renders only the seconds, never the whole banner, while a countdown is
+// running -- rebuilding the markup twice a second would make the Hold
+// button unclickable at exactly the moment it matters. A change of *kind*
+// (countdown expiring into tripped/failed) does need a rebuild.
+function tickTripCountdowns() {
+  if (!tripBanner || tripBanner.hidden) {
+    if (Object.values(state.lastNodes).some((e) => tripBannerLine(e))) renderTripBanner();
+    return;
+  }
+  for (const el of tripBanner.querySelectorAll("[data-trip-text]")) {
+    const entry = state.lastNodes[el.dataset.nodeId];
+    if (!entry) { renderTripBanner(); return; }
+    const line = tripBannerLine(entry);
+    if (!line) { renderTripBanner(); return; }
+    const wasCountdown = el.parentElement.classList.contains("trip-banner__line--countdown");
+    if ((line.kind === "countdown") !== wasCountdown) { renderTripBanner(); return; }
+    if (el.textContent !== line.text) el.textContent = line.text;
   }
 }
 setInterval(tickTripCountdowns, 500);
 
-// Stopped baseline (pipeline/stopped_baseline.py). Lives in the Protection
-// section because that's when an operator has a reason to care: without one,
-// the running/stopped gate can't reliably tell a stopped machine from a
-// running one, so a trip can never confirm and the asset can never read IDLE.
-//
-// The "machine off" instruction rides in the button label rather than a hint
-// line under the control. It is the one thing nothing in software can check
-// (stopped_baseline.py's module docstring), and a capture taken with the
-// machine running teaches the gate the opposite of what it needs.
-function stoppedBaselineRowHtml(entry) {
-  const safeId = escapeHtml(entry.node_id);
-  const progress = entry.stopped_baseline_progress;
-  const measured = entry.stopped_energy_ref !== null
-    && entry.stopped_energy_ref !== undefined;
-
-  let state;
-  let buttons;
-  if (progress) {
-    const enough = progress.collected >= progress.min_frames;
-    state = `Measuring ${progress.collected}/${progress.min_frames}`;
-    buttons =
-      `<button type="button" class="btn-label" data-action="stopped_baseline_stop" `
-      + `data-node-id="${safeId}"${enough ? "" : " disabled"}>Save</button>`
-      + `<button type="button" class="btn-label" data-action="stopped_baseline_cancel" `
-      + `data-node-id="${safeId}">Cancel</button>`;
-  } else {
-    state = measured ? "Measured" : "Not measured";
-    buttons =
-      `<button type="button" class="btn-label" data-action="stopped_baseline_start" `
-      + `data-node-id="${safeId}">${measured ? "Re-measure" : "Measure"} with machine off</button>`;
+tripBanner.addEventListener("click", (e) => {
+  const button = e.target.closest("button[data-action]");
+  if (!button) return;
+  const nodeId = button.dataset.nodeId;
+  if (button.dataset.action === "trip_dismiss") {
+    dismissedTripNodes.add(nodeId);
+    renderTripBanner();
+    return;
   }
+  runAction(button.dataset.action, nodeId);
+});
 
-  return `<div class="protection__row">
-      <span class="protection__label">Stopped baseline</span>
-      <span class="protection__state${measured || progress ? "" : " protection__state--missing"}" `
-    + `data-baseline-state data-node-id="${safeId}">${escapeHtml(state)}</span>
-      ${buttons}
-    </div>`;
-}
-
+// The expanded tile's Protection section is READ-ONLY as of
+// docs/UNIFIED_COMMISSIONING_PLAN.md S4.3. Its start/stop/cancel/dropdown
+// controls moved into setup (they're configuration, done once,
+// deliberately); the countdown and Hold moved the other way, out to the
+// global banner, because they're an alarm on a clock. Nothing is shown in
+// both places -- that standing rule is what decided each half.
 function protectionSectionHtml(entry) {
   const p = entry.protection;
   // Absent only when the backend has no ProtectionController at all -- render
   // nothing rather than an empty section promising a control that can't work.
   if (!p) return "";
 
-  // escapeHtml, not a separate escapeAttr: this module's escapeHtml already
-  // escapes both quote characters, and every other attribute interpolation in
-  // app.js uses it the same way. charts.js has its own escapeAttr; app.js
-  // never did.
-  const safeId = escapeHtml(entry.node_id);
-  const current = entry.trip_motor_idx;
-  // One motor, one asset: a motor another node already claims is shown but
-  // disabled, so the constraint is visible instead of only surfacing as a 409
-  // after the operator picks it.
-  const claimed = new Map();
-  for (const other of Object.values(state.lastNodes)) {
-    if (other.node_id !== entry.node_id && other.trip_motor_idx) {
-      claimed.set(other.trip_motor_idx, other.device_name || other.node_id);
-    }
+  const measured = entry.stopped_energy_ref !== null
+    && entry.stopped_energy_ref !== undefined;
+  let tripText;
+  if (!entry.trip_motor_idx) {
+    tripText = "None";
+  } else {
+    const when = entry.trip_motor_confirmed_at
+      ? new Date(entry.trip_motor_confirmed_at * 1000)
+          .toLocaleDateString(undefined, { day: "2-digit", month: "short" })
+      : null;
+    // "Unconfirmed" is stated, never hidden: a mapping nobody has proven is
+    // exactly what the old dropdown produced silently, and the whole point
+    // of the confirm test is that the difference is now visible.
+    tripText = `Output ${entry.trip_motor_idx} · ${when ? `confirmed ${when}` : "unconfirmed"}`
+      + ` · ${p.armed ? "armed" : "not armed"}`;
   }
 
-  let options = `<option value=""${current ? "" : " selected"}>No trip output</option>`;
-  for (let idx = 1; idx <= TRIP_MOTOR_COUNT; idx += 1) {
-    const owner = claimed.get(idx);
-    options += `<option value="${idx}"${current === idx ? " selected" : ""}${owner ? " disabled" : ""}>`
-      + `Motor ${idx}${owner ? ` — used by ${escapeHtml(owner)}` : ""}</option>`;
-  }
-
-  const countingDown = tripSecondsLeft(entry.node_id) !== null;
   return `<div class="protection" data-role="protection">
     <div class="protection__title">Protection</div>
     <div class="protection__row">
-      <label class="protection__label" for="trip-motor-${safeId}">Trip output</label>
-      <select class="protection__select" id="trip-motor-${safeId}" data-action="set_trip_motor" data-node-id="${safeId}">${options}</select>
+      <span class="protection__label">Trip output</span>
+      <span class="protection__state${entry.trip_motor_idx ? "" : " protection__state--missing"}">${escapeHtml(tripText)}</span>
     </div>
     <div class="protection__row">
-      <span class="protection__label">Status</span>
-      <span class="protection__state${p.trip_failed ? " protection__state--failed" : ""}${countingDown ? " protection__state--counting" : ""}" data-trip-status data-node-id="${safeId}">${escapeHtml(protectionStatusText(entry))}</span>
-      <button type="button" class="btn-label btn-label--danger" data-action="protection_hold" data-node-id="${safeId}"${countingDown ? "" : " hidden"}>Hold</button>
+      <span class="protection__label">Stopped baseline</span>
+      <span class="protection__state${measured ? "" : " protection__state--missing"}">${measured ? "Measured" : "Not measured"}</span>
     </div>
-    ${stoppedBaselineRowHtml(entry)}
+    <button type="button" class="protection__change" data-action="setup_open" data-step="trip_output">Change in setup</button>
   </div>`;
 }
 
-// Status label shown in the row -- appends live collected/min_frames
-// progress while collecting (entry.commissioning_progress, from
-// CommissioningController.progress() via GET /nodes) so there's no need
-// for a separate progress bar/text element.
+// Status label shown in the row. No frame counts, no training percentage
+// (docs/UNIFIED_COMMISSIONING_PLAN.md S4.4): every one of those readouts now
+// lives on the setup step that produces it, where the operator is actually
+// looking, rather than being narrated a second time out here.
 function statusLabelFor(entry, bucket) {
   if (bucket === "offline") return "Offline";
-  if (entry.status === "commissioning_collecting" && entry.commissioning_progress) {
-    const { collected, min_frames } = entry.commissioning_progress;
-    return `Collecting ${collected}/${min_frames}`;
-  }
-  if (entry.status === "commissioning_training") {
-    // Progress lives here, not on the button (rowControls() below stays a
-    // plain "Training…") -- collecting's progress was already in the
-    // status text, so training's % belongs in the same place instead of
-    // a second, inconsistent location.
-    const tp = trainingProgress[entry.node_id];
-    if (tp) return `Training ${Math.round((100 * tp.epoch) / tp.total_epochs)}%`;
-  }
   return STATUS_LABEL[entry.status];
 }
 
-// Commission/train collapsed into a single morphing labeled button --
-// previously two icon buttons that read as independent controls even
-// though pressing "train" only ever means "stop collecting AND train".
-// Mirrors the transition guards in registry/registry.py exactly:
-//   uncommissioned          -> "Commission"   (commission_start)
-//   commissioning_collecting (not enough frames yet) -> disabled, label
-//     mirrors the status pill's own "Collecting n/min" text
-//   commissioning_collecting (ready) -> "Train" (commission_stop)
-//   commissioning_training  -> disabled "Training…"
-//   healthy/warning/fault   -> "Recommission" (commission_start again)
-//   paused                  -> disabled "Recommission" (resume() first,
-//     matches PAUSED -> COMMISSIONING_COLLECTING being deliberately
-//     absent from the state machine)
+// The row's setup affordance (docs/UNIFIED_COMMISSIONING_PLAN.md S4.4).
+// One button, three states, and nothing else:
+//   uncommissioned -> "Set up"
+//   mid-setup      -> "Setup — step 4 of 6", tinted
+//   commissioned   -> no button at all; `Re-run setup` lives in the drawer
+// It is a door, not a dashboard: no frame counts, no progress bar, no
+// "Training…". All of that lives on the step that produces it.
+//
 // Pause/Resume only enabled once a model exists (healthy/warning/
 // fault/paused) -- matches pause()/resume()'s own guards.
 // Remove (decommission) is always enabled in every status (S3.9:
 // registry.decommission() is now removable from any status).
 function rowControls(entry) {
   const status = entry.status;
-  const progress = entry.commissioning_progress;
-  const readyToTrain = status === "commissioning_collecting"
-    && progress !== undefined && progress.collected >= progress.min_frames;
+  const progress = entry.setup_progress;
+  const commissioned = entry.model_path !== null && entry.model_path !== undefined;
 
-  let commissionLabel, commissionAction, commissionEnabled, commissionTooltip, commissionVariant;
-  if (status === "uncommissioned") {
-    commissionLabel = "Commission"; commissionAction = "commission_start";
-    commissionEnabled = true; commissionVariant = "action";
-    commissionTooltip = "Start collecting baseline data";
-  } else if (status === "commissioning_collecting" && readyToTrain) {
-    commissionLabel = "Train"; commissionAction = "commission_stop";
-    commissionEnabled = true; commissionVariant = "ready";
-    commissionTooltip = "Stop collecting and train";
-  } else if (status === "commissioning_collecting") {
-    commissionLabel = "Collecting…"; commissionAction = null;
-    commissionEnabled = false; commissionVariant = "pending";
-    commissionTooltip = `Collecting… (${progress ? progress.collected : 0}/${progress ? progress.min_frames : "?"})`;
-  } else if (status === "commissioning_training") {
-    // Plain label -- the % lives in the status pill (statusLabelFor())
-    // instead, same place Collecting's progress already lives, so there's
-    // exactly one place to look for "how far along is this," not two.
-    commissionLabel = "Training…"; commissionAction = null;
-    commissionEnabled = false; commissionVariant = "pending";
-    commissionTooltip = "Training in progress";
-  } else if (status === "healthy" || status === "warning" || status === "fault") {
-    commissionLabel = "Recommission"; commissionAction = "commission_start";
-    commissionEnabled = true; commissionVariant = "action";
-    commissionTooltip = "Recollect baseline and retrain";
-  } else if (status === "idle" || status === "tripped") {
-    // Also correctly disabled, but for a different reason than paused, so it
-    // says so: commissioning collects gated *running* frames, and there are
-    // none to collect from a machine that isn't turning. Matches
-    // start_commissioning's source states, which exclude both.
-    commissionLabel = "Recommission"; commissionAction = null;
-    commissionEnabled = false; commissionVariant = "pending";
-    commissionTooltip = "Start the machine first to recommission";
-  } else {
-    commissionLabel = "Recommission"; commissionAction = "commission_start";
-    commissionEnabled = false; commissionVariant = "pending";
-    commissionTooltip = "Resume first to recommission";
+  let setupLabel = null, setupVariant = "action", setupTooltip = "";
+  if (progress) {
+    setupLabel = `Setup — step ${progress.index} of ${progress.total}`;
+    setupVariant = "pending";
+    setupTooltip = "Continue setting this asset up";
+  } else if (!commissioned) {
+    setupLabel = "Set up";
+    setupTooltip = "Name it, map its trip output, and train its model";
   }
 
   const pauseResumeEnabled = status === "healthy" || status === "warning"
@@ -381,7 +366,7 @@ function rowControls(entry) {
   const pauseResumeTooltip = status === "paused" ? "Resume" : "Pause";
 
   return {
-    commissionLabel, commissionAction, commissionEnabled, commissionTooltip, commissionVariant,
+    setupLabel, setupVariant, setupTooltip,
     pauseResumeAction, pauseResumeEnabled, pauseResumeTooltip,
   };
 }
@@ -450,10 +435,16 @@ function maybeAutoSaveCapture(nodeId) {
   saveCapture(nodeId, label, cp ? cp.collected : null, entry ? entry.device_type : null);
 }
 
-// node_id of whichever node's Record drawer is open right now, or null --
-// a singleton (only one node can be actively recorded/viewed at a time),
+// node_id of whichever node's drawer is open right now, or null -- a
+// singleton (only one node can be actively set up/recorded at a time),
 // unlike the old per-row toolbar this replaces.
 let openRecordNodeId = null;
+
+// Which of the drawer's two modes is showing (docs/UNIFIED_COMMISSIONING_PLAN.md
+// S5): "setup" is the guided flow (setup.js), "record" is today's
+// label + frame-count + Start form, for fault recordings after the asset is
+// live. One slide-over per asset, two modes -- not two drawers.
+let drawerMode = "record";
 
 // The drawer is a top-level element, not part of #fleet-list's innerHTML,
 // so renderFleetList()'s 5s-poll/WS-driven rebuild can never wipe an
@@ -480,26 +471,29 @@ document.body.appendChild(recordDrawer);
 // says nothing's recording, so a second line repeating that was pure
 // noise. The dot+status line only appears once a capture is actually
 // active.
-function recordDrawerBodyHtml(entry) {
-  const headerHtml = `<div class="record-drawer__header">
-    <span class="record-drawer__title">Record — ${escapeHtml(entry.device_name)}</span>
+function drawerHeaderHtml(title) {
+  return `<div class="record-drawer__header">
+    <span class="record-drawer__title">${escapeHtml(title)}</span>
     <button type="button" class="record-drawer__close" data-action="record_drawer_close" aria-label="Close">&times;</button>
   </div>`;
+}
 
-  // Asset class (device_type) is required before any capture can start,
-  // and it's no longer editable from here -- 2026-07-24 round 8: an
-  // earlier version had a "Set/Change device type" control right in this
-  // drawer, a second live editor for a field whose single source of truth
-  // is the Fleet row's pill (motorRowHtml()/startDeviceTypeEdit()).
-  // Instead of a small hint line next to a still-usable form, this fully
-  // replaces the capture form with a blocking message + a jump back to
-  // the Fleet row -- there's nothing else to do in here until it's set.
+function recordDrawerBodyHtml(entry) {
+  const headerHtml = drawerHeaderHtml(`Record — ${entry.device_name}`);
+
+  // Asset class is set in setup step 1 now, and it's mandatory there
+  // (S2.2.1), so the round-8 "Go to Fleet" blocking state is gone -- it
+  // only ever existed because the drawer had no way to set the field. An
+  // asset can still reach this drawer before setup (the Record button is
+  // always available), which is what this shorter prompt covers: it sends
+  // the operator into the flow that owns the field rather than opening a
+  // second live editor for it.
   if (!entry.device_type) {
     return `${headerHtml}
     <div class="record-drawer__body">
       <div class="record-drawer__block">
-        <p class="record-drawer__block-text">This asset has no class assigned yet. Recordings are grouped by asset class -- one fault-detection model gets trained per class -- so recording can't start until this asset has one.</p>
-        <button type="button" class="btn-label btn-label--ready" data-action="jump_to_fleet_asset_class">Go to Fleet</button>
+        <p class="record-drawer__block-text">Recordings are grouped by asset class — one fault-detection model per class — and this asset doesn't have one yet. Setting it is the first step of setup.</p>
+        <button type="button" class="btn-label btn-label--ready" data-action="setup_open">Set up this asset</button>
       </div>
     </div>`;
   }
@@ -565,6 +559,7 @@ function recordDrawerBodyHtml(entry) {
     </div>
     <div class="record-drawer__actions">${buttonsHtml}</div>
     ${statusHtml}
+    <button type="button" class="setup-cancel" data-action="setup_open">Re-run setup</button>
   </div>`;
 }
 
@@ -584,16 +579,33 @@ function renderRecordDrawer() {
     recordDrawerBackdrop.hidden = true;
     return;
   }
-  // Don't wipe an in-progress label/frame-count edit out from under the
-  // operator on a background poll/WS tick -- same guard editingNodeId
-  // uses for the row list's own rebuild (app.js's long-standing pattern).
+  // Don't wipe an in-progress edit out from under the operator on a
+  // background poll/WS tick -- same guard editingNodeId uses for the row
+  // list's own rebuild (app.js's long-standing pattern), and the reason
+  // setup.js keeps its typed fields in a draft rather than reading them
+  // back off the DOM.
   if (recordDrawer.contains(document.activeElement)
       && document.activeElement.tagName === "INPUT") {
     return;
   }
   recordDrawer.hidden = false;
   recordDrawerBackdrop.hidden = false;
-  recordDrawer.innerHTML = recordDrawerBodyHtml(entry);
+  recordDrawer.innerHTML = drawerMode === "setup"
+    ? drawerHeaderHtml(Setup.headerTitle(entry)) + Setup.bodyHtml(entry)
+    : recordDrawerBodyHtml(entry);
+}
+
+// "Set up" / "Setup — step N of 6" (the tile), "Change in setup" (the
+// expanded Protection section), and "Re-run setup" (the Record drawer) all
+// land here. `step` jumps straight to one -- re-entering a single step
+// without walking the whole wizard is deliberate (S10 Q2).
+async function openSetupDrawer(nodeId, step) {
+  drawerMode = "setup";
+  openRecordNodeId = nodeId;
+  renderRecordDrawer();
+  const existing = Setup.snapshotFor(nodeId);
+  if (!existing || step) await Setup.start(nodeId, step);
+  else await Setup.refresh(nodeId);
 }
 
 // "Record" button (motor-row__actions) -- opens the drawer for this node,
@@ -603,6 +615,7 @@ function renderRecordDrawer() {
 // where Record's whole job was just revealing the same panel charts lived
 // in.
 function openRecordDrawer(nodeId) {
+  drawerMode = "record";
   openRecordNodeId = nodeId;
   if (!expandedNodeIds.has(nodeId)) {
     expandedNodeIds.add(nodeId);
@@ -630,25 +643,6 @@ function closeRecordDrawer() {
   renderRecordDrawer();
 }
 
-// "Go to Fleet" (recordDrawerBodyHtml()'s blocking state, 2026-07-24 round
-// 8) -- closes the drawer and briefly pulses the row's outline so the
-// operator can actually find it among the rest of the list, then scrolls
-// it into view. Doesn't open the row's asset-class editor itself: this is
-// navigation, not a second edit path into a field whose only editor is
-// that pill (the whole reason the drawer's old inline "Change" control was
-// removed).
-function jumpToFleetForAssetClass(nodeId) {
-  closeRecordDrawer();
-  highlightNodeIds.add(nodeId);
-  renderFleetList(state.lastNodes);
-  const row = document.querySelector(`.motor-row-group[data-node-id="${CSS.escape(nodeId)}"]`);
-  if (row) row.scrollIntoView({ behavior: "smooth", block: "center" });
-  setTimeout(() => {
-    highlightNodeIds.delete(nodeId);
-    renderFleetList(state.lastNodes);
-  }, 1600);
-}
-
 recordDrawerBackdrop.addEventListener("click", closeRecordDrawer);
 
 document.addEventListener("keydown", (e) => {
@@ -658,20 +652,18 @@ document.addEventListener("keydown", (e) => {
   }
 });
 
+// The commission/* and stopped_baseline/* actions are gone from here:
+// those routes still exist and still work standalone, but the only UI that
+// drives them now is setup (setup.js), which owns their instructions and
+// their inline errors. What's left is the actions that belong to a live
+// asset rather than to setting one up.
 const ACTION_ENDPOINT = {
-  commission_start: (id) => ["POST", `/nodes/${id}/commission/start`],
-  commission_stop: (id) => ["POST", `/nodes/${id}/commission/stop`],
   pause: (id) => ["POST", `/nodes/${id}/pause`],
   resume: (id) => ["POST", `/nodes/${id}/resume`],
   decommission: (id) => ["POST", `/nodes/${id}/decommission`],
   capture_stop: (id) => ["POST", `/nodes/${id}/capture/stop`],
   capture_cancel: (id) => ["POST", `/nodes/${id}/capture/cancel`],
   protection_hold: (id) => ["POST", `/nodes/${id}/protection/hold`],
-  stopped_baseline_start: (id) => ["POST", `/nodes/${id}/stopped_baseline/start`],
-  stopped_baseline_cancel: (id) => ["POST", `/nodes/${id}/stopped_baseline/cancel`],
-  // stopped_baseline_stop is deliberately absent -- it reports back what it
-  // measured, so it goes through saveStoppedBaseline() instead of
-  // runAction()'s fire-and-forget shape. Same reason saveCapture() does.
 };
 
 async function api(method, path, body) {
@@ -749,24 +741,6 @@ async function saveCapture(nodeId, label, count, deviceType) {
   await pollNodes();
 }
 
-// Reports what it measured (and, on failure, *why* the collected frames
-// don't look like a stopped machine), so it doesn't fit runAction's
-// fire-and-forget shape -- same reason saveCapture() above doesn't.
-async function saveStoppedBaseline(nodeId) {
-  try {
-    const data = await api("POST", `/nodes/${nodeId}/stopped_baseline/stop`);
-    const frames = (data.stopped_baseline_result || {}).frames;
-    showToast(`Stopped baseline measured from ${frames} frames`);
-  } catch (err) {
-    console.error(`Save stopped baseline on ${nodeId} failed`, err);
-    // alert, not a toast: the failures here are instructions (the machine
-    // was still moving, keep collecting) and a 4s auto-dismiss would drop
-    // them before they'd been read.
-    alert(err.message);
-  }
-  await pollNodes();
-}
-
 // Needs the typed target-frames value -- same reason saveCapture() above
 // doesn't fit runAction/ACTION_ENDPOINT's no-body POST shape.
 async function startCapture(nodeId, targetFrames) {
@@ -819,6 +793,10 @@ const ICON_TRASH = '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" 
 // vs. red+pulsing) carries the idle/active distinction instead -- see
 // .btn-icon--recording in style.css.
 const ICON_RECORD = '<svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor"><circle cx="12" cy="12" r="7"/></svg>';
+// Armed-protection indicator on the collapsed row (S4.3). A shield is the
+// standard protection glyph and carries no verb -- it says this asset has a
+// trip output, not that anything is happening.
+const ICON_SHIELD = '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M12 3l7 3v6c0 4-3 7-7 9-4-2-7-5-7-9V6z"/></svg>';
 
 // Suppresses re-render of the list while a rename input is open, so an
 // in-flight edit isn't wiped out by the next 5s poll (same guard the old
@@ -951,14 +929,6 @@ async function commitDeviceType(nodeId, value) {
   await pollNodes();
 }
 
-// node_id -> {epoch, total_epochs}, populated by the "training_progress"
-// WS broadcast (api/app.py's commission/stop, throttled to ~20 ticks) and
-// read by rowControls() to append a live "Training… 42%" label. Cleared
-// whenever a "registry" push shows the node has left commissioning_training
-// (completed, or a fresh commission started), so a stale percentage from
-// a previous run can never linger into the next one.
-const trainingProgress = {};
-
 // Previously-used capture labels (pipeline/capture.py's list_labels()),
 // backing the custom suggestions dropdown every capture-label <input>
 // filters against (S2). Fetched once at startup and again after every
@@ -1021,12 +991,6 @@ const openRawIds = new Set();
 const openWaterfallIds = new Set();
 const openScalarsIds = new Set();
 
-// Node IDs whose row should render with a brief pulsing outline right now
-// -- used by the Record drawer's "Go to Fleet" jump (jumpToFleetForAssetClass()
-// below) so the operator can actually find the row it sent them to, not
-// just land back on an unchanged-looking list.
-const highlightNodeIds = new Set();
-
 function motorRowHtml(entry) {
   const bucket = bucketFor(entry);
   const label = statusLabelFor(entry, bucket);
@@ -1086,22 +1050,31 @@ function motorRowHtml(entry) {
   // see charts.js's buildClassificationHtml) and can legitimately disagree
   // with it, so it keeps the same neutral violet accent used there instead
   // of borrowing --accent's green/amber/red.
+  // A small shield when this asset could actually stop its machine
+  // (S4.3): a glyph, not text, and not a second copy of any status string
+  // -- the collapsed row's job is to say at a glance which assets carry a
+  // trip output, and the expanded panel already spells out which one.
+  const armedChipHtml = (entry.protection && entry.protection.armed)
+    ? `<span class="motor-row__armed" title="Protection armed — this asset can stop its machine" aria-label="Protection armed">${ICON_SHIELD}</span>`
+    : "";
+
   const showClassificationChip = (bucket === "warning" || bucket === "fault") && entry.last_classification;
   const classificationChipHtml = showClassificationChip
     ? `<span class="motor-row__classification-chip" title="Fault classifier's current read -- an independent signal from the status above">${escapeHtml(titleCase(entry.last_classification.label))}</span>`
     : "";
 
-  const rowHtml = `<div class="motor-row${isExpanded ? " motor-row--expanded" : ""}${highlightNodeIds.has(entry.node_id) ? " motor-row--highlight" : ""}" title="Click to expand">
+  const rowHtml = `<div class="motor-row${isExpanded ? " motor-row--expanded" : ""}" title="Click to expand">
     <div class="motor-row__main">
       ${identityHtml}
       <div class="motor-row__device-type-group">${deviceTypePillHtml}</div>
       <div class="motor-row__status-group">
         <span class="motor-row__status">${label}</span>
+        ${armedChipHtml}
         ${classificationChipHtml}
       </div>
     </div>
     <div class="motor-row__actions">
-      <button class="btn-label btn-label--${controls.commissionVariant}" ${controls.commissionAction ? `data-action="${controls.commissionAction}"` : ""} title="${controls.commissionTooltip}" aria-label="${controls.commissionTooltip}" ${controls.commissionEnabled ? "" : "disabled"}>${controls.commissionLabel}</button>
+      ${controls.setupLabel ? `<button class="btn-label btn-label--${controls.setupVariant}" data-action="setup_open" title="${controls.setupTooltip}" aria-label="${controls.setupTooltip}">${controls.setupLabel}</button>` : ""}
       <button class="btn-icon${isRecording ? " btn-icon--recording" : ""}" data-action="record" title="${isRecording ? "Recording in progress -- click to view" : "Record labeled training data"}" aria-label="${isRecording ? "Recording in progress" : "Record labeled training data"}">${ICON_RECORD}</button>
       <button class="btn-icon" data-action="${controls.pauseResumeAction}" title="${controls.pauseResumeTooltip}" aria-label="${controls.pauseResumeTooltip}" ${controls.pauseResumeEnabled ? "" : "disabled"}>${pauseIcon}</button>
       <button class="btn-icon btn-icon--danger" data-action="decommission" title="Remove" aria-label="Remove">${ICON_TRASH}</button>
@@ -1311,8 +1284,8 @@ document.getElementById("fleet-list").addEventListener("click", (e) => {
       startDeviceTypeEdit(nodeId);
       return;
     }
-    if (action === "stopped_baseline_stop") {
-      saveStoppedBaseline(nodeId);
+    if (action === "setup_open") {
+      openSetupDrawer(nodeId, button.dataset.step);
       return;
     }
     runAction(action, nodeId);
@@ -1359,32 +1332,6 @@ document.getElementById("fleet-list").addEventListener("click", (e) => {
   if (group) toggleExpand(group.dataset.nodeId);
 });
 
-// The trip-output <select> needs "change", which the click handler above
-// can't see. Its own listener rather than a branch in that one, since
-// change/click have genuinely different semantics here.
-document.getElementById("fleet-list").addEventListener("change", async (e) => {
-  const select = e.target.closest('[data-action="set_trip_motor"]');
-  if (!select) return;
-  const nodeId = select.dataset.nodeId;
-  const raw = select.value;
-  const motorIdx = raw === "" ? null : Number(raw);
-  const previous = state.lastNodes[nodeId] ? state.lastNodes[nodeId].trip_motor_idx : null;
-  try {
-    await api("POST", `/nodes/${nodeId}/trip_motor`, { motor_idx: motorIdx });
-    showToast(motorIdx === null
-      ? "Trip output cleared -- this asset can no longer stop a machine"
-      : `Trip output armed on Motor ${motorIdx}`);
-  } catch (err) {
-    console.error(`Setting trip motor on ${nodeId} failed`, err);
-    // Snap back to what the server still believes rather than leaving the
-    // dropdown showing a selection that was rejected (e.g. a 409 from
-    // another asset already claiming that motor).
-    select.value = previous === null || previous === undefined ? "" : String(previous);
-    showToast(`Couldn't set trip output: ${err.message}`, "error");
-  }
-  await pollNodes();
-});
-
 // The native `toggle` event on <details> does NOT bubble -- but
 // capture-phase dispatch still traverses ancestors on the way down
 // regardless of the bubbles flag, so {capture: true} on this stable
@@ -1418,11 +1365,19 @@ recordDrawer.addEventListener("click", (e) => {
       closeRecordDrawer();
       return;
     }
-    if (action === "jump_to_fleet_asset_class") {
-      jumpToFleetForAssetClass(openRecordNodeId);
+    if (action === "setup_open") {
+      // Record mode's "Re-run setup" link, and the no-asset-class prompt.
+      openSetupDrawer(openRecordNodeId, button.dataset.step);
       return;
     }
     if (!openRecordNodeId) return;
+    // Setup owns every other button while its mode is showing -- it has
+    // its own busy/error handling per step, which runAction's
+    // fire-and-forget shape can't express.
+    if (drawerMode === "setup") {
+      Setup.handleClick(e, openRecordNodeId);
+      return;
+    }
     if (action === "capture_start") {
       // Needs the typed label + target-frames values -- doesn't fit
       // runAction/ACTION_ENDPOINT's no-body POST shape, so it's handled
@@ -1470,6 +1425,17 @@ recordDrawer.addEventListener("click", (e) => {
 });
 
 recordDrawer.addEventListener("keydown", (e) => {
+  if (drawerMode === "setup") {
+    // Enter submits the step the operator is on -- the same button they'd
+    // otherwise reach for, so a name typed and Entered just moves on.
+    if (e.key === "Enter" && e.target.tagName === "INPUT") {
+      e.preventDefault();
+      const step = recordDrawer.querySelector(".setup-step.is-current");
+      const primary = step && step.querySelector(".setup-step__actions button:not([disabled])");
+      if (primary) primary.click();
+    }
+    return;
+  }
   const captureInput = e.target.closest('[data-role="capture-label-input"]');
   if (!captureInput) return;
   if (e.key === "Enter") {
@@ -1487,6 +1453,10 @@ recordDrawer.addEventListener("keydown", (e) => {
 // and hiding here first would make the suggestion disappear before its
 // own click ever lands.
 recordDrawer.addEventListener("input", (e) => {
+  if (drawerMode === "setup") {
+    Setup.handleInput(e, openRecordNodeId);
+    return;
+  }
   const labelInput = e.target.closest('[data-role="capture-label-input"]');
   if (labelInput) {
     renderCaptureSuggestions(labelInput);
@@ -1500,6 +1470,7 @@ recordDrawer.addEventListener("input", (e) => {
 });
 
 recordDrawer.addEventListener("focusin", (e) => {
+  if (drawerMode === "setup") return;
   const input = e.target.closest('[data-role="capture-label-input"]');
   if (!input) return;
   renderCaptureSuggestions(input);
@@ -1608,6 +1579,7 @@ async function pollNodes() {
     // server remains the authority on whether a trip is pending at all.
     for (const entry of Object.values(state.lastNodes)) noteTripCountdown(entry);
     renderSummary(state.lastNodes);
+    renderTripBanner();
     // Skip the list re-render while a rename or device-type edit is open
     // -- startRename()/startDeviceTypeEdit()/Escape re-render explicitly
     // on their own, this only guards the automatic 5s poll from wiping
@@ -1621,6 +1593,12 @@ async function pollNodes() {
     // renderRecordDrawer() itself no-ops while one of its own inputs is
     // focused, so this can't wipe an in-progress edit either.
     if (openRecordNodeId) renderRecordDrawer();
+    // Setup's own state doesn't ride GET /nodes (only the step number does,
+    // as setup_progress, for the tile's button) -- the per-condition frame
+    // counters live on the setup snapshot, and those advance from the
+    // ingestion thread with no step change to broadcast. Refreshed here, and
+    // only while its drawer is actually open, so it costs nothing otherwise.
+    if (openRecordNodeId && drawerMode === "setup") Setup.refresh(openRecordNodeId);
   } catch (err) {
     console.error("Failed to fetch /nodes", err);
   }
@@ -1665,12 +1643,12 @@ Charts.init((msg) => {
     // earliest the dashboard can know about it -- re-base the local deadline
     // here rather than waiting for the next poll.
     noteTripCountdown(entry);
-    // Stale % from a previous run must never linger into the next one --
-    // clear the moment the node leaves commissioning_training for any
-    // reason (completed, or a fresh commission started elsewhere).
-    if (entry.status !== "commissioning_training") delete trainingProgress[msg.node_id];
-  } else if (msg.type === "training_progress") {
-    trainingProgress[msg.node_id] = { epoch: msg.epoch, total_epochs: msg.total_epochs };
+  } else if (msg.type === "setup" || msg.type === "trip_confirm"
+             || msg.type === "training_progress") {
+    // Setup owns all three: its own step state, the confirm-by-stopping
+    // result, and the training percentage that used to be narrated on the
+    // tile. Nothing here needs to know their shapes.
+    Setup.handleMessage(msg);
   } else if (msg.type === "capture") {
     const entry = state.lastNodes[msg.node_id];
     if (entry) {
@@ -1696,10 +1674,24 @@ Charts.init((msg) => {
     }
   }
   renderSummary(state.lastNodes);
+  renderTripBanner();
   if (editingNodeId === null && editingDeviceTypeNodeId === null) renderFleetList(state.lastNodes);
   if (openRecordNodeId) renderRecordDrawer();
 }, (msg) => Perf.handleMessage(msg), (msg) => Alerts.handleMessage(msg),
    (msg) => Classifier.handleMessage(msg));
+
+// setup.js renders into the drawer this module owns, and needs four things
+// only this module is the authority on: the current node list, the poll,
+// the toast container, and a way to ask for a re-render.
+Setup.init({
+  getNode: (nodeId) => state.lastNodes[nodeId],
+  allNodes: () => state.lastNodes,
+  assetClasses: () => deviceTypes,
+  refreshNodes: () => pollNodes(),
+  toast: (message, kind) => showToast(message, kind),
+  rerender: () => { if (openRecordNodeId) renderRecordDrawer(); },
+  close: () => closeRecordDrawer(),
+});
 
 Perf.init();
 Alerts.init();

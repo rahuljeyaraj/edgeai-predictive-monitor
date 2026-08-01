@@ -301,12 +301,24 @@ const Charts = (() => {
         if (registryHandler) registryHandler(msg);
       } else if (msg.type === "removed" && registryHandler) {
         registryHandler(msg);
-      } else if ((msg.type === "training_progress" || msg.type === "capture") && registryHandler) {
-        // Neither touches NodeStatus (capture never does; training_progress
-        // is an in-between tick, not a status change) so they ride the same
-        // fleet-state push handler as "registry"/"removed" rather than
-        // getting their own init() callback -- app.js's handler already
-        // branches on msg.type for this exact reason.
+      } else if ((msg.type === "training_progress" || msg.type === "capture"
+                  || msg.type === "setup" || msg.type === "trip_confirm")
+                 && registryHandler) {
+        // None of these touch NodeStatus (capture never does;
+        // training_progress is an in-between tick, not a status change; the
+        // setup step and the confirm-by-stopping result are their own
+        // flow) so they ride the same fleet-state push handler as
+        // "registry"/"removed" rather than getting their own init()
+        // callback -- app.js's handler already branches on msg.type for
+        // this exact reason.
+        //
+        // "setup"/"trip_confirm" were missing here, which is the whole
+        // reason this list is worth reading twice: app.js DID handle both,
+        // and this dispatch dropped them first. The visible symptom was a
+        // drawer stuck on "Stopping output 1 -- watch the machine..."
+        // forever, because the result that clears it only ever arrives as
+        // a broadcast. Setup's own 5s refresh papered over the step
+        // broadcasts well enough to hide it until a real rig ran the test.
         registryHandler(msg);
       } else if (msg.type === "perf_stats") {
         if (perfHandler) perfHandler(msg);
