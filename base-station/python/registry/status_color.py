@@ -41,10 +41,15 @@ _GREY_OFFLINE = LedCommand(rgb="#4d4d4d", mode="const", period_ms=0)
 # from this node", and not blue either: it was pure blue #0000ff until
 # 2026-08-02, when it was reported on real hardware as indistinguishable from
 # _CYAN_NEW's blue-dominant cast. Magenta is still a full-strength two-channel
-# mix (R=B=255, G=0) so it obeys this file's near-primary rule -- the
-# dashboard's matching fuchsia (--color-idle #d946ef) is deliberately NOT
-# reused here, since its G=70 is exactly the weak-secondary case the module
-# docstring says washes out on an uncorrected WS2812.
+# mix (R=B=255, G=0) so it obeys this file's near-primary rule.
+#
+# IDLE is also the one status whose value is *shared* with the dashboard:
+# style.css's --color-idle is this exact #ff00ff, so a magenta ring and a
+# magenta tile read as one status (user's call, 2026-08-02). The match went
+# that direction, rather than this file adopting the screen's fuchsia
+# #d946ef, precisely because of the module docstring above -- #d946ef's G=70
+# is the weak-secondary case that washes out on these LEDs. Every other
+# status stays independently tuned. Change one of the two, change both.
 _MAGENTA_IDLE = LedCommand(rgb="#ff00ff", mode="const", period_ms=0)
 # TRIPPED reuses FAULT's red and differs only in strobe period: 200ms reads
 # as an urgent alarm, 1000ms as a deliberate, latched "I already acted".
