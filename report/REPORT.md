@@ -131,7 +131,7 @@ watching at the moment it matters.
 
 ![System at a glance: sensor pods and satellite nodes feed one base station, which fans out to the dashboard, a phone, the status lights, and — on a confirmed fault — a motor-stop command](diagrams/01-system-at-a-glance.png)
 
-> **[PHOTO: hero shot — the assembled base station clipped to the demo rig, machine running, status ring lit]**
+> **[PHOTO: hero shot — the assembled base station clipped to the test rig, machine running, status ring lit]**
 
 ## 1.2 What it actually does
 
@@ -291,7 +291,7 @@ If you stopped right here you would already have something most small shops
 don't: a machine that tells you it is getting sick before it collapses.
 Everything else in this report is this same idea, repeated and connected.
 
-> **[PHOTO: base station fully wired and clipped to the demo rig — sensor, board and status ring in one wide shot]**
+> **[PHOTO: base station fully wired and clipped to the test rig — sensor, board and status ring in one wide shot]**
 
 ## 3.2 What you are building
 
@@ -1272,12 +1272,15 @@ findings from it changed the design:
 
 ## 11.6 Known limitations, stated plainly
 
-* **The demo rig's three motors share one vibration sensor.** Trip one motor
+* **The test rig's three motors share one vibration sensor.** Trip one motor
   while the others keep running and that shared sensor still reads *running* —
   because it is honestly still feeling the other two. This is a property of one
   sensor covering three motors on a bench rig, not a software defect; a real
   deployment has one sensor per machine. It is called out here rather than
-  quietly avoided in the demo.
+  quietly avoided. The rig therefore starts with a **single** motor installed,
+  which is both the honest configuration for one sensor and the order a real
+  floor grows in; the others are added on the control page when the point is
+  fleet scale rather than trip fidelity.
 * **The classifier is not the safety path**, by construction
   ([§6.4](#chapter-6-naming-the-fault)). If it names the wrong fault, the machine
   still stops — the label is just wrong.
@@ -1361,7 +1364,7 @@ the whole assignment.
 component links here rather than repeating it.
 
 Quantities assume one base station, one satellite node, and the three-motor
-demo rig used to validate this report. Scale the satellite block by however many
+rig used to validate this report. Scale the satellite block by however many
 machines a real deployment monitors.
 
 Links are to **Robu.in**. Prices are indicative, checked at Indian retail in
@@ -1403,7 +1406,7 @@ Same three sensing parts as the base station, deliberately: one line item to buy
 in bulk, not a different parts list per machine. That is also what keeps the
 per-machine cost of expanding the fleet close to linear.
 
-### Demo / validation rig — for reproducing this report's results
+### Validation rig — for reproducing this report's results
 
 Not part of a deployment. This is the bench setup used to induce and measure
 faults.
@@ -1679,12 +1682,27 @@ portal. A real build passes neither and the shortcut is a no-op.
 1. Set each driver's current limit before applying power — see
    [Appendix B.3](#appendix-b-wiring-and-pinout-reference).
 2. Flash `motor-driver/src/main.cpp` to the Arduino Uno with PlatformIO.
-3. Run its local control page with `motor-driver/start_dashboard.sh`, or drive
-   it over serial for scripted test profiles.
+3. Start the rig host, which serves the control page and receives trips:
+
+   ```sh
+   cd motor-driver
+   ./start_motor_driver.sh                              # broker on localhost
+   ./start_motor_driver.sh --mqtt-host <base-station-ip>  # or over the LAN
+   ```
+
+   The Uno's port is autodetected; pass `--port` if two boards are attached.
+
+   Open **http://localhost:8000/** in Chrome or Edge, click **Connect**, and
+   pick the Uno's port. The rig starts with **one** motor installed; the empty
+   slots add the others, and each one added is announced to the base station as
+   a trip output straight away. Add `--profile` to run a scripted capture
+   profile instead of driving by hand.
 4. On the base station's dashboard, open the asset you want protected, and set
    its **Trip output** to a motor number. One motor may only be claimed by one
    asset; the dropdown shows already-claimed motors as disabled rather than
-   failing after the fact.
+   failing after the fact. Back on the control page, that motor now carries a
+   **PROTECTED** badge naming the asset — and if the trip ever fires, its card
+   turns red and locks until a human presses **Reset & re-arm**.
 
 ## C.6 Changing the wire format
 
@@ -2108,7 +2126,7 @@ console errors throughout.
 
 ## H.8 A known, accepted limitation
 
-The demo rig's three motors share one physical vibration sensor. With motor 1
+The test rig's three motors share one physical vibration sensor. With motor 1
 tripped and motors 2 and 3 still spinning, that shared sensor still reads
 *running*, because it genuinely is still feeling the other two. This is a
 property of one sensor covering three motors on a bench rig, not a software

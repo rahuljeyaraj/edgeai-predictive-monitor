@@ -16,11 +16,11 @@ The contest requires "physical AI": inference has to trigger a real-world
 action, not just update a dashboard/LED/Telegram alert. Today
 `motor-driver/` (the vibration-source stepper motors) is a fully
 standalone Arduino Uno, controlled only by a human running
-`motor-driver/run_demo.py` (or `dashboard.html`) from a host laptop over USB
+`motor-driver/motor_driver.py` (or `dashboard.html`) from a host laptop over USB
 serial. Nothing connects it to the base station's inference pipeline.
 
 The host laptop already IS the motor's controller — it has the stepper
-rig's Uno on USB and already runs `run_demo.py`. So the base station doesn't
+rig's Uno on USB and already runs `motor_driver.py`. So the base station doesn't
 need a direct wire to the rig; it just needs to tell that host machine
 "stop" over the network. The base station already has a working MQTT
 command channel built for exactly this shape of problem (pushing a command
@@ -39,7 +39,7 @@ addressed to a pseudo node-id like `"motor_rig"` (not a real registry entry,
 just an MQTT topic target). A new small script on the host laptop subscribes
 to that topic and calls the stepper rig's existing serial stop command
 (`d`, already implemented in `motor-driver/src/main.cpp` and already wrapped
-by `run_demo.py`'s `Rig.disable()`).
+by `motor_driver.py`'s `Rig.disable()`).
 
 ```
 InferencePipeline (base station) --FAULT--> Registry.on_status_change
@@ -130,14 +130,14 @@ live)
   MQTT is enabled, same as satellite ingestion already requires.
 
 **`motor-driver/motor_stop_listener.py`** (new)
-- Standalone script for the host laptop, next to `run_demo.py`. Takes
+- Standalone script for the host laptop, next to `motor_driver.py`. Takes
   `--port` (stepper rig's serial port) and `--mqtt-host` (base station's LAN
   IP) args.
 - `paho.mqtt.client` subscriber on `epm/motor_rig/cmd` (same lib already
   used base-station-side; `pip install paho-mqtt` on the laptop if not
   present).
 - On a `MOTOR_STOP` message with `stop=True`: call `.disable()` on a `Rig`
-  instance (reuse the class already in `run_demo.py` — import it directly,
+  instance (reuse the class already in `motor_driver.py` — import it directly,
   `motor-driver/` is one folder, no packaging needed).
 - Decodes the 2-byte envelope locally (doesn't import
   `base-station/python/common/wire_protocol.py` — that package deploys to
@@ -173,7 +173,7 @@ prerequisite independent of this plan.
    `epm/motor_rig/cmd`, confirm `motor_stop_listener.py` receives it and
    sends `d` (watch its own print/log, and the rig's serial console for the
    `[status] drivers=OFF` line).
-3. End-to-end on hardware: run the rig at baseline RPM via `run_demo.py` or
+3. End-to-end on hardware: run the rig at baseline RPM via `motor_driver.py` or
    `dashboard.html`, drive the base station's own node into FAULT (real
    induced anomaly, or existing test/capture tooling), confirm the physical
    motors stop within about one debounce window, and confirm they stay

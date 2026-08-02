@@ -2,7 +2,7 @@
 itself, never guessed here (docs/UNIFIED_COMMISSIONING_PLAN.md S3.2).
 
 The dashboard used to render a fixed three-motor dropdown, a hand-copy of
-motor-driver/run_demo.py's MOTOR_IDS carried in frontend/app.js with a
+motor-driver/motor_driver.py's MOTOR_IDS carried in frontend/app.js with a
 comment conceding the duplication. A factory with one motor saw three
 options, two of which were nonsense, and the copy got *worse* as the real
 rig changed. The rig already knew the answer -- it rejects unknown indices
@@ -75,7 +75,7 @@ class TripOutputStore:
         """One flat list of every announced output across every host, for
         GET /trip_outputs. Empty when nothing has announced -- which is what
         setup's manual fallback (S3.5) exists for, and is also exactly what
-        an older run_demo.py with no announce looks like."""
+        an older motor_driver.py with no announce looks like."""
         with self._lock:
             hosts = {host: dict(state) for host, state in self._hosts.items()}
         return [dict(output, host_node_id=host, announced_at=state["announced_at"])

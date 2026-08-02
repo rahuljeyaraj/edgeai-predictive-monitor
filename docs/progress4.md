@@ -189,7 +189,7 @@ adb forward tcp:18830 tcp:1883   # -> localhost:18830 reaches the board's broker
 (`tcp:8080 tcp:8080` for the dashboard REST API was already forwarded from
 earlier sessions.)
 
-`motor-driver/run_demo.py` needs `paho-mqtt`, not installed system-wide
+`motor-driver/motor_driver.py` needs `paho-mqtt`, not installed system-wide
 (PEP 668 externally-managed-environment) — a venv was created:
 ```
 cd motor-driver && python3 -m venv .venv && ./.venv/bin/pip install paho-mqtt pyserial
@@ -197,7 +197,7 @@ cd motor-driver && python3 -m venv .venv && ./.venv/bin/pip install paho-mqtt py
 
 With that, the trip listener connects and receives real commands:
 ```
-./.venv/bin/python run_demo.py --port /dev/ttyACM1 --mqtt-host localhost --mqtt-port 18830 --hold-open
+./.venv/bin/python motor_driver.py --port /dev/ttyACM1 --mqtt-host localhost --mqtt-port 18830 --hold-open
 ```
 Live log evidence (this session, twice, under a real induced FAULT + 10s
 countdown): `*** TRIP RECEIVED: stopping motor 1 ***` followed by `motor 1
@@ -208,7 +208,7 @@ the first time this had been proven against real hardware** — `ebc08f4`
 had only ever been tested with a faked/local publisher, never a real listener
 on the real rig.
 
-**Known trap, hit twice this session:** don't run `run_demo.py`'s full
+**Known trap, hit twice this session:** don't run `motor_driver.py`'s full
 default-timed scripted profile (`--baseline-s`/`--sweep-s`/`--fault-s`
 defaults) expecting to observe a live trip — the profile's own fixed timing
 raced the base station's variable fault-detection timing twice, and the
@@ -291,7 +291,7 @@ way if you've edited it — `adb push tests/protection_test.py "$REMOTE/tests/pr
    spin the rig at baseline, `POST /nodes/base_station/commission/stop`) and
    re-verify live: rig fully off should settle to IDLE (not flap
    FAULT/WARNING), and a real induced FAULT should trip, publish, get
-   received by `run_demo.py`'s listener, and confirm TRIPPED within the 3s
+   received by `motor_driver.py`'s listener, and confirm TRIPPED within the 3s
    confirm window.
 4. Physical rig is currently **disabled/powered down** (left that way
    deliberately at the end of this session) and still attached to WSL as

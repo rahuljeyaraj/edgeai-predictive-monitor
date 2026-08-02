@@ -210,7 +210,7 @@ class PerformanceMonitor:
     """One instance per process, shared by PipelineManager (feeds
     record_frame per frame) and api/rest.py (reads snapshot() for GET
     /perf, toggles via enable()/disable()). Starts enabled -- S3.10 lists
-    this as demo-visible by default, with disabling as the opt-out under
+    this as visible by default, with disabling as the opt-out under
     load, not the other way round."""
 
     def __init__(self, enabled: bool = True, window_size: int = _DEFAULT_WINDOW):

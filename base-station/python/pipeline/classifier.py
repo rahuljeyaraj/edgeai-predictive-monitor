@@ -8,8 +8,8 @@ on-device training story" reasoning for picking PyTorch applies here.
 
 CPU (XNNPACK) only, deliberately -- final, not a stopgap. GPU and NPU were
 both spiked live against the real board (2026-07-25, starting from
-docs/DEV_PERF_PAGE_PLAN.md S5b's "worth a quick spike before betting the
-demo story on it") and both ruled out, not left unverified. Full writeup,
+docs/DEV_PERF_PAGE_PLAN.md S5b's "worth a quick spike before betting
+the product on it") and both ruled out, not left unverified. Full writeup,
 exact commands/output: docs/GPU_NPU_ACCELERATION_FEASIBILITY.md. Short
 version:
 

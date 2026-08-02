@@ -6,7 +6,7 @@ envelope plus the MOTOR_STOP payload the machinery-protection trip carries
 
 The load-bearing test here is the last one. MOTOR_STOP is decoded in two
 places by design -- this module, and a hand-rolled copy in
-motor-driver/run_demo.py, which runs on a different machine and cannot import
+motor-driver/motor_driver.py, which runs on a different machine and cannot import
 this package (the same split the ESP32 firmware already has for the telemetry
 formats). Two implementations of one format drift silently, so the exact bytes
 that copy expects are asserted here, against the encoder that produces them.
@@ -70,7 +70,7 @@ def test_empty_message_rejected():
 
 
 def test_bytes_match_the_independent_rig_host_decoder():
-    """motor-driver/run_demo.py decodes this without importing this module.
+    """motor-driver/motor_driver.py decodes this without importing this module.
     That copy reads byte 0 as the type and byte 1 as the motor index, so the
     whole message for "stop motor 2" must be exactly b'\\x09\\x02'."""
     message = encode_mqtt_message(MqttMsgType.MOTOR_STOP,
@@ -81,7 +81,7 @@ def test_bytes_match_the_independent_rig_host_decoder():
     # And the copy's own logic, spelled out as it is written there, agrees.
     assert message[0] == MqttMsgType.MOTOR_STOP
     assert struct.unpack("<B", message[1:2])[0] == 2
-    print("wire bytes match what run_demo.py's independent decoder expects: PASS")
+    print("wire bytes match what motor_driver.py's independent decoder expects: PASS")
 
 
 if __name__ == "__main__":

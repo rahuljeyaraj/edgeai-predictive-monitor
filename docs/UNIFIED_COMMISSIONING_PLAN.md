@@ -63,7 +63,7 @@ against a weak gate.
   at full load, and the load change itself reads as a fault.
 - **The motor dropdown is a fiction.** `TRIP_MOTOR_COUNT = 3` is hardcoded in
   [app.js:153](../base-station/python/frontend/app.js#L153), duplicating
-  `MOTOR_IDS = (1, 2, 3)` in [run_demo.py:36](../motor-driver/run_demo.py#L36),
+  `MOTOR_IDS = (1, 2, 3)` in [motor_driver.py:36](../motor-driver/motor_driver.py#L36),
   with a comment conceding the copy. A factory with one motor sees three
   options, two of which are nonsense.
 - **The mapping is never verified.** An operator picks "Motor 2" from memory.
@@ -72,7 +72,7 @@ against a weak gate.
 - **The trip can only reach one asset.** The base station publishes to
   `epm/<node_id>/cmd` ([mqtt_publisher.py:71](../base-station/python/ingestion/mqtt_publisher.py#L71)),
   but the rig subscribes to exactly one node's topic
-  ([run_demo.py:194](../motor-driver/run_demo.py#L194), from a CLI arg). A
+  ([motor_driver.py:194](../motor-driver/motor_driver.py#L194), from a CLI arg). A
   second asset's trip is published into the void. Found while writing this
   plan; it is a real bug, not a design choice.
 - **The countdown hides.** "Tripping in 8s…" and **Hold** live in the expanded
@@ -219,10 +219,10 @@ The base station must stop guessing how many outputs exist.
 - The rig publishes a **retained** announce on connect: its output indices,
   and a name per output if it has one.
 - The base station stores it and serves it at `GET /trip_outputs`.
-- `TRIP_MOTOR_COUNT` is deleted from `app.js`. `MOTOR_IDS` in `run_demo.py`
+- `TRIP_MOTOR_COUNT` is deleted from `app.js`. `MOTOR_IDS` in `motor_driver.py`
   becomes the single source of truth, which it effectively already is — the
   rig already rejects unknown indices with "TRIP IGNORED: motor N is not on
-  this rig" ([run_demo.py:229](../motor-driver/run_demo.py#L229)); it simply
+  this rig" ([motor_driver.py:229](../motor-driver/motor_driver.py#L229)); it simply
   never told anyone.
 - Day one, one motor: exactly one candidate. Grows as the factory grows, with
   no dashboard change.
@@ -474,7 +474,7 @@ machine and needs live hardware to verify.
 | Confirm test misread — machine stopped by hand at the same moment | Require gate-confirmed RUNNING immediately before the stop is sent; a machine already stopped fails the precondition rather than reporting a false confirm |
 | Confirm test stops the wrong machine | That is the finding, not a failure — it is exactly what an unverified dropdown does silently today, only now it happens with the operator watching, once, on purpose |
 | Pooled conditions dull sensitivity | Accepted and stated (§2.3). Watch it on the real rig: compare `mu + 8σ` before and after adding a second condition |
-| Rig announce absent (older `run_demo.py`) | Fall back to the manual picker (§3.5) with an unconfirmed mapping — degrades to roughly today's behaviour, never blocks setup |
+| Rig announce absent (older `motor_driver.py`) | Fall back to the manual picker (§3.5) with an unconfirmed mapping — degrades to roughly today's behaviour, never blocks setup |
 | Setup state lost on restart | In-memory by design (§6); restart the step |
 | Regression in a commissioning path that currently works | R1/R2 are separable and separately verifiable on hardware; deadline is 23 Aug 2026, so land R1+R2 early and treat R3/R4 as stretch |
 | Tile loses its progress readout, operators feel blind | The step-number button is the compromise. Revisit only if it actually reads worse on real hardware |

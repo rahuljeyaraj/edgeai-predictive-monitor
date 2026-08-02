@@ -900,7 +900,7 @@ def create_app(registry: Registry, history_store: HistoryStore,
         """What the rig says it has, plus who already claims each output
         (docs/UNIFIED_COMMISSIONING_PLAN.md S3.2). An empty list is a normal
         answer -- no rig has announced (or it's running an older
-        run_demo.py), which is what setup's manual fallback covers."""
+        motor_driver.py), which is what setup's manual fallback covers."""
         outputs = app.state.trip_outputs.snapshot() if app.state.trip_outputs else []
         claimed = {entry.trip_motor_idx: node_id
                    for node_id, entry in app.state.registry.list().items()

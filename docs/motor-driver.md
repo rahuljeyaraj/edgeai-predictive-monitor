@@ -20,26 +20,64 @@ build/upload/usage instructions — this doc is the design rationale.
   X/Y/Z slot. Plug-and-play, mechanically rigid, needs almost no wiring.
 - **RPM control is fully doable** and needs no extra hardware — speed is
   just the step-pulse frequency generated in firmware.
-- **No potentiometer.** A pot only buys a physical "knob"; for a
-  predictive-maintenance demo, **serial/software speed control is better**
+- **No potentiometer.** A pot only buys a physical "knob"; for
+  predictive maintenance, **serial/software speed control is better**
   because runs are scripted, repeatable, and easy to label (baseline vs.
   fault).
 - **The firmware does not ramp.** It applies whatever RPM it's told
   immediately. Re-flashing the Uno needs a WSL round-trip (upload, detach,
   reconnect over serial), so the firmware is kept as small and stable as
   possible; all ramp/acceleration logic lives on the host, in
-  `dashboard.html` and `run_demo.py`. See §3.
+  `dashboard.html` and `motor_driver.py`. See §3.
 
-### Decoupled today, optionally coupled later
+### Decoupled, with exactly one narrow coupling
 Keep the motor rig's **control** path independent of the base-station/MQTT
 stack — the motors are the thing being *measured*, not part of the
-monitoring system, and this dashboard talks directly to the Uno over Web
-Serial with nothing else in the loop. The one deliberate, narrow exception
-under consideration is a **one-way safety stop**: predictive monitoring
-detects FAULT on a motor's sensor → tells the host to send `d` (disable) to
-that motor, so an AI-detected fault actually stops physical hardware. That
-coupling is speed/RPM-independent (stop only, never drives speed) and not
-yet built — see [MOTOR_STOP_PLAN.md](MOTOR_STOP_PLAN.md).
+monitoring system, and the control page talks directly to the Uno over Web
+Serial with nothing else in the loop.
+
+The one deliberate exception is a **one-way safety stop**: predictive
+monitoring detects FAULT on a motor's sensor → the rig host commands that
+motor to 0 RPM, so an AI-detected fault actually stops physical hardware.
+It is stop-only — nothing on the network can start a motor or set a speed —
+and it is built; see [MOTOR_STOP_PLAN.md](MOTOR_STOP_PLAN.md).
+
+### The rig host, and why the control page isn't a static file
+`motor-driver/motor_driver.py` is the process that owns the rig's *network*
+side: it listens for trips and **serves the control page**. That last part is
+not incidental.
+
+It deliberately does **not** hold the Uno's serial port by default. The
+control page has always driven the motors over Web Serial, and on the normal
+setup here the browser is the only thing that can reach the board at all —
+the rig host runs in WSL while Chrome and the USB device are on Windows.
+Forwarding the device into WSL with `usbipd` doesn't resolve that, it inverts
+it: Windows loses the device and the control page has nothing to connect to.
+
+So the split is: rig host = network and bookkeeping, control page = motors.
+A trip is *recorded* by the rig host and *applied* by the page. That is a
+real weakening — no page open, no protection — so the page says so, in the
+header while it holds the link and on the trip itself when it couldn't act.
+`--port` moves the port back to the rig host for browser-less protection or
+a scripted `--profile` run.
+
+The control page is a Web Serial page. It has no MQTT client, and this
+repo's broker is TCP-only (no websockets listener), so it cannot publish the
+rig's retained self-announce — which is what tells the base station how many
+trip outputs exist. Serving the page from the rig host makes that a
+same-origin HTTP hop instead: browser → `motor_driver.py` → retained
+announce. No broker change, no websockets listener, no root on the base
+station.
+
+That hop is what lets **installing a motor be a UI action**. The rig starts
+with one motor and empty `+ Add Motor` slots; filling one draws the card and
+re-announces, so a new trip output shows up in the base station's setup
+live. The same channel carries trips back the other way, so a tripped motor
+turns red on its own card instead of being visible only in the rig host's
+terminal.
+
+The page still works served statically — it just says so, and loses the
+install/protection/trip features it has nobody to ask about.
 
 ---
 
@@ -65,7 +103,8 @@ yet built — see [MOTOR_STOP_PLAN.md](MOTOR_STOP_PLAN.md).
   than zeroed) will restart the moment some *other* motor is started.
 
 - Microstepping set by the **MS0/MS1/MS2 jumpers** under each driver socket.
-  - No jumpers = full step (loudest / most vibration, good for a demo).
+  - No jumpers = full step (loudest / most vibration, and the most for a
+    vibration monitor to see).
   - All three jumpers = 1/16 (A4988) or 1/32 (DRV8825) microstep (smooth/quiet).
 
 ### Option B — Bare drivers + ESP32/ESP8266
@@ -108,33 +147,35 @@ serial to test). So the ramp moved entirely to the two things that talk to
 the firmware:
 - `motor-driver/dashboard.html` walks the commanded RPM toward the dialed-in
   target every ~100 ms, at a fixed RPM/s rate.
-- `motor-driver/run_demo.py` does the same for scripted runs.
+- `motor-driver/motor_driver.py` does the same for scripted runs.
 
 Both default to 150 RPM/s, the rate the old on-device governor used
 successfully. Tune it in either place, no re-flash needed.
 
-This also gives richer vibration signatures for the demo:
-- All 3 motors same RPM → strong single-frequency vibration.
-- Slightly different RPM → **beat frequency** (great "interesting signal" demo).
-- One steady + one changing → simulate a developing fault.
+It also gives richer vibration signatures once more than one motor is
+installed:
+- Motors at the same RPM → strong single-frequency vibration.
+- Slightly different RPM → **beat frequency**.
+- One steady + one changing → simulates a developing fault.
 
 ---
 
-## 4. Demo speed profile (predictive-maintenance framing)
+## 4. Capture speed profile (predictive-maintenance framing)
 
 Script the run so the captured data maps to labels the pipeline can learn/flag:
 
-1. **Warm-up / baseline** — all three motors steady, moderate RPM (e.g. 90
-   RPM), 30–60 s. This is "healthy machine."
+1. **Warm-up / baseline** — every installed motor steady, moderate RPM
+   (e.g. 90 RPM), 30–60 s. This is "healthy machine."
 2. **Speed sweep** — ramp 60 → 180 RPM slowly. Shows signature shifting with
    speed (useful for feature/robustness discussion).
-3. **Injected anomaly** — introduce an obvious change: RPM step on one
-   motor while the others hold, a brief disable, or add mechanical imbalance
+3. **Injected anomaly** — introduce an obvious change: an RPM step on one
+   motor while any others hold, a brief disable, or mechanical imbalance
    (tape a small weight or an eccentric mass to one shaft). This is the
    "fault" the monitor should catch.
 
-Serial control (via the dashboard or `run_demo.py`) makes these runs
-push-button and repeatable.
+Serial control makes these runs push-button and repeatable:
+`./start_motor_driver.sh --port <port> --profile` drives exactly this
+sequence over whichever motors are installed.
 
 ---
 

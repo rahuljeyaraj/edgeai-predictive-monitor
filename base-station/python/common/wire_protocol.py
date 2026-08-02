@@ -69,7 +69,7 @@ def encode_motor_stop_payload(motor_idx: int) -> bytes:
 def decode_motor_stop_payload(payload: bytes) -> int:
     """Returns motor_idx -- the inverse of encode_motor_stop_payload().
 
-    motor-driver/run_demo.py's trip listener deliberately re-implements this
+    motor-driver/motor_driver.py's trip listener deliberately re-implements this
     one-byte unpack locally instead of importing this module: it runs on a
     different machine entirely (the host laptop with the rig on USB), the same
     way the ESP32 satellite firmware re-declares this file's wire formats in

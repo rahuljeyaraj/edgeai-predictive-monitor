@@ -52,7 +52,7 @@ S9 pooled-conditions measurement are in §6.
 - `RegistryEntry.operating_conditions` records what the live model covers.
 
 ### R4 — Trip output mapping
-- The rig announces itself: `run_demo.py` publishes a **retained** JSON
+- The rig announces itself: `motor_driver.py` publishes a **retained** JSON
   `epm/<host>/outputs` on connect, and now subscribes to **`epm/+/cmd`**,
   routing on the payload's `motor_idx`. That fixes the real bug found while
   writing the plan (a second asset's trip was published into the void).
@@ -75,7 +75,7 @@ S9 pooled-conditions measurement are in §6.
 Changed: `registry/registry.py`, `pipeline/commissioning.py`,
 `pipeline/capture.py`, `api/commissioning_controller.py`, `api/app.py`,
 `protection/protection.py`, `ingestion/mqtt_subscriber.py`, `main.py`,
-`frontend/{app.js,index.html,style.css}`, `motor-driver/run_demo.py`.
+`frontend/{app.js,index.html,style.css}`, `motor-driver/motor_driver.py`.
 
 New: `api/setup_controller.py`, `protection/trip_outputs.py`,
 `frontend/setup.js`, `tests/setup_test.py`.
@@ -122,9 +122,9 @@ Everything in this list is now covered by §6 unless it says otherwise there.
   armed shield renders; the countdown line, Hold, and the trip-failed line are
   code-reviewed only.
 - **Confirm-by-stopping against the real rig** (unit-tested with a stub
-  publisher, never against `run_demo.py`).
+  publisher, never against `motor_driver.py`).
 - **The rig announce end to end** (parser and store are unit-tested; the actual
-  retained publish from `run_demo.py` has not been observed).
+  retained publish from `motor_driver.py` has not been observed).
 - **The stopped-baseline step with a genuinely stopped machine.** Locally it was
   measured on running sim data, which — correctly — then made the gate read
   every running frame as stopped. That is the module's documented failure mode,

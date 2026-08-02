@@ -223,7 +223,7 @@ const Setup = (() => {
 
     let outputsHtml;
     if (!state.tripOutputs.length) {
-      // No rig has announced (or it's running an older run_demo.py) -- this
+      // No rig has announced (or it's running an older motor_driver.py) -- this
       // is the S3.5 fallback, and it's stated plainly rather than dressed up
       // as a working test.
       const d = draft(nodeId);

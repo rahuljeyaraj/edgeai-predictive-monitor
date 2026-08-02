@@ -1,11 +1,11 @@
 /*
  * main.cpp — motor-driver firmware
  * -----------------------------------------------------------------------------
- * Three-stepper "rotating machine under test" for the edgeai-predictive-monitor
- * demo. The Uno only knows "spin this motor at this RPM, right now" — it does
+ * Three-stepper "rotating machine under test" for edgeai-predictive-monitor.
+ * The Uno only knows "spin this motor at this RPM, right now" — it does
  * NOT ramp. Any acceleration/deceleration profile (so a motor doesn't stall
  * jumping straight to a high speed) is the host's job: dashboard.html or
- * run_demo.py send a fast stream of intermediate RPM commands. Keeping the
+ * motor_driver.py send a fast stream of intermediate RPM commands. Keeping the
  * firmware this dumb means new ramp/speed behavior is a dashboard/script edit,
  * not a re-flash.
  *

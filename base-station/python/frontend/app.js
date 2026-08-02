@@ -150,7 +150,7 @@ const STATUS_LABEL = {
 
 // The hardcoded TRIP_MOTOR_COUNT that used to live here is gone
 // (docs/UNIFIED_COMMISSIONING_PLAN.md S3.2). It was a hand-copy of
-// motor-driver/run_demo.py's MOTOR_IDS, so a factory with one motor saw
+// motor-driver/motor_driver.py's MOTOR_IDS, so a factory with one motor saw
 // three options, two of which were nonsense. The rig announces its own
 // outputs now and setup.js reads them from GET /trip_outputs.
 
