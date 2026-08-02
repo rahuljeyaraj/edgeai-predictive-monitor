@@ -980,12 +980,14 @@ function hideCaptureSuggestions(input) {
 // it survives the innerHTML replace each poll does.
 const expandedNodeIds = new Set();
 
-// Which nodes have their "Waterfall" <details> open -- parallel to
-// expandedNodeIds, driving the `open` attribute Charts.detailBodyHtml()
-// renders (never left as native uncontrolled state, since
-// renderFleetList()'s innerHTML rebuild would silently reset it every 5s
-// poll otherwise). Waterfall is the only collapsible left: "Scalar values"
-// and "Raw signals" were both removed on 2026-08-01 (see charts.js).
+// Which nodes have their "Scalar values" / "Waterfall" <details> open --
+// parallel to expandedNodeIds, driving the `open` attribute
+// Charts.detailBodyHtml() renders (never left as native uncontrolled state,
+// since renderFleetList()'s innerHTML rebuild would silently reset it every
+// 5s poll otherwise). Both panels are Plotly-backed, so these Sets also gate
+// whether charts.js mounts their charts at all -- see attachExpanded().
+// ("Raw signals" was a third such panel until 2026-08-01, see charts.js.)
+const openScalarsIds = new Set();
 const openWaterfallIds = new Set();
 
 function motorRowHtml(entry) {
@@ -1095,6 +1097,7 @@ function motorRowHtml(entry) {
     <div class="motor-row__detail-main">
       ${protectionSectionHtml(entry)}
       ${Charts.detailBodyHtml(entry, {
+        scalarsOpen: openScalarsIds.has(entry.node_id),
         waterfallOpen: openWaterfallIds.has(entry.node_id),
       })}
     </div>
@@ -1117,7 +1120,7 @@ function renderFleetList(nodes) {
   // list, including any chart-slot placeholders -- reparent each expanded
   // node's persistent Plotly <div>s (which survived, since they're held by
   // charts.js, not by this markup) back into the fresh slots.
-  Charts.attachExpanded(expandedNodeIds, openWaterfallIds);
+  Charts.attachExpanded(expandedNodeIds, openScalarsIds, openWaterfallIds);
 }
 
 function toggleExpand(nodeId) {
@@ -1336,11 +1339,14 @@ document.getElementById("fleet-list").addEventListener("click", (e) => {
 // rendered/computed until expanded."
 document.getElementById("fleet-list").addEventListener("toggle", (e) => {
   if (!(e.target instanceof HTMLDetailsElement)) return;
-  const role = e.target.dataset.role; // "waterfall-details" -- the only one left
+  const role = e.target.dataset.role; // "scalars-details" | "waterfall-details"
   const nodeId = e.target.closest(".motor-row-group")?.dataset.nodeId;
-  if (!nodeId || role !== "waterfall-details") return;
-  if (e.target.open) openWaterfallIds.add(nodeId); else openWaterfallIds.delete(nodeId);
-  Charts.attachExpanded(expandedNodeIds, openWaterfallIds);
+  const set = role === "scalars-details" ? openScalarsIds
+    : role === "waterfall-details" ? openWaterfallIds
+    : null;
+  if (!nodeId || !set) return;
+  if (e.target.open) set.add(nodeId); else set.delete(nodeId);
+  Charts.attachExpanded(expandedNodeIds, openScalarsIds, openWaterfallIds);
 }, true);
 
 // ---------------------------------------------------------------------
@@ -1557,6 +1563,9 @@ async function pollNodes() {
     for (const nodeId of expandedNodeIds) {
       if (!(nodeId in state.lastNodes)) expandedNodeIds.delete(nodeId);
     }
+    for (const nodeId of openScalarsIds) {
+      if (!(nodeId in state.lastNodes)) openScalarsIds.delete(nodeId);
+    }
     for (const nodeId of openWaterfallIds) {
       if (!(nodeId in state.lastNodes)) openWaterfallIds.delete(nodeId);
     }
@@ -1599,6 +1608,7 @@ Charts.init((msg) => {
     lastWsTouchAt[msg.node_id] = Date.now();
     delete state.lastNodes[msg.node_id];
     expandedNodeIds.delete(msg.node_id);
+    openScalarsIds.delete(msg.node_id);
     openWaterfallIds.delete(msg.node_id);
     if (openRecordNodeId === msg.node_id) closeRecordDrawer();
   } else if (msg.type === "registry") {

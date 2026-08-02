@@ -1,18 +1,21 @@
 "use strict";
 /*
  * Per-asset live charts for the expanded fleet row (docs/CHART_CLUTTER_PLAN.md
- * §1): anomaly score chart, accel/mic spectrum charts, and the collapsible
- * waterfall panel. Loaded before app.js (see index.html) but only *called*
- * from event handlers that run after every top-level script has executed, so
- * the load order is safe.
+ * §1): anomaly score chart, accel/mic spectrum charts, and two collapsible
+ * panels (scalar trends, waterfall). Loaded before app.js (see index.html)
+ * but only *called* from event handlers that run after every top-level
+ * script has executed, so the load order is safe.
  *
- * Two sections were removed on 2026-08-01: "Raw signals" (the decimated
- * time-domain traces) and "Scalar values" (the 24 rms/kurtosis/std/peak/
- * crest_factor/skewness tiles). The firmware no longer streams time-domain
- * windows at all (sketch/fuser.cpp), so the first had no data source left;
- * the second was removed as raw numbers an operator doesn't act on. The
- * scalars still exist on the wire and still feed the model server-side --
- * they are simply not displayed.
+ * "Raw signals" (the decimated time-domain traces) was removed on
+ * 2026-08-01: the firmware no longer streams time-domain windows at all
+ * (sketch/fuser.cpp), so it had no data source left.
+ *
+ * "Scalar values" was briefly removed in that same pass and then rebuilt as
+ * a GRID OF TREND PLOTS rather than the 24 bare numeric tiles it used to be
+ * -- a single instantaneous number doesn't tell an operator whether a
+ * statistic is drifting, and drift is the whole reason these are in the
+ * feature vector. See SCALAR_STATS for why the grid groups by statistic
+ * rather than by channel.
  *
  * Buffers here are keyed by node_id in module-level objects, not attached to
  * any DOM node app.js's renderFleetList() rebuilds -- that rebuild replaces
@@ -40,15 +43,18 @@
  * it's kept live over /ws's "anomaly" broadcast (main.py's on_score) -- the
  * same per-frame push pattern as "spectrum".
  *
- * Waterfall is a native <details> collapsible, collapsed by default. It is
- * Plotly-backed and NOT mounted until first expanded
+ * Both collapsibles are native <details>, collapsed by default, and both
+ * are Plotly-backed, so NEITHER is mounted until first expanded
  * (docs/CHART_CLUTTER_PLAN.md §1.5's "not rendered/computed until
- * expanded") -- see mountWaterfallIfNeeded and its gating on the open-Set
- * app.js passes into attachExpanded(), not on whether the slot element
- * exists (a collapsed <details>'s children are still present in the DOM,
- * just not rendered -- mounting Plotly into a hidden/zero-size div is the
- * same failure mode already called out above for the row-collapse case,
- * just triggered by <details> collapse instead).
+ * expanded") -- see mountScalarIfNeeded/mountWaterfallIfNeeded and their
+ * gating on the open-Sets app.js passes into attachExpanded(), not on
+ * whether the slot element exists (a collapsed <details>'s children are
+ * still present in the DOM, just not rendered -- mounting Plotly into a
+ * hidden/zero-size div is the same failure mode already called out above
+ * for the row-collapse case, just triggered by <details> collapse
+ * instead). Note the scalar panel DID skip this gating in its old
+ * numeric-tile form, when it was plain innerHTML with no layout to
+ * measure; as charts it can't.
  */
 
 const Charts = (() => {
@@ -111,6 +117,36 @@ const Charts = (() => {
     mic: "#d95926",
   };
 
+  // Scalar trend grid: one plot per statistic, all four channels overlaid.
+  // Grouped by STATISTIC, not by channel, on purpose -- the diagnostic
+  // signal is directional (rms climbing on X while Y/Z stay flat is an
+  // imbalance, see fuser.cpp's compute_scalars() comment), and that only
+  // reads if the three accel axes share one plot's y-scale. Labels are
+  // plain English; the keys are telemetry_schema.json's wire names
+  // (rms_x/kurtosis_x/.../rms_mic) composed as `${key}_${suffix}`.
+  const SCALAR_STATS = [
+    { key: "rms", label: "RMS" },
+    { key: "kurtosis", label: "Kurtosis" },
+    { key: "std", label: "Std deviation" },
+    { key: "peak", label: "Peak" },
+    { key: "crest_factor", label: "Crest factor" },
+    { key: "skewness", label: "Skewness" },
+  ];
+
+  // Wire-name suffix -> the AXIS_COLORS identity it shares with the spectrum
+  // charts, so one axis reads as the same color everywhere on the page.
+  const SCALAR_CHANNELS = [
+    { suffix: "x", channel: "accel_x" },
+    { suffix: "y", channel: "accel_y" },
+    { suffix: "z", channel: "accel_z" },
+    { suffix: "mic", channel: "mic" },
+  ];
+
+  // Per-scalar ring buffer depth. Same point-capped idiom as the waterfall
+  // (not the anomaly chart's age-based retention -- these have no
+  // rangeslider to scrub back through, so a fixed live tail is enough).
+  const SCALAR_MAX_POINTS = 600;
+
   const RIDGE_TRACE_COUNT = 16;
   const RIDGE_X_SHIFT_PER_STEP = -0.4;
   const RIDGE_Y_SHIFT_FRACTION = 0.15;
@@ -133,6 +169,7 @@ const Charts = (() => {
 
   let ws = null;
   let expandedIds = new Set();
+  let scalarsOpenIds = new Set();
   let waterfallOpenIds = new Set();
   let registryHandler = null;
   let perfHandler = null;
@@ -208,6 +245,7 @@ const Charts = (() => {
         channels: [],
         liveSpectrum: {},   // accel_x/accel_y/accel_z/mic -> latest bins (model channels)
         spectrumMeta: {},   // mic/accel/accel_x/accel_y/accel_z -> {fs, fftSize}
+        scalarSeries: {},   // rms_x/kurtosis_x/.../skewness_mic -> [{t, v}] ring buffer (24 keys)
         waterfall: {},      // accel_x/accel_y/accel_z/mic -> [{t, bins}] ring buffer
         waterfallMode: "2d",
         anomaly: [],
@@ -221,6 +259,7 @@ const Charts = (() => {
         anomalyEl: null, anomalyMounted: false,
         accelSpectrumEl: null, accelSpectrumMounted: false,
         micSpectrumEl: null, micSpectrumMounted: false,
+        scalarEls: {}, scalarMounted: {},
         waterfallEls: {}, waterfallMounted: {},
 
         // Per-node thresholds + status, mirrored from registry data
@@ -243,6 +282,7 @@ const Charts = (() => {
     purge(node.anomalyEl);
     purge(node.accelSpectrumEl);
     purge(node.micSpectrumEl);
+    for (const el of Object.values(node.scalarEls)) purge(el);
     for (const el of Object.values(node.waterfallEls)) purge(el);
     delete nodes[nodeId];
     dirty.delete(nodeId);
@@ -320,6 +360,15 @@ const Charts = (() => {
     // rather than buffered for nothing.
     for (const [name, meta] of Object.entries(msg.spectrum_meta || {})) {
       node.spectrumMeta[name] = { fs: meta.fs, fftSize: meta.fft_size };
+    }
+    // Appended per key rather than replacing a latest-value object: these
+    // are trend charts now, so each scalar keeps its own history. A key
+    // absent from this frame simply doesn't advance -- it is never treated
+    // as a zero or a gap.
+    for (const [name, value] of Object.entries(msg.scalars || {})) {
+      if (typeof value !== "number") continue;
+      if (!node.scalarSeries[name]) node.scalarSeries[name] = [];
+      pushCapped(node.scalarSeries[name], { t: msg.timestamp, v: value }, SCALAR_MAX_POINTS);
     }
     dirty.add(msg.node_id);
   }
@@ -679,6 +728,52 @@ const Charts = (() => {
     return [traces, layout];
   }
 
+  // One statistic, up to four channel traces. Mic rides its own right-hand
+  // y-axis: its magnitude is orders away from the accelerometer's, and on a
+  // single shared scale it squashes all three accel traces into one flat
+  // line -- which is exactly the comparison this grid exists to show. The
+  // trace keeps AXIS_COLORS.mic (same hue as everywhere else on the page),
+  // and the right-hand axis is tinted to match so it's obvious which scale
+  // belongs to which trace.
+  function buildScalarFigure(nodeId, node, stat) {
+    const traces = [];
+    let hasMic = false;
+    for (const ch of SCALAR_CHANNELS) {
+      const rows = node.scalarSeries[`${stat.key}_${ch.suffix}`];
+      if (!rows || !rows.length) continue;
+      const isMic = ch.suffix === "mic";
+      if (isMic) hasMic = true;
+      traces.push({
+        type: "scatter", mode: "lines",
+        x: rows.map((r) => new Date(r.t * 1000)),
+        y: rows.map((r) => r.v),
+        line: { color: AXIS_COLORS[ch.channel], width: 1.5 },
+        name: ch.channel,
+        xaxis: "x", yaxis: isMic ? "y2" : "y",
+        hovertemplate: `${ch.channel} %{y:.4g}<extra></extra>`,
+      });
+    }
+    const layout = {
+      ...darkLayoutBase(),
+      uirevision: `${nodeId}-scalar-${stat.key}`,
+      height: 180,
+      margin: { l: 48, r: hasMic ? 48 : 16, t: 6, b: 26 },
+      showlegend: true,
+      legend: { orientation: "h", y: 1.28, font: smallFont() },
+      hovermode: "x unified",
+      xaxis: axisBase({ anchor: "y", nticks: 4, tickformat: "%H:%M:%S" }),
+      yaxis: axisBase({ anchor: "x" }),
+    };
+    if (hasMic) {
+      layout.yaxis2 = axisBase({
+        overlaying: "y", side: "right", showgrid: false,
+        tickfont: { ...smallFont(), color: AXIS_COLORS.mic },
+        linecolor: AXIS_COLORS.mic,
+      });
+    }
+    return [traces, layout];
+  }
+
   // 2D mode: same heatmap trace/transposeZ as before, plus zsmooth -- the
   // scoped fix for "reads as a blocky grid, not organic" (doc §4).
   function buildWaterfall2DFigure(nodeId, node, channel) {
@@ -770,6 +865,13 @@ const Charts = (() => {
       node.micSpectrumEl = document.createElement("div");
       node.micSpectrumEl.className = "chart-plotly";
     }
+    for (const stat of SCALAR_STATS) {
+      if (!node.scalarEls[stat.key]) {
+        const el = document.createElement("div");
+        el.className = "chart-plotly";
+        node.scalarEls[stat.key] = el;
+      }
+    }
     for (const channel of ALL_CHANNELS) {
       if (!node.waterfallEls[channel]) {
         const el = document.createElement("div");
@@ -777,6 +879,23 @@ const Charts = (() => {
         node.waterfallEls[channel] = el;
       }
     }
+  }
+
+  // Plotly-backed now (it was plain HTML tiles before), so it needs the same
+  // don't-mount-into-a-collapsed-<details> gating Waterfall already has --
+  // measuring layout in a hidden, zero-size div is the failure mode called
+  // out in the file docstring.
+  function mountScalarIfNeeded(nodeId, node, stat) {
+    const el = node.scalarEls[stat.key];
+    const [traces, layout] = buildScalarFigure(nodeId, node, stat);
+    if (!traces.length) {
+      el.innerHTML = `<div class="chart-placeholder">Waiting for data…</div>`;
+      node.scalarMounted[stat.key] = false;
+      return;
+    }
+    el.innerHTML = "";
+    Plotly.newPlot(el, traces, layout, SPECTRUM_CONFIG);
+    node.scalarMounted[stat.key] = true;
   }
 
   function mountWaterfallIfNeeded(nodeId, node, channel) {
@@ -816,8 +935,9 @@ const Charts = (() => {
     if (el.parentElement !== slot) slot.appendChild(el);
   }
 
-  function attachExpanded(expandedNodeIds, openWaterfallIds) {
+  function attachExpanded(expandedNodeIds, openScalarsIds, openWaterfallIds) {
     expandedIds = expandedNodeIds;
+    scalarsOpenIds = openScalarsIds;
     waterfallOpenIds = openWaterfallIds;
 
     for (const nodeId of expandedNodeIds) {
@@ -873,6 +993,14 @@ const Charts = (() => {
 
       if (node.classificationEl) node.classificationEl.innerHTML = buildClassificationHtml(node);
 
+      if (openScalarsIds.has(nodeId)) {
+        for (const stat of SCALAR_STATS) {
+          const slot = findSlot("chart-slot-scalar", nodeId, stat.key);
+          if (!slot) continue;
+          reparent(node.scalarEls[stat.key], slot);
+          mountScalarIfNeeded(nodeId, node, stat);
+        }
+      }
       if (openWaterfallIds.has(nodeId)) {
         for (const channel of ALL_CHANNELS) {
           const wfSlot = findSlot("chart-slot-waterfall", nodeId, channel);
@@ -907,6 +1035,16 @@ const Charts = (() => {
         Plotly.react(node.micSpectrumEl, traces, layout, SPECTRUM_CONFIG);
       }
 
+      if (scalarsOpenIds.has(nodeId)) {
+        for (const stat of SCALAR_STATS) {
+          if (!node.scalarMounted[stat.key]) {
+            mountScalarIfNeeded(nodeId, node, stat); // data may have arrived since the panel opened
+            continue;
+          }
+          const [traces, layout] = buildScalarFigure(nodeId, node, stat);
+          Plotly.react(node.scalarEls[stat.key], traces, layout, SPECTRUM_CONFIG);
+        }
+      }
       if (waterfallOpenIds.has(nodeId)) {
         for (const channel of ALL_CHANNELS) {
           if (!node.waterfallMounted[channel]) {
@@ -987,6 +1125,20 @@ const Charts = (() => {
         <div class="chart-section__title">Mic spectrum</div>
         ${chartSlotHtml("chart-slot-mic-spectrum", nodeId)}
       </div>`;
+    }
+
+    if (hasAccel || hasMic) {
+      html += `<details class="perf-tier" data-role="scalars-details" ${uiState.scalarsOpen ? "open" : ""}>
+        <summary class="perf-tier__header"><span class="perf-tier__chip">Scalar values</span></summary>
+        <div class="perf-tier__body">
+          <div class="scalar-grid">
+            ${SCALAR_STATS.map((stat) => `<div class="chart-section">
+              <div class="chart-section__title">${stat.label}</div>
+              ${chartSlotHtml("chart-slot-scalar", nodeId, stat.key)}
+            </div>`).join("")}
+          </div>
+        </div>
+      </details>`;
     }
 
     if (presentChannels.length) {

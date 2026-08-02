@@ -483,6 +483,11 @@ def main():
             # instead of plotting a raw, sample-rate-independent bin number.
             "spectrum_meta": {channel: {"fs": fs, "fft_size": fft_size}
                               for channel, (fs, fft_size) in frame.spectrum_meta.items()},
+            # The 24 per-channel time-domain statistics. Model input
+            # (features.py's scalar tail) AND the source for charts.js's
+            # scalar trend grid, which buffers each one's history client-side
+            # -- nothing about them is persisted server-side.
+            "scalars": frame.scalars,
         })
 
     spi_consumer = SpiConsumer(on_frame=on_frame)

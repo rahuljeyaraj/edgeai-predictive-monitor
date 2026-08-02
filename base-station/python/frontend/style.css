@@ -627,6 +627,18 @@ body {
   gap: 8px;
 }
 
+/* ---- Scalar trend grid: six plots (one per statistic), each overlaying
+   the four channels. auto-fit rather than a fixed 3 columns so the grid
+   reflows to 2 and then 1 across on narrower viewports without its own
+   media query -- 320px is about where a trend line with a legend and two
+   y-axes stops being readable. ---- */
+
+.scalar-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 16px;
+}
+
 /* ---- Fault classification bars -- Edge Impulse classifier's per-class
    confidence, a signal fully independent of NodeStatus (pipeline/manager.py
    never feeds it into status). Neutral single accent, deliberately NOT
