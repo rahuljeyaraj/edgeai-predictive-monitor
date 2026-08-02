@@ -36,11 +36,16 @@ _GREY_PAUSED = LedCommand(rgb="#717171", mode="const", period_ms=0)
 _GREY_OFFLINE = LedCommand(rgb="#4d4d4d", mode="const", period_ms=0)
 # Machinery-protection states (docs/MOTOR_STOP_PLAN.md).
 #
-# IDLE is pure-primary blue, following this file's own near-primary rule --
-# and blue rather than another grey because "switched off by an operator" is
-# a normal, healthy condition, while the greys above both mean "you are not
-# getting data from this node".
-_BLUE_IDLE = LedCommand(rgb="#0000ff", mode="const", period_ms=0)
+# IDLE is magenta -- not a grey, because "switched off by an operator" is a
+# normal condition while the greys above both mean "you are not getting data
+# from this node", and not blue either: it was pure blue #0000ff until
+# 2026-08-02, when it was reported on real hardware as indistinguishable from
+# _CYAN_NEW's blue-dominant cast. Magenta is still a full-strength two-channel
+# mix (R=B=255, G=0) so it obeys this file's near-primary rule -- the
+# dashboard's matching fuchsia (--color-idle #d946ef) is deliberately NOT
+# reused here, since its G=70 is exactly the weak-secondary case the module
+# docstring says washes out on an uncorrected WS2812.
+_MAGENTA_IDLE = LedCommand(rgb="#ff00ff", mode="const", period_ms=0)
 # TRIPPED reuses FAULT's red and differs only in strobe period: 200ms reads
 # as an urgent alarm, 1000ms as a deliberate, latched "I already acted".
 # Deliberately NOT a new mode -- const/breathe/strobe is the whole vocabulary
@@ -63,7 +68,7 @@ _LED_BY_STATUS = {
     NodeStatus.FAULT: _RED_FAULT_STROBE,
     NodeStatus.PAUSED: _GREY_PAUSED,
     NodeStatus.OFFLINE: _GREY_OFFLINE,
-    NodeStatus.IDLE: _BLUE_IDLE,
+    NodeStatus.IDLE: _MAGENTA_IDLE,
     NodeStatus.TRIPPED: _RED_TRIPPED_SLOW,
 }
 

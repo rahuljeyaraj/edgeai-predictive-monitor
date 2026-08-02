@@ -44,9 +44,13 @@ def main():
     assert fault.rgb == "#ff0000" and fault.mode == "strobe", fault
     print("fault maps to red strobe: PASS")
 
+    # Magenta since 2026-08-02, not blue: pure blue read the same as
+    # _CYAN_NEW on the real ring. Asserted against _CYAN_NEW too, since
+    # "tells those two apart" is the whole point of the value.
     idle = color_for(NodeStatus.IDLE)
-    assert idle == ("#0000ff", "const", 0), idle
-    print("idle maps to blue const: PASS")
+    assert idle == ("#ff00ff", "const", 0), idle
+    assert idle.rgb != color_for(NodeStatus.UNCOMMISSIONED).rgb, idle
+    print("idle maps to magenta const, distinct from new: PASS")
 
     # Same red as FAULT, distinguished only by a slower strobe -- an urgent
     # alarm vs a latched "already acted". Asserting the period explicitly
