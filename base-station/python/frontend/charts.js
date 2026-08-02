@@ -142,10 +142,19 @@ const Charts = (() => {
     { suffix: "mic", channel: "mic" },
   ];
 
-  // Per-scalar ring buffer depth. Same point-capped idiom as the waterfall
-  // (not the anomaly chart's age-based retention -- these have no
-  // rangeslider to scrub back through, so a fixed live tail is enough).
-  const SCALAR_MAX_POINTS = 600;
+  // Scalar trends are a fixed-width live tail, NOT an autoranged view of the
+  // whole buffer. With autorange the plot spends its first ~100s squeezing an
+  // ever-growing series into the same width -- everything compresses, then it
+  // abruptly starts scrolling once the ring buffer fills. Pinning the x-axis
+  // to [latest - WINDOW, latest] makes it scroll from the first frame and
+  // keeps the horizontal scale constant, so drift is actually comparable
+  // between two glances. Same fix (and same reason) as the anomaly chart's
+  // anomalyLiveRange -- see ANOMALY_WINDOW_SECONDS.
+  const SCALAR_WINDOW_SECONDS = 60;
+  // Retain a little past the window so the left edge is never a ragged gap.
+  const SCALAR_RETENTION_SECONDS = SCALAR_WINDOW_SECONDS + 10;
+  // Memory backstop only; SCALAR_RETENTION_SECONDS is what normally evicts.
+  const SCALAR_MAX_POINTS = 1200;
 
   const RIDGE_TRACE_COUNT = 16;
   const RIDGE_X_SHIFT_PER_STEP = -0.4;
@@ -196,11 +205,15 @@ const Charts = (() => {
   // `arr` is assumed sorted ascending by `t` (true for both call sites:
   // live pushes append newest-last, and the seed merge sorts before this
   // runs).
-  function trimAnomalyByAge(arr, latestT) {
+  function trimByAge(arr, latestT, retentionSeconds, maxPoints) {
     let i = 0;
-    while (i < arr.length && arr[i].t < latestT - ANOMALY_RETENTION_SECONDS) i++;
+    while (i < arr.length && arr[i].t < latestT - retentionSeconds) i++;
     if (i > 0) arr.splice(0, i);
-    if (arr.length > ANOMALY_MAX_POINTS) arr.splice(0, arr.length - ANOMALY_MAX_POINTS);
+    if (arr.length > maxPoints) arr.splice(0, arr.length - maxPoints);
+  }
+
+  function trimAnomalyByAge(arr, latestT) {
+    trimByAge(arr, latestT, ANOMALY_RETENTION_SECONDS, ANOMALY_MAX_POINTS);
   }
 
   function clamp01(x) {
@@ -368,7 +381,9 @@ const Charts = (() => {
     for (const [name, value] of Object.entries(msg.scalars || {})) {
       if (typeof value !== "number") continue;
       if (!node.scalarSeries[name]) node.scalarSeries[name] = [];
-      pushCapped(node.scalarSeries[name], { t: msg.timestamp, v: value }, SCALAR_MAX_POINTS);
+      const rows = node.scalarSeries[name];
+      rows.push({ t: msg.timestamp, v: value });
+      trimByAge(rows, msg.timestamp, SCALAR_RETENTION_SECONDS, SCALAR_MAX_POINTS);
     }
     dirty.add(msg.node_id);
   }
@@ -484,6 +499,12 @@ const Charts = (() => {
 
   function smallFont() {
     return { family: FONT_FAMILY, color: TEXT_COLOR, size: 10 };
+  }
+
+  // The scalar grid packs six plots side by side, so its ticks/legend are the
+  // page's most crowded text -- smallFont()'s 10px is unreadable there.
+  function scalarFont() {
+    return { family: FONT_FAMILY, color: TEXT_COLOR, size: 12 };
   }
 
   function axisBase(extra) {
@@ -738,36 +759,50 @@ const Charts = (() => {
   function buildScalarFigure(nodeId, node, stat) {
     const traces = [];
     let hasMic = false;
+    let latestT = null;
     for (const ch of SCALAR_CHANNELS) {
       const rows = node.scalarSeries[`${stat.key}_${ch.suffix}`];
       if (!rows || !rows.length) continue;
       const isMic = ch.suffix === "mic";
       if (isMic) hasMic = true;
+      const tail = rows[rows.length - 1].t;
+      if (latestT === null || tail > latestT) latestT = tail;
       traces.push({
         type: "scatter", mode: "lines",
         x: rows.map((r) => new Date(r.t * 1000)),
         y: rows.map((r) => r.v),
-        line: { color: AXIS_COLORS[ch.channel], width: 1.5 },
+        // spline for the same reason the spectrum charts use it: these are
+        // samples of a continuous physical quantity, and the polyline's
+        // corners read as structure that isn't in the signal.
+        line: { shape: "spline", smoothing: 0.9, color: AXIS_COLORS[ch.channel], width: 2 },
         name: ch.channel,
         xaxis: "x", yaxis: isMic ? "y2" : "y",
         hovertemplate: `${ch.channel} %{y:.4g}<extra></extra>`,
       });
     }
+    // Fixed-width live tail (see SCALAR_WINDOW_SECONDS). Null until the first
+    // frame lands, which leaves Plotly autoranging an empty plot -- fine.
+    const range = latestT === null
+      ? undefined
+      : [new Date((latestT - SCALAR_WINDOW_SECONDS) * 1000), new Date(latestT * 1000)];
     const layout = {
       ...darkLayoutBase(),
       uirevision: `${nodeId}-scalar-${stat.key}`,
-      height: 180,
-      margin: { l: 48, r: hasMic ? 48 : 16, t: 6, b: 26 },
+      height: 260,
+      margin: { l: 56, r: hasMic ? 56 : 16, t: 4, b: 30 },
       showlegend: true,
-      legend: { orientation: "h", y: 1.28, font: smallFont() },
+      legend: { orientation: "h", y: 1.16, font: scalarFont() },
       hovermode: "x unified",
-      xaxis: axisBase({ anchor: "y", nticks: 4, tickformat: "%H:%M:%S" }),
-      yaxis: axisBase({ anchor: "x" }),
+      xaxis: axisBase({
+        anchor: "y", fixedrange: true, range,
+        nticks: 5, tickformat: "%H:%M:%S", tickfont: scalarFont(),
+      }),
+      yaxis: axisBase({ anchor: "x", fixedrange: true, tickfont: scalarFont(), nticks: 6 }),
     };
     if (hasMic) {
       layout.yaxis2 = axisBase({
-        overlaying: "y", side: "right", showgrid: false,
-        tickfont: { ...smallFont(), color: AXIS_COLORS.mic },
+        overlaying: "y", side: "right", showgrid: false, fixedrange: true, nticks: 6,
+        tickfont: { ...scalarFont(), color: AXIS_COLORS.mic },
         linecolor: AXIS_COLORS.mic,
       });
     }
