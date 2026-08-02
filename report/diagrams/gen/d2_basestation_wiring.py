@@ -31,15 +31,15 @@ c.box(444, 162, 292, 250, "STM32U585",
 c.box(444, 462, 292, 142, "QRB2210",
       ["Debian Linux, quad-core", "", "models, registry, dashboard"], role="brain", title_size=16)
 
-c.link([(302, 214), (444, 214)], label="SPI1 · D13 / D12 / D11 + CS D8 + INT D9")
-c.link([(302, 372), (373, 372), (373, 318), (444, 318)], label="SAI1 · PB10 / PB9 / PC1")
-c.link([(302, 516), (373, 516), (373, 388), (444, 388)], label="PB0 · TIM3_CH3 + DMA")
+c.link([(302, 214), (444, 214)], label="SPI1 + data-ready INT")
+c.link([(302, 372), (373, 372), (373, 318), (444, 318)], label="SAI1 · I²S")
+c.link([(302, 516), (373, 516), (373, 388), (444, 388)], label="timer + DMA", label_side="left")
 
-c.link([(534, 412), (534, 462)], label="LPUART1 · 500 kbaud", both=True)
+c.link([(534, 412), (534, 462)], label="LPUART1 · 500 k", both=True, label_side="left")
 c.link([(652, 412), (652, 462)], label="SPI · ~40 MHz", both=True)
 
 c.box(864, 182, 282, 84, "8×13 LED matrix", ["already on the UNO Q"], role="tell")
-c.box(864, 300, 282, 84, "USB-UART console", ["USART1 · D0 / D1, debug only"], role="ghost")
+c.box(864, 300, 282, 84, "USB-UART console", ["debug only"], role="ghost")
 c.box(864, 470, 282, 126, "Wi-Fi",
       ["dashboard on :8080", "MQTT broker for satellites", "epm-base.local"], role="brain")
 

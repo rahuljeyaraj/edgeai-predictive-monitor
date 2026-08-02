@@ -33,8 +33,8 @@ c.box(500, 322, 320, 62, "Healthy", role="tell", title_size=16)
 c.box(500, 404, 320, 62, "Warning", role="warn", title_size=16)
 c.box(500, 486, 320, 62, "Fault", role="act", title_size=16)
 
-c.link([(670, 214), (800, 214), (800, 280)], label="first model saved")
-c.link([(500, 353), (420, 353), (420, 238), (395, 238), (395, 214)], label="Recommission")
+c.link([(670, 214), (800, 214), (800, 280)], label="first model saved", label_seg=1)
+c.link([(500, 353), (420, 353), (420, 238), (395, 238), (395, 214)], label="Recommission", label_side="left", label_dy=-20)
 
 # ---- machine not turning, and the two ways that happens ------------------
 c.box(930, 322, 200, 62, "Idle", role="sense", title_size=16)
@@ -43,12 +43,12 @@ c.box(930, 640, 200, 62, "Offline", role="ghost", title_size=16)
 c.box(500, 640, 320, 62, "Paused", role="ghost", title_size=16)
 
 c.link([(820, 353), (930, 353)], label="a person stopped it",
-       both=True, label_dy=-17, label_size=10.5)
+       both=True, label_dy=-30, label_size=10.5)
 c.link([(820, 517), (930, 517)], label="we stopped it",
-       kind="arrowAct", width=2.2, label_dy=-17, label_size=10.5)
-c.link([(660, 580), (660, 640)], label="Pause / Resume", label_dx=102, both=True)
+       kind="arrowAct", width=2.2, label_dy=-30, label_size=10.5)
+c.link([(660, 580), (660, 640)], label="Pause / Resume", both=True)
 c.link([(850, 580), (884, 580), (884, 671), (930, 671)],
-       label="silent 30 s", kind="arrowSoft", dashed=True, label_dx=76, label_size=10.5)
+       label="silent 30 s", kind="arrowSoft", dashed=True, label_size=10.5)
 
 # ---- reading key (also keeps the left half from going empty) ------------
 c.box(34, 300, 384, 262, "Reading this diagram",

@@ -45,10 +45,14 @@ c.box(880, 470, 406, 130, "Motor-driver rig",
       ["Arduino Uno + CNC Shield V3", "3 × A4988 · 3 × NEMA-17",
        "per-motor stop, latched until cleared"], role="act", title_size=16)
 
-c.link([(744, 400), (812, 400), (812, 206), (880, 206)], label="WebSocket")
-c.link([(744, 430), (830, 430), (830, 300), (880, 300)], label="Bot API")
-c.link([(744, 462), (846, 462), (846, 394), (880, 394)], label="STATUS_LED")
+c.link([(744, 400), (812, 400), (812, 206), (880, 206)], label="WebSocket",
+       label_seg=0, label_dx=8)
+c.link([(744, 430), (830, 430), (830, 300), (880, 300)], label="Bot API",
+       label_seg=0, label_dx=8)
+c.link([(744, 462), (846, 462), (846, 394), (880, 394)], label="STATUS_LED",
+       label_seg=0, label_dx=8)
 c.link([(744, 522), (812, 522), (812, 535), (880, 535)],
-       label="MQTT · STOP motor N", kind="arrowAct", width=2.4)
+       label="STOP motor N", kind="arrowAct", width=2.4, label_seg=0,
+       label_dx=42, label_dy=-13)
 
 save(c, "05-full-architecture")

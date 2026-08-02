@@ -13,6 +13,12 @@ Design rules this library enforces (rather than leaving to each script):
     top of an arrowhead).
   * Text width is estimated (`text_width`) so legend chips, edge labels and
     label backplates are sized to their content instead of to a guess.
+  * An edge label hangs *beside* its segment, never on top of it (above a
+    horizontal run, alongside a vertical one). A backplate centred on the
+    line hides the line, and on a short segment hides the arrowhead too --
+    which is what made the first-generation wiring diagrams look like they
+    had no arrows at all. `label_side` and `label_seg` pick the side and the
+    segment when the default lands somewhere crowded.
   * Edges route orthogonally by default (`elbow`). Diagonal lines through a
     block diagram read as sketchy and are the other thing that made the
     first generation collide with its own labels.
@@ -221,20 +227,27 @@ class Canvas:
         "arrowSoft": "#8C9AA8", "arrowTell": "#237A41",
     }
 
-    def _edge_label(self, x, y, label, size=11, colour=INK, align="middle"):
+    def _edge_label(self, x, y, label, size=11, colour=INK, anchor="middle"):
+        """Backplated caption. `x` is the anchor point; the plate is placed to
+        match, so callers can hang a label off the side of a line."""
         w = text_width(label, size) + 12
         h = size + 9
-        lx = x - w / 2 if align == "middle" else x
+        if anchor == "middle":
+            lx, tx = x - w / 2, x
+        elif anchor == "start":
+            lx, tx = x, x + 6
+        else:
+            lx, tx = x - w, x - 6
         self.parts.append(
             f'<rect x="{lx:.1f}" y="{y - h / 2:.1f}" width="{w:.1f}" height="{h:.1f}" '
             f'rx="4" fill="{PAPER}" opacity="0.94"/>'
         )
-        self.text(x if align == "middle" else x + 6, y + size * 0.35, label,
-                  size=size, anchor=align if align == "middle" else "start",
+        self.text(tx, y + size * 0.35, label, size=size, anchor=anchor,
                   fill=colour)
 
     def link(self, pts, label=None, kind="arrow", width=1.7, dashed=False,
-             label_at=0.5, label_dx=0, label_dy=0, both=False, label_size=11):
+             label_at=0.5, label_dx=0, label_dy=0, both=False, label_size=11,
+             label_side="auto", label_seg=None):
         """Polyline edge through `pts` (list of (x, y)), arrowhead at the end.
         Points are taken literally, so callers control routing exactly."""
         colour = self.ARROW_COLOURS[kind]
@@ -248,17 +261,30 @@ class Canvas:
             f'{start} marker-end="url(#{kind})"/>'
         )
         if label:
-            # Place the label on the longest segment, at `label_at` along it,
-            # so it never lands on a corner or an arrowhead.
+            # Pick the longest segment, so the label never lands on a corner,
+            # then hang it *beside* that segment rather than on top of it. A
+            # backplate sitting on the line hides the line and, on a short
+            # segment, swallows the arrowhead outright.
             best, best_len = 0, -1
             for i in range(len(pts) - 1):
                 seg = abs(pts[i + 1][0] - pts[i][0]) + abs(pts[i + 1][1] - pts[i][1])
                 if seg > best_len:
                     best, best_len = i, seg
+            if label_seg is not None:
+                best = label_seg
             (x1, y1), (x2, y2) = pts[best], pts[best + 1]
-            lx = x1 + (x2 - x1) * label_at + label_dx
-            ly = y1 + (y2 - y1) * label_at + label_dy
-            self._edge_label(lx, ly, label, size=label_size,
+            lx = x1 + (x2 - x1) * label_at
+            ly = y1 + (y2 - y1) * label_at
+            clear = (label_size + 9) / 2 + 4
+            side = label_side
+            if abs(x2 - x1) >= abs(y2 - y1):
+                anchor = "middle"
+                ly += clear if side == "below" else -clear
+            else:
+                anchor = "end" if side == "left" else "start"
+                lx += -7 if anchor == "end" else 7
+            self._edge_label(lx + label_dx, ly + label_dy, label,
+                             size=label_size, anchor=anchor,
                              colour=colour if kind == "arrowAct" else INK)
 
     def elbow(self, a, b, label=None, kind="arrow", frac=0.5, gap=0, **kw):

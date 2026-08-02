@@ -63,6 +63,11 @@ generation of these diagrams had:
 * **Measured text.** `text_width()` estimates rendered width, so legend chips,
   edge labels and group labels are sized to their content. Under-measuring is
   what let a group's dashed border cut straight through its own title.
+* **Labels beside lines, not on them.** `link()` hangs an edge label above a
+  horizontal segment or alongside a vertical one, so the line and its
+  arrowhead stay visible — a backplate centred on a short segment used to
+  swallow the arrow whole. `label_side` and `label_seg` override the side and
+  the segment when the default lands on something.
 * **Orthogonal routing.** `link()` takes explicit points and `elbow()` jogs on
   one axis. Diagonals through a block diagram read as sketchy, and were the main
   source of label collisions.
