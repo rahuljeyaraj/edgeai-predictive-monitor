@@ -40,8 +40,17 @@ for f in d*.py; do ../.venv/bin/python "$f"; done
 | `gen/d5_full_architecture.py` | `05-full-architecture.png` | Ch. 9 |
 | `gen/d6_asset_lifecycle.py` | `06-asset-lifecycle.png` | Ch. 8 |
 | `gen/d7_trip_sequence.py` | `07-trip-sequence.png` | Ch. 7 |
-| `gen/d8_dashboard_anatomy.py` | `08-dashboard-anatomy.png` | Ch. 8 |
+| `gen/d8_dashboard_anatomy.py` | `08-dashboard-anatomy.png` | Ch. 9 |
 | `gen/d9_onboarding.py` | `09-onboarding.png` | Ch. 4 |
+| `gen/d10_setup_flow.py` | `10-setup-flow.png` | Ch. 5 |
+| `gen/d11_edge_impulse_flow.py` | `11-edge-impulse-flow.png` | Ch. 7 |
+| `gen/d12_software_architecture.py` | `12-software-architecture.png` | Ch. 10 |
+| `gen/d13_tab_map.py` | `13-dashboard-tabs.png` | Ch. 9 |
+| `gen/d14_two_brains.py` | `14-two-brains.png` | Ch. 2 |
+
+Note the chapter column moved when the report gained a dedicated Edge Impulse
+chapter — `06-asset-lifecycle` and `08-dashboard-anatomy` are both Ch. 9 now,
+and `07-trip-sequence` is Ch. 8.
 
 ## What `diagram_lib.py` enforces
 
