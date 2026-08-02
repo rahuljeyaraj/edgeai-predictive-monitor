@@ -23,6 +23,18 @@ Bodies by data_kind (ids from telemetry_schema.DATA_KIND):
   TIME_SERIES  : fs f32, sample_count u16, samples[sample_count] f32
                  (in the enum for completeness; nothing emits it yet)
 
+SPECTRUM frequency convention -- fs / fft_size is one *wire* bin's width, so
+fft_size is NOT the sender's native FFT length whenever it pools bins down
+before sending (fuser.cpp divides it by the pooling factor to keep this
+identity true). Senders also discard DC, so bin k covers the band
+
+    (k * fs / fft_size, (k + 1) * fs / fft_size]
+
+-- there is no 0 Hz bin on the wire, and k * fs / fft_size is a bin's lower
+edge, not its frequency. Reading it as the frequency put the first bin at
+0 Hz and the whole axis one bin low, a real error against a tone generator
+(2026-08-02); charts.js binFreqsFor() plots the band centre instead.
+
 The semantic meaning of a source_id/channel_id lives only in the schema
 (telemetry_schema.py, generated from telemetry_schema.json) -- this codec
 carries opaque numbers. decode_frame() resolves channel_id -> SensorChannel

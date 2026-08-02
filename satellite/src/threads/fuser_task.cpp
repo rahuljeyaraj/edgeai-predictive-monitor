@@ -37,8 +37,9 @@
  * fuser_pool_spectrum(): keeps a real node's per-frame payload size (and
  * therefore MQTT bandwidth) bounded regardless of how fine the on-device FFT
  * resolution is. fft_size travels on the wire already scaled down to match
- * (dashboard frequency-axis math divides by it directly, charts.js) - this
- * bit the base station itself once (an unscaled fft_size compressed its
+ * (it means "the FFT length whose bin width matches these bins", and the
+ * dashboard's bin-width math divides by it directly, charts.js) - this bit
+ * the base station itself once (an unscaled fft_size compressed its
  * displayed frequency range 4x), so it's applied here from the start.
  */
 

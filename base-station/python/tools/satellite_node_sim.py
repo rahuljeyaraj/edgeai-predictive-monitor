@@ -365,10 +365,11 @@ def spectrum_freqs(spectrum: ChannelSpectrum, bandwidth_hz: float):
     """Frequency for each bin of a ChannelSpectrum, evenly spanning
     0..bandwidth_hz across however many bins are actually present.
 
-    Real firmware's own wire convention is bin i = (i+1)*fs/fft_size
-    (common/telemetry_frame.py's docstring) -- exact there because real
-    hardware always sends its one fixed natural bin count (no further
-    pooling below it, ever). That formula breaks once bin_count is
+    Bin i covers the band (i, i+1) * fs/fft_size and is plotted at its
+    centre, matching the dashboard's own charts.js binFreqsFor() (see
+    common/telemetry_frame.py's SPECTRUM frequency convention -- DC is
+    never on the wire, so a bin's lower edge is not its frequency). The
+    fs/fft_size form breaks once bin_count is
     downsampled below the natural resolution, which only this sim's own
     --accel-bin-count/--mic-bin-count knobs can do: it silently reports a
     frequency span 1/downsample-factor too narrow, squeezing the real
@@ -381,7 +382,7 @@ def spectrum_freqs(spectrum: ChannelSpectrum, bandwidth_hz: float):
     (drawing the local plot); not part of the wire payload itself, which
     still sends fs/fft_size/bin_count faithfully."""
     n = len(spectrum.bins)
-    return [(i + 1) * bandwidth_hz / n for i in range(n)]
+    return [(i + 0.5) * bandwidth_hz / n for i in range(n)]
 
 
 def _spectrum_for_ui(spectrum, bandwidth_hz) -> dict:

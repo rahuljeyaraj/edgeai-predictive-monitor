@@ -420,10 +420,12 @@ static void fuser_thread_entry(void *p1, void *p2, void *p3) {
 #if !FUSER_RAW_CAPTURE_MODE
   /* mic/accel_x/y/z go out pooled FUSER_MODEL_DOWNSAMPLE_FACTOR:1 (see
    * fuser_pool_spectrum()) -- fft_size on the wire must shrink by the same
-   * factor, or the dashboard's k*fs/fft_size frequency-axis math (charts.js)
-   * treats each pooled (wider) bin as if it were still one of the original
-   * narrow bins, compressing the whole displayed range by that factor (e.g.
-   * mic's real 0-24kHz span was rendering as 0-6kHz before this fix). The
+   * factor, or the dashboard's fs/fft_size bin-width math (charts.js) treats
+   * each pooled (wider) bin as if it were still one of the original narrow
+   * bins, compressing the whole displayed range by that factor (e.g. mic's
+   * real 0-24kHz span was rendering as 0-6kHz before this fix). So fft_size
+   * on the wire means "the FFT length whose bin width matches these bins",
+   * NOT the native FFT length -- charts.js reads it as exactly that. The
    * combined `accel` channel stays unpooled, so it keeps the un-divided
    * accel_fft. */
   uint16_t mic_fft_pooled = mic_fft / FUSER_MODEL_DOWNSAMPLE_FACTOR;

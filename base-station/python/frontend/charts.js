@@ -671,12 +671,36 @@ const Charts = (() => {
 
   // bins carry no frequency info of their own -- k is just an index into
   // whatever FFT the firmware ran. node.spectrumMeta (wire-sourced fs/fft_size,
-  // see SensorFrame.spectrum_meta) is what turns that into an actual
-  // frequency (k * fs / fft_size); fall back to a bare bin index if a chart
-  // ever renders before the first frame's metadata has arrived.
-  function freqStepFor(node, name) {
+  // see SensorFrame.spectrum_meta) is what turns that into an actual frequency.
+  // fft_size on the wire is the *pooled* value (fuser.cpp divides it by the
+  // pooling factor before sending), so fs/fft_size is exactly one wire bin's
+  // width -- call it W.
+  //
+  // The bin's frequency is NOT k*W. Firmware discards DC before sending
+  // anything (accel_fft_magnitude()/mic_fft_magnitude() write native bin k+1
+  // into slot k), and then average-pools P native bins into each wire bin, so
+  // wire bin k covers the half-open native band (k*W, (k+1)*W] -- there is no
+  // 0 Hz bin on the wire at all. Plotting it at k*W pinned the first bin to
+  // 0 Hz and read a whole wire bin low across the axis; that showed up as a
+  // wrong frequency against a tone generator (2026-08-02). Plot each bin at
+  // the centre of the band it actually covers instead.
+  //
+  // Residual: the exact centre is (k + 0.5 + 1/(2P))*W, i.e. this sits half a
+  // *native* bin (fs/2*nativeFftSize -- 6.25 Hz accel, 23 Hz mic) low. P isn't
+  // recoverable from the wire: the pooled fft_size hides it, and bin_count
+  // can't stand in for it because mic truncates its native bins (only the
+  // useful <24kHz half of 1024 is ever pooled, mic_sampler.cpp). Fixing that
+  // last fraction of a bin needs a real per-bin frequency on the wire; it is
+  // far below the 50 Hz / 187.5 Hz bin width either chart can resolve.
+  //
+  // Returns one frequency per bin, or null if metadata hasn't arrived yet (a
+  // chart can render before the first frame), in which case callers plot bare
+  // bin indices.
+  function binFreqsFor(node, name, binCount) {
     const meta = node.spectrumMeta[name];
-    return meta && meta.fftSize ? meta.fs / meta.fftSize : null;
+    if (!meta || !meta.fftSize || !binCount) return null;
+    const width = meta.fs / meta.fftSize;
+    return Array.from({ length: binCount }, (_, k) => (k + 0.5) * width);
   }
 
   // Per-axis only -- the fused/combined `accel` channel (old single-line
@@ -687,7 +711,7 @@ const Charts = (() => {
     const axisNames = ["accel_x", "accel_y", "accel_z"].filter((n) => node.liveSpectrum[n]);
     const traces = [];
     const layout = { ...darkLayoutBase(), uirevision: nodeId, height: 190 };
-    let freqStep = null;
+    let haveFreq = false;
 
     if (axisNames.length) {
       layout.showlegend = true;
@@ -695,14 +719,14 @@ const Charts = (() => {
       axisNames.forEach((name) => {
         const bins = node.liveSpectrum[name];
         const color = AXIS_COLORS[name];
-        const step = freqStepFor(node, name);
-        if (step && !freqStep) freqStep = step;
+        const freqs = binFreqsFor(node, name, bins.length);
+        if (freqs) haveFreq = true;
         traces.push({
           type: "scatter", mode: "lines",
-          x: bins.map((_, k) => (step ? k * step : k)), y: bins,
+          x: freqs || bins.map((_, k) => k), y: bins,
           line: { shape: "spline", color, width: 1.5 },
           xaxis: "x", yaxis: "y", name,
-          hovertemplate: step
+          hovertemplate: freqs
             ? `${name} %{x:.0f} Hz: %{y:.3f}<extra></extra>`
             : `${name} bin %{x}: %{y:.3f}<extra></extra>`,
         });
@@ -711,7 +735,7 @@ const Charts = (() => {
 
     layout.xaxis = axisBase({
       anchor: "y", fixedrange: true,
-      title: { text: freqStep ? "Frequency (Hz)" : "Frequency bin", font: smallFont() },
+      title: { text: haveFreq ? "Frequency (Hz)" : "Frequency bin", font: smallFont() },
     });
     // tozero: magnitudes never go negative, but Plotly's default "normal"
     // autorange still pads a bit below the data min, so the 0 gridline ends
@@ -723,14 +747,14 @@ const Charts = (() => {
   function buildMicSpectrumFigure(nodeId, node) {
     const bins = node.liveSpectrum.mic || [];
     const color = AXIS_COLORS.mic;
-    const step = freqStepFor(node, "mic");
+    const freqs = binFreqsFor(node, "mic", bins.length);
     const traces = [{
       type: "scatter", mode: "lines",
-      x: bins.map((_, k) => (step ? k * step : k)), y: bins,
+      x: freqs || bins.map((_, k) => k), y: bins,
       line: { shape: "spline", color, width: 1.5 },
       fill: "tozeroy", fillcolor: hexToRgba(color, 0.15),
       xaxis: "x", yaxis: "y", name: "mic",
-      hovertemplate: step
+      hovertemplate: freqs
         ? "mic %{x:.0f} Hz: %{y:.3f}<extra></extra>"
         : "mic bin %{x}: %{y:.3f}<extra></extra>",
     }];
@@ -741,8 +765,8 @@ const Charts = (() => {
         // mic's range runs 0-24kHz (vs. accel's 0-800Hz) -- Plotly's default
         // tick spacing on a range that wide lands on bare 5kHz marks, too
         // sparse to read intermediate values off. 2kHz gives ~12 ticks.
-        dtick: step ? 2000 : undefined,
-        title: { text: step ? "Frequency (Hz)" : "Frequency bin", font: smallFont() },
+        dtick: freqs ? 2000 : undefined,
+        title: { text: freqs ? "Frequency (Hz)" : "Frequency bin", font: smallFont() },
       }),
       yaxis: axisBase({ anchor: "x", fixedrange: true, rangemode: "tozero" }),
     };
