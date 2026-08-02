@@ -236,6 +236,60 @@ def test_already_stopped_machine_confirms_instantly_via_query():
     print("a machine already stopped before the trip fires confirms instantly via the live query: PASS")
 
 
+def test_one_stop_reported_twice_is_decided_once():
+    """The IDLE-vs-TRIPPED race. A single stop reaches on_motor_state from two
+    threads -- the ingestion thread one frame after the gate flips, and
+    _fire_trip's own re-query of that same gate. Whichever loses used to see
+    awaiting_confirm already cleared, call the stop an operator's, and write
+    IDLE; because the registry write happens outside the lock, that IDLE could
+    land before the winner's TRIPPED and leave the node stuck IDLE (TRIPPED is
+    only legal from FAULT). Same trip, different answer per run.
+
+    Asserted on the set_status *attempts* rather than the final status, since
+    whether the stray IDLE actually landed was the coin flip."""
+    registry, protection, published = build(trip_motor_idx=1)
+    attempted = []
+    real_set_status = registry.set_status
+    registry.set_status = lambda node_id, s: (attempted.append(s),
+                                               real_set_status(node_id, s))[1]
+
+    registry.set_status(NODE_ID, NodeStatus.FAULT)
+    time.sleep(TRIP_DELAY_S + SETTLE_S)
+    assert published == [1], published
+
+    attempted.clear()
+    protection.on_motor_state(NODE_ID, running=False)
+    protection.on_motor_state(NODE_ID, running=False)
+
+    assert attempted == [NodeStatus.TRIPPED], attempted
+    assert status(registry) == NodeStatus.TRIPPED, status(registry)
+    print("one stop reported by both sources is decided once, as TRIPPED: PASS")
+
+
+def test_confirmation_arriving_after_the_window_still_reads_tripped():
+    """The confirm window is short (3s live) next to a gate that needs
+    debounce_frames of agreement at ~2fps on a bridge that can stall for
+    seconds, so a real trip regularly confirms just late. Late is not absent:
+    the machine we asked to stop did stop, so it reads TRIPPED. Reporting IDLE
+    there would credit an operator with a stop this system performed."""
+    registry, protection, published = build(
+        trip_motor_idx=1, confirm_window_s=SHORT_CONFIRM_WINDOW_S)
+
+    registry.set_status(NODE_ID, NodeStatus.FAULT)
+    time.sleep(TRIP_DELAY_S + SHORT_CONFIRM_WINDOW_S + SETTLE_S)
+    assert published == [1], published
+    assert protection.snapshot(NODE_ID)["trip_failed"] is True
+    assert status(registry) == NodeStatus.FAULT, status(registry)
+
+    protection.on_motor_state(NODE_ID, running=False)
+
+    assert status(registry) == NodeStatus.TRIPPED, status(registry)
+    snap = protection.snapshot(NODE_ID)
+    assert snap["trip_failed"] is False, snap
+    assert snap["tripped_at"] is not None, snap
+    print("a stop confirmed after the window closed reads TRIPPED, not IDLE: PASS")
+
+
 def test_tripped_node_restarted_without_a_fix_trips_again():
     registry, protection, published = build(trip_motor_idx=1)
 
@@ -269,6 +323,8 @@ if __name__ == "__main__":
         test_unarmed_node_never_trips()
         test_no_publisher_still_reports_idle_but_cannot_trip()
         test_already_stopped_machine_confirms_instantly_via_query()
+        test_one_stop_reported_twice_is_decided_once()
+        test_confirmation_arriving_after_the_window_still_reads_tripped()
         test_tripped_node_restarted_without_a_fix_trips_again()
         print("RESULT: PASS - protection ladder, IDLE/TRIPPED split, Hold and "
               "failed-trip handling all behave")

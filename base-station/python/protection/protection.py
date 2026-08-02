@@ -93,6 +93,12 @@ class ProtectionState:
         self.awaiting_confirm = False
         self.trip_failed = False
         self.tripped_at: Optional[float] = None      # wall clock, for the UI
+        # Last running/stopped state on_motor_state actually acted on, or None
+        # before the first report. This module has two independent sources for
+        # that edge (the ingestion thread and _fire_trip's own re-query), so
+        # the state lives here rather than being trusted from the caller --
+        # see on_motor_state.
+        self.motor_running: Optional[bool] = None
 
 
 class _MappingConfirmTest:
@@ -216,7 +222,26 @@ class ProtectionController:
     def on_motor_state(self, node_id: str, running: bool) -> None:
         """Called from the ingestion path whenever a node's confirmed
         running/stopped state changes (pipeline/manager.py). This is the only
-        thing that can confirm a trip."""
+        thing that can confirm a trip.
+
+        Idempotent per edge, and that is load-bearing rather than defensive.
+        Two threads report the same stop: the ingestion thread, one frame
+        after the gate flips, and _fire_trip's own re-query of that same gate.
+        Both can observe the flip -- the gate is updated by handle_frame()
+        before manager.py's _report_motor_state() runs, so a trip firing in
+        that gap sees STOPPED and calls in here too. Whichever caller loses
+        the race reads awaiting_confirm as already cleared, decides the stop
+        was an operator's, and writes IDLE. Because the registry write happens
+        outside _lock (it has to -- see the module docstring), that IDLE can
+        land *before* the winner's TRIPPED, and then TRIPPED is refused as an
+        illegal IDLE -> TRIPPED edge and swallowed: the same real trip reads
+        TRIPPED or IDLE depending on thread scheduling. Collapsing duplicate
+        reports of one edge here is what makes the outcome deterministic."""
+        with self._lock:
+            state = self._state_for(node_id)
+            if state.motor_running is running:
+                return
+            state.motor_running = running
         if running:
             # Started again. This is the entire recovery path -- no
             # acknowledge, no reset button. Land on HEALTHY and let the next
@@ -249,7 +274,14 @@ class ProtectionController:
         # whether we asked for it.
         with self._lock:
             state = self._states.get(node_id)
-            was_ours = bool(state and state.awaiting_confirm)
+            # trip_failed counts as ours as much as awaiting_confirm does. The
+            # confirm window is 3s while the gate needs debounce_frames of
+            # agreement at ~2fps, and the SPI bridge can stall for seconds
+            # (docs/BRIDGE_SPI_ARM_STREAM_STALL_INVESTIGATION.md), so a real
+            # trip routinely confirms just after the window gave up on it.
+            # Reading that as IDLE would say an operator stopped a machine
+            # this system stopped -- the confirmation was late, not absent.
+            was_ours = bool(state and (state.awaiting_confirm or state.trip_failed))
             if was_ours:
                 state.awaiting_confirm = False
                 state.trip_failed = False
