@@ -159,18 +159,19 @@ can't come back.
 
 ## 6. Open items before submission
 
-1. `[FILL IN]` ×8 — team/author name, submission date, GitHub URL, demo video
-   URL, **licence**, UNO Q purchase price + receipt reference, current classifier
-   accuracy / confusion matrix.
+1. `[FILL IN]` ×7 — team/author name, submission date, GitHub URL, demo video
+   URL, UNO Q purchase price + receipt reference, current classifier accuracy /
+   confusion matrix.
 2. **Photos and screenshots — the single biggest remaining gap.** 8 `[PHOTO`,
    12 `[SCREENSHOT`, 2 `[VIDEO STILL` placeholders. Hackster's Project
    Documentation is 30 pts and explicitly asks for images and screenshots; a
    cover image is a *required* project field.
-3. **No `LICENSE` file in the repo.** Robu's rubric awards bonus points for open
-   source; Hackster scores Code & Contribution at 15. Pick one (MIT or Apache-2.0)
-   and add it, then fill the header row.
-4. **No root `README.md`.** First thing a judge opening the GitHub repo sees.
-   Should point at the report, the two no-hardware paths, and Appendix L's map.
+3. ~~No `LICENSE`~~ — **done 2026-08-02: MIT**, copyright "Rahul Jeyaraj".
+   Confirm that name is how you want to be credited.
+4. ~~No root `README.md`~~ — **done 2026-08-02.** Judge-facing entry point:
+   hero diagram, the ten-minute no-hardware path, repo map, status table,
+   safety scope. Its links into `REPORT.md` are anchor-checked; re-run the
+   checker if report headings change.
 5. **Appendix K is a placeholder** — 3D-printed test rigs, with models, print
    settings and photos. Hackster's required resource files list names CAD
    explicitly.

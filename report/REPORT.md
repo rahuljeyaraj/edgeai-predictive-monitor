@@ -13,7 +13,7 @@
 | **AI stack** | PyTorch on-device (anomaly) · Edge Impulse (fault classifier, TFLite on-device) |
 | **Team / author** | `[FILL IN: team or author name]` |
 | **Date** | `[FILL IN: submission date]` |
-| **Source** | `[FILL IN: GitHub URL]` — open source under `[FILL IN: licence]` |
+| **Source** | `[FILL IN: GitHub URL]` — open source under the MIT licence |
 | **Demo video** | `[FILL IN: video URL]` |
 
 > **[PHOTO: cover image — the assembled base station clipped to the test rig, machine running, status ring lit, dashboard visible on a laptop behind it]**
@@ -3150,9 +3150,16 @@ Stated here so the list above can be trusted.
 
 For anyone who opens the repository and wants to know where to start.
 
+The repository's own `README.md` is the short version of this appendix — what
+the system is, the ten-minute no-hardware path, and a map of the tree. The whole
+project is released under the **MIT licence**, so anything here can be reused,
+modified or sold on, with attribution and without asking.
+
 ## L.1 Layout
 
 ```
+README.md                  the short version of this appendix
+LICENSE                    MIT
 base-station/
   app.yaml                 App Lab manifest: name, ports, bricks
   telemetry_schema.json    single source of truth for the wire format
