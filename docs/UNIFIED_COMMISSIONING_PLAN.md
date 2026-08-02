@@ -105,19 +105,29 @@ that is just the same step re-entered by itself.
 | # | Step | Machine | Required | Produces |
 |---|---|---|---|---|
 | 1 | **Name & class** | — | **yes** | `device_name`, `device_type` |
-| 2 | **Trip output** | ON → stopped by us | no | `trip_motor_idx`, *confirmed* (§3) |
-| 3 | **Off** | **OFF** | **yes** | `stopped_spectrum_ref`, `stopped_energy_ref` |
-| 4 | **Running conditions** | **ON** | **yes** (≥1 condition) | training batch, `running_energy_ref`, `healthy` recordings (§2.3) |
-| 5 | **Train** | either | **yes** | `<models_dir>/<node_id>.pt`, `scalar_mu/sigma`, `warning/fault_threshold` |
+| 2 | **Off** | **OFF** | **yes** | `stopped_spectrum_ref`, `stopped_energy_ref` |
+| 3 | **Running conditions** | **ON** | **yes** (≥1 condition) | training batch, `running_energy_ref`, `healthy` recordings (§2.3) |
+| 4 | **Train** | either | **yes** | `<models_dir>/<node_id>.pt`, `scalar_mu/sigma`, `warning/fault_threshold` |
+| 5 | **Trip output** | ON → stopped by us | no | `trip_motor_idx`, *confirmed* (§3) |
 | 6 | **Done** | — | — | Summary; asset goes live |
 
-Step 2 is placed before step 3 deliberately: it *ends* with the machine
-stopped, which is exactly the state step 3 needs. The operator switches the
-machine off once, not twice.
+**Trip output was step 2 until 2026-08-02, and moving it to 5 is a
+correction** — see [TRIP_OUTPUT_OPEN_ISSUES.md §1](TRIP_OUTPUT_OPEN_ISSUES.md).
+The original argument was that its test *ends* with the machine stopped, which
+is exactly the state the Off step needs, so the operator switched the machine
+off once rather than twice. That saving never existed. The test refuses to run
+unless the gate reports RUNNING; the gate cannot answer until a model exists;
+the model is not fitted until **Train**. At position 2 the test could only
+409 — nothing published, machine never stopped, operator switched it off by
+hand anyway. The early position bought an operator action it did not save, at
+the price of an unrunnable test on every fresh asset.
 
-Step 2 is the only skippable one — an asset with no trip output wired must not
-be blocked. Extra *conditions* within step 4 are optional, but the step itself
-is not.
+At position 5 every precondition holds: model, stopped baseline, running
+baseline, and a machine the operator has just been running for step 3.
+
+Trip output is still the only skippable step — an asset with no trip output
+wired must not be blocked. Extra *conditions* within step 3 are optional, but
+the step itself is not.
 
 ### 2.2.1 Step 1: both fields are required
 
@@ -235,7 +245,7 @@ trip never arrives.
 
 ### 3.3 Confirm by stopping
 
-Step 2 of setup, per candidate output:
+Step 5 of setup, per candidate output:
 
 1. Operator starts the machine by hand and confirms it is running. The gate
    confirms RUNNING too.
@@ -348,11 +358,13 @@ asset, two modes.
   check plus a one-line result ("Off — measured, 34 frames").
 - All instructions live here, because this is the only surface the operator is
   actually reading while standing at the machine. Terse and imperative:
-  - Step 2: *"Start the machine. We'll stop it to confirm the wiring."*
-  - Step 3: *"Switch the machine off. Confirm it has stopped moving, then
-    Start."*
-- Step 3's wording carries the whole "software cannot verify the machine is
-  off" problem, exactly as the module docstring demands.
+  - Step 2 (Off): *"Switch the machine off. Confirm it has stopped moving,
+    then Start."*
+  - Step 5 (Trip output): *"Leave the machine running. We'll stop it to
+    confirm the wiring."* — it says *leave*, not *start*, because step 3 has
+    just had the operator running the machine.
+- The Off step's wording carries the whole "software cannot verify the machine
+  is off" problem, exactly as the module docstring demands.
 - Errors surface inline on their step — *"too unsteady, something was still
   moving"* — with the step still open for a retry. Both sessions already
   support retry-in-place; nothing new is needed.
@@ -460,7 +472,7 @@ drops its narration. Pure orchestration, zero ML risk.
 Multi-condition collection, pooled batch, quietest-condition
 `running_energy_ref`, `condition` in the capture payload.
 
-**R4 — Trip output mapping (step 2).**
+**R4 — Trip output mapping (step 5; was step 2 when this was written).**
 Rig announce + `epm/+/cmd` fix + `GET /trip_outputs` + confirm-by-stopping +
 delete `TRIP_MOTOR_COUNT`. Last because it touches the rig script on the other
 machine and needs live hardware to verify.

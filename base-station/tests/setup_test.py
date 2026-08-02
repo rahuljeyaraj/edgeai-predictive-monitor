@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
 docs/UNIFIED_COMMISSIONING_PLAN.md verification: the guided setup flow
-end-to-end (name & class -> trip output -> off -> running conditions ->
-train -> done), plus the three pieces it depends on:
+end-to-end (name & class -> off -> running conditions -> train ->
+trip output -> done), plus the three pieces it depends on:
 
   - multiple operating conditions pooled into one model, with
     running_energy_ref taken from the QUIETEST condition rather than the pool
@@ -146,9 +146,27 @@ def test_step_one_requires_a_name_and_a_class(h: Harness):
     # Lowercased like the Fleet pill's own editor: asset class is the key
     # that groups captures into one training set per EI project.
     assert entry.device_type == "pump", entry.device_type
-    assert h.setup.snapshot(NODE_ID)["step"] == STEP_TRIP_OUTPUT
+    assert h.setup.snapshot(NODE_ID)["step"] == STEP_STOPPED
     assert h.setup.snapshot(NODE_ID)["error"] is None, "moving on clears the error"
     print("step 1 stores the name and normalizes the asset class: PASS")
+
+
+def test_confirm_distinguishes_no_gate_from_a_stopped_machine(h: Harness):
+    """None (no model, so the gate cannot answer) used to share the stopped
+    machine's message, which told the operator to start a machine that was
+    often already running -- with no way to make the test pass, since the
+    model only arrives at Train. The two now read differently."""
+    h.running.pop(NODE_ID, None)
+    try:
+        h.protection.confirm_trip_output(NODE_ID, 1, lambda ok, msg: None)
+    except ProtectionError as e:
+        assert "no model yet" in str(e), str(e)
+        assert "start the machine" not in str(e), \
+            "an un-modelled asset must not be told to start a machine it may already be running"
+    else:
+        raise AssertionError("a node with no gate must fail the precondition")
+    assert not h.published, "nothing may be published when the test can't run"
+    print("confirm-by-stopping says what's missing when there's no gate yet: PASS")
 
 
 def test_confirm_refuses_a_stopped_machine(h: Harness):
@@ -196,18 +214,20 @@ def test_confirm_failure_reports_the_wrong_output(h: Harness):
 
 
 def test_trip_output_step(h: Harness):
+    assert h.setup.snapshot(NODE_ID)["step"] == STEP_TRIP_OUTPUT, \
+        "trip output is the step after training, not before the baseline"
     try:
         h.setup.advance(NODE_ID)
     except SetupError:
         pass
     else:
-        raise AssertionError("step 2 advanced with no output picked and no skip")
+        raise AssertionError("the trip-output step advanced with no output picked and no skip")
 
     # The route records this on a confirmed test; here it stands in for one.
     h.registry.set_trip_motor(NODE_ID, 2, confirmed_at=time.time())
     h.setup.advance(NODE_ID)
-    assert h.setup.snapshot(NODE_ID)["step"] == STEP_STOPPED
-    print("step 2 needs a trip output before it will advance: PASS")
+    assert h.setup.snapshot(NODE_ID)["step"] == STEP_DONE
+    print("step 5 needs a trip output before it will advance: PASS")
 
     # ... and re-pointing it at a different output drops the confirmation,
     # rather than carrying a proof earned by the previous one forward.
@@ -223,7 +243,7 @@ def test_stopped_baseline_step(h: Harness):
     except SetupError:
         pass
     else:
-        raise AssertionError("step 3 advanced with no baseline measured")
+        raise AssertionError("step 2 advanced with no baseline measured")
 
     h.stopped_baseline.start(NODE_ID)
     h.feed_stopped(BASELINE_MIN_FRAMES + 2)
@@ -232,7 +252,7 @@ def test_stopped_baseline_step(h: Harness):
 
     h.setup.advance(NODE_ID)
     assert h.setup.snapshot(NODE_ID)["step"] == STEP_CONDITIONS
-    print("step 3 needs a measured stopped baseline before it will advance: PASS")
+    print("step 2 needs a measured stopped baseline before it will advance: PASS")
 
 
 def test_two_operating_conditions(h: Harness):
@@ -256,7 +276,7 @@ def test_two_operating_conditions(h: Harness):
 
     step = next(s for s in h.setup.snapshot(NODE_ID)["steps"] if s["id"] == STEP_CONDITIONS)
     assert [c["name"] for c in step["conditions"]] == ["no_load", "full_load"], step
-    print("step 4 collects several named conditions with their own counters: PASS")
+    print("step 3 collects several named conditions with their own counters: PASS")
 
 
 def test_training_pools_conditions_and_takes_the_quietest_energy(h: Harness):
@@ -280,8 +300,11 @@ def test_training_pools_conditions_and_takes_the_quietest_energy(h: Harness):
         (entry.running_energy_ref, quiet_energy, loud_energy)
     print("training pools every condition but scales the gate from the quietest: PASS")
 
-    assert h.setup.snapshot(NODE_ID)["step"] == STEP_DONE
-    print("step 5 lands on Done when the model is fitted: PASS")
+    # Train is no longer the last real step, and this is what would have caught
+    # a finish_training() that still jumped straight to Done: the trip-output
+    # step would have been silently skipped over.
+    assert h.setup.snapshot(NODE_ID)["step"] == STEP_TRIP_OUTPUT
+    print("step 4 hands on to the trip-output step when the model is fitted: PASS")
 
 
 def _median_energy(h: Harness, bins) -> float:
@@ -341,12 +364,13 @@ def test_skip_only_applies_to_the_trip_output_step(h: Harness):
     h.setup.start(NODE_ID, step=STEP_TRIP_OUTPUT)
     h.setup.skip(NODE_ID)
     snapshot = h.setup.snapshot(NODE_ID)
-    assert snapshot["step"] == STEP_STOPPED, snapshot
+    assert snapshot["step"] == STEP_DONE, snapshot
     trip_step = next(s for s in snapshot["steps"] if s["id"] == STEP_TRIP_OUTPUT)
     assert trip_step["skipped"] and trip_step["complete"], trip_step
 
+    h.setup.start(NODE_ID, step=STEP_STOPPED)
     try:
-        h.setup.skip(NODE_ID)  # now on the stopped-baseline step
+        h.setup.skip(NODE_ID)
     except SetupError:
         pass
     else:
@@ -399,13 +423,16 @@ def main():
     h = Harness(tmp_dir)
 
     test_step_one_requires_a_name_and_a_class(h)
+    test_confirm_distinguishes_no_gate_from_a_stopped_machine(h)
     test_confirm_refuses_a_stopped_machine(h)
     test_confirm_by_stopping(h)
     test_confirm_failure_reports_the_wrong_output(h)
-    test_trip_output_step(h)
+    # These walk one node through the flow in order, so they run in it: the
+    # trip-output step now comes after training, not before the baseline.
     test_stopped_baseline_step(h)
     test_two_operating_conditions(h)
     test_training_pools_conditions_and_takes_the_quietest_energy(h)
+    test_trip_output_step(h)
     test_each_condition_is_saved_as_a_healthy_recording(h)
     test_cancel_leaves_calibration_alone(h)
     test_reentering_setup_opens_on_the_first_gap(h)

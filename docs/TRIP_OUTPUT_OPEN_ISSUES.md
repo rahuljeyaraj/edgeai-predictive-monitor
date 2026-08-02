@@ -19,15 +19,22 @@ the machine — that is the *trip*, and it is the only command this system ever
 sends (`protection/protection.py:1-10`). A **trip output** is the mapping from
 one monitored asset to one motor on the rig it is allowed to stop. The rig
 announces which outputs it offers over MQTT, retained, so the dashboard never
-hardcodes a motor list (`protection/trip_outputs.py`). Setup step 2 offers to
+hardcodes a motor list (`protection/trip_outputs.py`). The setup step offers to
 *prove* the mapping: publish a stop to that output, then watch this asset's own
-vibration go quiet.
+vibration go quiet. (That step is number **5** as of 2026-08-02 — it was 2, and
+§1 is the whole story of why it moved.)
 
 ---
 
-## 1. BLOCKER — the "Test" button can never succeed on a fresh asset
+## 1. FIXED — the "Test" button could never succeed on a fresh asset
 
-**Symptom.** In Setup → step 2 *Trip output*, clicking **Test** returns 409:
+**Fixed 2026-08-02** by taking candidate fix 2: *Trip output* moved from step
+2 to step 5, after Train. The analysis below is kept because it is what
+justified the move, and because the "off once" argument it demolishes is the
+one that will get the step moved back if nobody writes down why it was wrong.
+The resolution is at the end of this section.
+
+**Symptom.** In Setup → step 2 *Trip output*, clicking **Test** returned 409:
 
 > start the machine and wait for it to read as running before testing the trip
 > output — a machine that is already stopped would appear to confirm whichever
@@ -77,7 +84,7 @@ base_station: status=uncommissioned, model_path=null,
 **Not a deploy problem.** On-device `api/app.py`, `registry/registry.py`,
 `frontend/setup.js` and `api/setup_controller.py` all md5-match the repo.
 
-### Candidate fixes (none applied)
+### Candidate fixes
 
 1. **Self-calibrating test.** Keep the step at position 2. Measure raw frame
    energy for ~1s, publish the stop, confirm if energy collapses to a small
@@ -85,18 +92,46 @@ base_station: status=uncommissioned, model_path=null,
    brand-new asset — and it puts "watch it stop the motor" early in the flow
    rather than after training. Requires exposing live frame energy from
    `MotorPipeline` before `_inference` exists.
-2. **Move the step after Train.** Smallest change, but the operator then
-   switches the machine off twice instead of once — which is exactly the
-   property step 2's position was chosen for
-   ([setup_controller.py:26-30](../base-station/python/api/setup_controller.py#L26-L30)).
+2. **Move the step after Train.** ← **APPLIED.**
 3. **Message only.** Make the 409 say "this asset isn't commissioned yet" and
    point at *Use without testing*. Honest, but leaves the test unusable on new
-   assets.
+   assets. Applied *as well*, for the residual `None` case.
 
-### Workaround that works today
+### Why 2, and why the "off once" objection was wrong
+
+Option 2 was originally discounted because moving the step past Train makes
+the operator switch the machine off twice instead of once — the exact property
+position 2 was chosen for.
+
+**That saving was never being collected.** Every precondition is checked
+before `_publish_trip`, so the 409 meant *nothing was sent to the rig* and the
+machine never stopped. The operator switched it off by hand for the Off step
+either way, on every single run. Position 2 was paying for an operator action
+it did not save.
+
+And the cost inverts once the step sits at 5. The conditions step (3) has just
+had the operator running the machine, so at step 5 it is *already running* —
+which is precisely the precondition the test needs. The step's hint now reads
+"Leave the machine running", not "Start the machine".
+
+### What changed
+
+| Where | Change |
+|---|---|
+| [setup_controller.py](../base-station/python/api/setup_controller.py) | `STEPS` reordered to name → stopped → conditions → train → **trip_output** → done |
+| [setup_controller.py](../base-station/python/api/setup_controller.py) | `finish_training()` now moves to `_next_step(STEP_TRAIN)` instead of hardcoding `STEP_DONE` — that hardcode would have silently skipped the newly-relocated step |
+| [protection.py](../base-station/python/protection/protection.py) | `running is None` split off from `running is False`, with its own message ("this asset has no model yet…") instead of telling the operator to start a machine that is already running |
+| [setup.js](../base-station/python/frontend/setup.js) | Step hint: "Start the machine" → "Leave the machine running" |
+
+`setup_test.py` covers the new order, including an assertion that training
+hands on to the trip-output step rather than to Done, and one that the
+no-gate message never says "start the machine".
+
+### Workaround, still available
 
 **"Use without testing"** records the mapping as unconfirmed and unblocks
-*Continue*. Trips still fire; the wiring is simply unproven.
+*Continue*. Trips still fire; the wiring is simply unproven. Still the right
+answer for an asset whose machine cannot be stopped during commissioning.
 
 ---
 

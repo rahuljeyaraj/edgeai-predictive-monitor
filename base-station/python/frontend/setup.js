@@ -7,9 +7,9 @@
  * All the instructions live here, because this is the only surface the
  * operator is actually reading while standing at the machine. Terse and
  * imperative: "Switch the machine off. Confirm it has stopped moving, then
- * Start." Step 3's wording in particular carries the whole "software cannot
- * verify the machine is off" problem, exactly as pipeline/stopped_baseline.py's
- * module docstring demands.
+ * Start." The Off step's wording in particular carries the whole "software
+ * cannot verify the machine is off" problem, exactly as
+ * pipeline/stopped_baseline.py's module docstring demands.
  *
  * The drawer is a top-level element outside #fleet-list, so the 5s poll can
  * never wipe an in-progress edit -- that existing property is exactly what a
@@ -263,8 +263,8 @@ const Setup = (() => {
         : "";
 
     return `
-      <p class="setup-step__hint">Start the machine. We'll stop it to confirm the wiring —
-        that's the only command this system ever sends, and only you restart it.</p>
+      <p class="setup-step__hint">Leave the machine running. We'll stop it to confirm the
+        wiring — that's the only command this system ever sends, and only you restart it.</p>
       ${outputsHtml}
       ${liveHtml}
       <div class="setup-step__actions">

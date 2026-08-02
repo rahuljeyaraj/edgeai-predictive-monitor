@@ -289,6 +289,15 @@ class ProtectionController:
         if self._motor_state_query is None:
             raise ProtectionError("no live running/stopped state for this node")
         running = self._motor_state_query(node_id)
+        if running is None:
+            # Not the same condition as "stopped", and it used to share its
+            # message: the gate has no model to answer against yet, so the
+            # operator was told to start a machine that was often already
+            # running, with no way to make the test pass. Says what is
+            # actually missing instead.
+            raise ProtectionError(
+                "this asset has no model yet, so nothing here can tell running from "
+                "stopped -- finish setup through Train first, then test the trip output")
         if running is not True:
             raise ProtectionError(
                 "start the machine and wait for it to read as running before testing "

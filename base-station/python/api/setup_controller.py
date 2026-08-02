@@ -7,8 +7,8 @@ without a stopped baseline the gate can barely tell running from stopped, so
 a commissioning batch collected before one was calibrated against a weak
 gate.
 
-    1 Name & class -> 2 Trip output -> 3 Off -> 4 Running conditions
-      -> 5 Train -> 6 Done
+    1 Name & class -> 2 Off -> 3 Running conditions -> 4 Train
+      -> 5 Trip output -> 6 Done
 
 Sequences the existing sessions; does not merge the modules (S2.1).
 StoppedBaselineSession and CommissioningSession stay independent and
@@ -22,9 +22,21 @@ particular that a baseline can still be recaptured on its own without
 invalidating the model or forcing a retrain -- that is just this same step
 re-entered by itself.
 
-Step 2 sits before step 3 deliberately: it ENDS with the machine stopped,
-which is exactly the state step 3 needs, so the operator switches the machine
-off once rather than twice.
+Trip output sits LAST, after Train, and that is a correction. It was step 2
+originally, on the argument that its test ends with the machine stopped --
+exactly the state the Off step needs -- so the operator switched the machine
+off once rather than twice. That saving was never real. The test refuses to
+run unless the gate reports RUNNING, the gate cannot answer at all until a
+model exists (MotorPipeline.motor_running returns None while _inference is
+None), and the model is not fitted until Train. So at step 2 the test could
+only ever 409, nothing was published, the machine never stopped, and the
+operator switched it off by hand for the Off step regardless. The step's
+early position bought an operator action it did not actually save, at the
+cost of making its own test unrunnable on every fresh asset.
+
+Placed after Train, every precondition it needs is in place: a model, a
+stopped baseline, a running baseline, and a machine the operator has just
+been running for the conditions step. See docs/TRIP_OUTPUT_OPEN_ISSUES.md S1.
 
 State is in memory only (S6). A dashboard restart mid-setup restarts the
 current step. Half-collected batches are deliberately not persisted -- a
@@ -53,8 +65,8 @@ STEP_CONDITIONS = "conditions"
 STEP_TRAIN = "train"
 STEP_DONE = "done"
 
-STEPS = (STEP_NAME, STEP_TRIP_OUTPUT, STEP_STOPPED, STEP_CONDITIONS,
-         STEP_TRAIN, STEP_DONE)
+STEPS = (STEP_NAME, STEP_STOPPED, STEP_CONDITIONS, STEP_TRAIN,
+         STEP_TRIP_OUTPUT, STEP_DONE)
 
 # The only skippable step (S2.2). An asset with no trip output wired must
 # not be blocked -- most monitored points have no actuator at all. Extra
@@ -374,15 +386,20 @@ class SetupController:
 
     def finish_training(self, node_id: str, error: Optional[str] = None) -> None:
         """Called by whoever ran the training thread (api/app.py). On
-        success the flow lands on Done; on failure it stays on the training
-        step carrying the reason, since a node stuck mid-training with no
-        visible explanation is the state this whole plan exists to remove."""
+        success the flow moves on to whatever follows Train; on failure it
+        stays on the training step carrying the reason, since a node stuck
+        mid-training with no visible explanation is the state this whole plan
+        exists to remove.
+
+        Derived from STEPS rather than jumping straight to Done: Train stopped
+        being the last real step when Trip output moved after it, and a
+        hardcoded Done here would have silently skipped it."""
         state = self._sessions.get(node_id)
         if state is None:
             return  # setup was cancelled while training ran -- the model still landed
         state.training_error = error
         if error is None:
-            self._move_to(state, STEP_DONE)
+            self._move_to(state, self._next_step(STEP_TRAIN))
         self._notify(node_id)
 
     def cancel(self, node_id: str) -> None:
