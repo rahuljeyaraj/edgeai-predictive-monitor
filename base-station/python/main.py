@@ -483,13 +483,6 @@ def main():
             # instead of plotting a raw, sample-rate-independent bin number.
             "spectrum_meta": {channel: {"fs": fs, "fft_size": fft_size}
                               for channel, (fs, fft_size) in frame.spectrum_meta.items()},
-            # docs/CHART_CLUTTER_PLAN.md S1: scalar tiles + the collapsible
-            # "Raw signals" panel. scalars is usually present every frame;
-            # time_series is usually empty (only populated on the frames that
-            # piggyback it -- see fuser.cpp's FUSER_TIME_SERIES_EVERY_N).
-            "scalars": frame.scalars,
-            "time_series": {name: {"fs": fs, "samples": list(samples)}
-                            for name, (fs, samples) in frame.time_series.items()},
         })
 
     spi_consumer = SpiConsumer(on_frame=on_frame)

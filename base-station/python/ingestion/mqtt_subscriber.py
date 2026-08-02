@@ -152,16 +152,13 @@ def normalize_spectrum_message(topic: str, payload: bytes,
         else:
             model_bins[name] = bins
 
-    # Resolve scalars/time_series to the same friendly names decoded.bins
-    # already uses, mirroring ingestion/spi_reader.py's SensorFrame
-    # construction (docs/CHART_CLUTTER_PLAN.md S1). No satellite firmware
-    # emits these yet, so this is normally empty for MQTT frames today.
+    # Resolve scalars to the same friendly names decoded.bins already uses,
+    # mirroring ingestion/spi_reader.py's SensorFrame construction. Any
+    # TIME_SERIES section a node sends is dropped here, same as on the SPI
+    # path -- SensorFrame carries no time-domain data (see its docstring).
     scalars = {schema.SCALAR_NAME_BY_ID[sid]: value
                for sid, value in decoded.scalars.items()
                if sid in schema.SCALAR_NAME_BY_ID}
-    ts = {schema.CHANNEL_NAME_BY_ID[cid]: (series.fs, series.samples)
-          for cid, series in decoded.time_series.items()
-          if cid in schema.CHANNEL_NAME_BY_ID}
     # (fs, fft_size) per channel actually present in decoded.bins, mirroring
     # ingestion/spi_reader.py -- lets the dashboard convert a bin index into
     # an actual frequency regardless of ingestion path.
@@ -175,7 +172,6 @@ def normalize_spectrum_message(topic: str, payload: bytes,
         bins=model_bins,
         display_bins=display_bins,
         scalars=scalars,
-        time_series=ts,
         spectrum_meta=spectrum_meta,
     )
 

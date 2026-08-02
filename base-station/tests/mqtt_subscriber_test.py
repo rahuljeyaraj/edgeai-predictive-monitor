@@ -142,11 +142,14 @@ def test_combined_accel_channel_lands_in_display_bins_not_bins():
     print("combined accel lands in display_bins, model-facing bins has accel_x/y/z: PASS")
 
 
-def test_scalars_and_time_series_resolve_to_names():
-    """docs/CHART_CLUTTER_PLAN.md S1: a frame carrying spectrum bins alongside
-    a SCALAR_SET and a TIME_SERIES section should resolve the latter two to
-    the same friendly names decoded.bins already uses (schema.py's
-    SCALAR_NAME_BY_ID/CHANNEL_NAME_BY_ID) -- not the raw wire ids."""
+def test_scalars_resolve_to_names_and_time_series_is_dropped():
+    """A frame carrying spectrum bins alongside a SCALAR_SET should resolve the
+    scalars to the same friendly names decoded.bins already uses
+    (schema.py's SCALAR_NAME_BY_ID) -- not the raw wire ids.
+
+    A TIME_SERIES section is included here deliberately: SensorFrame carries
+    no time-domain data anymore (2026-08-01), so a node that still sends one
+    must be normalized without it and without raising."""
     accel = ChannelSpectrum(fs=4000.0, fft_size=256, bins=tuple(float(i) for i in range(128)))
     scalar_body = encode_scalar_body({
         schema.SCALAR_ID_BY_NAME["rms"]: 0.5,
@@ -166,8 +169,8 @@ def test_scalars_and_time_series_resolve_to_names():
     # telemetry_frame_test.py's own scalar assertions use.
     assert abs(frame.scalars["rms"] - 0.5) < 1e-6, frame.scalars
     assert abs(frame.scalars["kurtosis"] - 3.2) < 1e-6, frame.scalars
-    assert frame.time_series["accel_x_raw"] == (4000.0, (1.0, 2.0, 3.0)), frame.time_series
-    print("scalars/time_series resolve to friendly names alongside bins: PASS")
+    assert not hasattr(frame, "time_series"), "SensorFrame must not carry time-domain data"
+    print("scalars resolve to friendly names, TIME_SERIES section dropped: PASS")
 
 
 def test_malformed_messages_raise():
@@ -247,7 +250,7 @@ def main():
     test_empty_frame_is_skipped()
     test_scalar_only_frame_is_skipped()
     test_combined_accel_channel_lands_in_display_bins_not_bins()
-    test_scalars_and_time_series_resolve_to_names()
+    test_scalars_resolve_to_names_and_time_series_is_dropped()
     test_malformed_messages_raise()
     test_malformed_topic_raises()
     test_subscriber_routes_to_pipeline_manager_like_spi()

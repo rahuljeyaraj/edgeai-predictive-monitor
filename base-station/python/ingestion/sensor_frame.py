@@ -24,16 +24,17 @@ gate/manager/features never have to filter `bins` themselves; the ingestion
 layer (spi_reader.py/mqtt_subscriber.py) does that split once, resolving
 telemetry_schema's channel names against registry.SensorChannel.
 
-`scalars`/`time_series` are the same kind of display-only addition for
-docs/CHART_CLUTTER_PLAN.md S1 (scalar tiles, the collapsible "Raw signals"
-panel) -- name-keyed the same way `bins` is (via telemetry_schema's
-SCALAR_NAME_BY_ID/CHANNEL_NAME_BY_ID, resolved by the ingestion layer), and
-never read by pipeline/features.py's model feature vector. `time_series`
-values are a plain (fs, samples) tuple rather than common/telemetry_frame.py's
-TimeSeries dataclass -- this module deliberately has no dependency on
-common/ (several tests that transitively import SensorFrame don't have it on
-PYTHONPATH), the same reason `bins`/`spectra` don't reuse
-common/telemetry_frame.py's ChannelSpectrum either.
+`scalars` is name-keyed the same way `bins` is (via telemetry_schema's
+SCALAR_NAME_BY_ID, resolved by the ingestion layer) and IS model input --
+pipeline/features.py appends it as the feature vector's scalar tail.
+
+There is no `time_series` field: normal-mode firmware no longer streams
+time-domain windows at all (2026-08-01, see sketch/fuser.cpp's header). The
+one path that still puts TIME_SERIES sections on the wire is the offline
+FUSER_RAW_CAPTURE_MODE build, and its consumers (tools/raw_capture.py,
+tools/raw_capture_server.py) read common/telemetry_frame.py's DecodedFrame
+directly via SpiConsumer's on_decoded hook -- they never go through
+SensorFrame.
 """
 from dataclasses import dataclass, field
 from enum import Enum
@@ -68,13 +69,11 @@ class SensorFrame:
     # docs/CHART_CLUTTER_PLAN.md S1's per-axis accel spectrum overlay --
     # display-only, never a SensorChannel, never read by gate/manager/features.
     display_bins: Dict[str, Tuple[float, ...]] = field(default_factory=dict)
-    # docs/CHART_CLUTTER_PLAN.md S1's scalar tiles -- name -> value.
+    # Per-channel time-domain statistics (rms/kurtosis/std/peak/
+    # crest_factor/skewness per accel axis + mic) -- name -> value. Model
+    # input: features.py's build_feature_vector() appends these after the
+    # spectral bins.
     scalars: Dict[str, float] = field(default_factory=dict)
-    # docs/CHART_CLUTTER_PLAN.md S1's collapsible "Raw signals" panel --
-    # name -> (fs, samples). Only populated on frames that carry a
-    # TIME_SERIES section (piggybacked every Nth frame, fuser.cpp); empty on
-    # every other frame, not a stale carry-over of the last value.
-    time_series: Dict[str, Tuple[float, Tuple[float, ...]]] = field(default_factory=dict)
     # name -> (fs, fft_size) for every channel present in `bins`/`display_bins`
     # (mic/accel/accel_x/accel_y/accel_z) -- lets the dashboard turn a bin
     # index into an actual frequency (k * fs / fft_size) instead of plotting

@@ -1,10 +1,18 @@
 "use strict";
 /*
  * Per-asset live charts for the expanded fleet row (docs/CHART_CLUTTER_PLAN.md
- * §1): anomaly score chart, accel/mic spectrum charts, and three collapsible
- * panels (scalar values, raw time-domain signals, waterfall). Loaded before
- * app.js (see index.html) but only *called* from event handlers that run
- * after every top-level script has executed, so the load order is safe.
+ * §1): anomaly score chart, accel/mic spectrum charts, and the collapsible
+ * waterfall panel. Loaded before app.js (see index.html) but only *called*
+ * from event handlers that run after every top-level script has executed, so
+ * the load order is safe.
+ *
+ * Two sections were removed on 2026-08-01: "Raw signals" (the decimated
+ * time-domain traces) and "Scalar values" (the 24 rms/kurtosis/std/peak/
+ * crest_factor/skewness tiles). The firmware no longer streams time-domain
+ * windows at all (sketch/fuser.cpp), so the first had no data source left;
+ * the second was removed as raw numbers an operator doesn't act on. The
+ * scalars still exist on the wire and still feed the model server-side --
+ * they are simply not displayed.
  *
  * Buffers here are keyed by node_id in module-level objects, not attached to
  * any DOM node app.js's renderFleetList() rebuilds -- that rebuild replaces
@@ -12,10 +20,10 @@
  * push too), which would otherwise wipe every buffer/mount-state and any
  * zoom the operator applied every single render. Two separate fixes for
  * that:
- *   - Data (waterfall/anomaly ring buffers, latest spectra/scalars/raw
- *     windows) accumulates in `nodes` below regardless of expand state, so
- *     collapsing and re-expanding a row -- or a native <details> panel --
- *     never starts over.
+ *   - Data (waterfall/anomaly ring buffers, latest spectra) accumulates in
+ *     `nodes` below regardless of expand state, so collapsing and
+ *     re-expanding a row -- or a native <details> panel -- never starts
+ *     over.
  *   - The actual host <div>s (Plotly or plain innerHTML content) are
  *     created once via document.createElement and never appear in the HTML
  *     string detailBodyHtml() interpolates; attachExpanded() reparents the
@@ -24,28 +32,23 @@
  *     user's zoom/pan survives a list rebuild -- only a real page reload
  *     resets it.
  *
- * Spectrum/scalar/time-series data only exists over /ws's "spectrum"
- * broadcast (main.py's on_frame) -- there is no REST equivalent and nothing
- * is persisted server-side for it (client-side buffered only). The anomaly
- * score *is* durably stored too (history/store.py), so its trend chart is
- * seeded once per node from GET /nodes/{id}/history on first expand, but
- * from then on it's kept live over /ws's "anomaly" broadcast (main.py's
- * on_score) -- the same per-frame push pattern as "spectrum".
+ * Spectrum data only exists over /ws's "spectrum" broadcast (main.py's
+ * on_frame) -- there is no REST equivalent and nothing is persisted
+ * server-side for it (client-side buffered only). The anomaly score *is*
+ * durably stored too (history/store.py), so its trend chart is seeded once
+ * per node from GET /nodes/{id}/history on first expand, but from then on
+ * it's kept live over /ws's "anomaly" broadcast (main.py's on_score) -- the
+ * same per-frame push pattern as "spectrum".
  *
- * Three of the five per-node sections (Scalar values, Raw signals,
- * Waterfall) are native <details> collapsibles, collapsed by default. Raw
- * signals/Waterfall are Plotly-backed and NOT mounted until first expanded
+ * Waterfall is a native <details> collapsible, collapsed by default. It is
+ * Plotly-backed and NOT mounted until first expanded
  * (docs/CHART_CLUTTER_PLAN.md §1.5's "not rendered/computed until
- * expanded") -- see mountRawIfNeeded/mountWaterfallIfNeeded and their
- * gating on the open-Sets app.js passes into attachExpanded(), not on
- * whether the slot element exists (a collapsed <details>'s children are
- * still present in the DOM, just not rendered -- mounting Plotly into a
- * hidden/zero-size div is the same failure mode already called out above
- * for the row-collapse case, just triggered by <details> collapse instead).
- * Scalar values has no such gating -- it's plain HTML (cheap, no Plotly
- * layout to measure), so it's always kept current regardless of open
- * state; its own open-Set only exists to keep the panel's collapsed state
- * sticky across list re-renders, same reason as the other two.
+ * expanded") -- see mountWaterfallIfNeeded and its gating on the open-Set
+ * app.js passes into attachExpanded(), not on whether the slot element
+ * exists (a collapsed <details>'s children are still present in the DOM,
+ * just not rendered -- mounting Plotly into a hidden/zero-size div is the
+ * same failure mode already called out above for the row-collapse case,
+ * just triggered by <details> collapse instead).
  */
 
 const Charts = (() => {
@@ -102,29 +105,11 @@ const Charts = (() => {
   // Fixed per-identity color, name-keyed (not positional) so a node missing
   // one axis never shifts another axis's color -- docs/CHART_CLUTTER_PLAN.md
   // §5 "fixed hue order, never reassigned based on which axes happen to be
-  // present." Reused verbatim across the spectrum chart AND the raw
-  // time-domain chart for the same axis.
+  // present."
   const AXIS_COLORS = {
     accel_x: "#3987e5", accel_y: "#9085e9", accel_z: "#d55181",
     mic: "#d95926",
   };
-
-  // One group per raw channel (accel x/y/z, mic) -- the model's scalar tail
-  // is computed per-channel now (never a combined tri-axial magnitude, see
-  // fuser.cpp's compute_scalars() call sites), so the tiles mirror that:
-  // 24 keys, matching telemetry_schema.json's rms_x/kurtosis_x/.../rms_mic
-  // wire names exactly.
-  const SCALAR_TILE_DEFS = ["x", "y", "z", "mic"].flatMap((axis) => {
-    const tag = axis === "mic" ? "Mic" : axis.toUpperCase();
-    return [
-      { key: `rms_${axis}`, label: `RMS (${tag})` },
-      { key: `kurtosis_${axis}`, label: `Kurtosis (${tag})` },
-      { key: `std_${axis}`, label: `Std deviation (${tag})` },
-      { key: `peak_${axis}`, label: `Peak (${tag})` },
-      { key: `crest_factor_${axis}`, label: `Crest factor (${tag})` },
-      { key: `skewness_${axis}`, label: `Skewness (${tag})` },
-    ];
-  });
 
   const RIDGE_TRACE_COUNT = 16;
   const RIDGE_X_SHIFT_PER_STEP = -0.4;
@@ -137,8 +122,8 @@ const Charts = (() => {
   const TEXT_COLOR = "#94a3b8";
   const FONT_FAMILY = "system-ui, -apple-system, 'Segoe UI', sans-serif";
 
-  // Spectrum/raw-signal charts: single current snapshot, no zoom (fixedrange
-  // axes below). Waterfall charts: history over time, zoom/pan is useful.
+  // Spectrum charts: single current snapshot, no zoom (fixedrange axes
+  // below). Waterfall charts: history over time, zoom/pan is useful.
   const SPECTRUM_CONFIG = { displaylogo: false, responsive: true, displayModeBar: false };
   const WATERFALL_CONFIG = { displaylogo: false, responsive: true };
 
@@ -148,7 +133,6 @@ const Charts = (() => {
 
   let ws = null;
   let expandedIds = new Set();
-  let rawOpenIds = new Set();
   let waterfallOpenIds = new Set();
   let registryHandler = null;
   let perfHandler = null;
@@ -218,18 +202,12 @@ const Charts = (() => {
     return stops[stops.length - 1][1];
   }
 
-  function axisColorForRawName(name) {
-    return AXIS_COLORS[name.replace(/_raw$/, "")] || TEXT_COLOR;
-  }
-
   function ensureNode(nodeId) {
     if (!nodes[nodeId]) {
       nodes[nodeId] = {
         channels: [],
         liveSpectrum: {},   // accel_x/accel_y/accel_z/mic -> latest bins (model channels)
         spectrumMeta: {},   // mic/accel/accel_x/accel_y/accel_z -> {fs, fftSize}
-        scalars: {},        // rms_x/kurtosis_x/.../rms_mic/... -> latest value (24 keys)
-        timeSeries: {},     // accel_x_raw/accel_y_raw/accel_z_raw/mic_raw -> {fs, samples}
         waterfall: {},      // accel_x/accel_y/accel_z/mic -> [{t, bins}] ring buffer
         waterfallMode: "2d",
         anomaly: [],
@@ -239,13 +217,10 @@ const Charts = (() => {
         anomalyWindowSeconds: ANOMALY_WINDOW_SECONDS, // live-tail width; user-adjustable via the rangeslider
 
         classification: null, // {label, confidence, scores, ts} -- Edge Impulse fault classifier, seeded from entry.last_classification and kept live over the "classification" WS event; null if no model loaded for this node's device_type
-        tilesEl: null,
         classificationEl: null,
         anomalyEl: null, anomalyMounted: false,
         accelSpectrumEl: null, accelSpectrumMounted: false,
         micSpectrumEl: null, micSpectrumMounted: false,
-        rawAccelEl: null, rawAccelMounted: false,
-        rawMicEl: null, rawMicMounted: false,
         waterfallEls: {}, waterfallMounted: {},
 
         // Per-node thresholds + status, mirrored from registry data
@@ -268,15 +243,13 @@ const Charts = (() => {
     purge(node.anomalyEl);
     purge(node.accelSpectrumEl);
     purge(node.micSpectrumEl);
-    purge(node.rawAccelEl);
-    purge(node.rawMicEl);
     for (const el of Object.values(node.waterfallEls)) purge(el);
     delete nodes[nodeId];
     dirty.delete(nodeId);
   }
 
   // ---------------------------------------------------------------------
-  // WebSocket -- the only source of spectrum/scalar/time-series data (no
+  // WebSocket -- the only source of spectrum data (no
   // REST equivalent).
   // ---------------------------------------------------------------------
 
@@ -347,16 +320,6 @@ const Charts = (() => {
     // rather than buffered for nothing.
     for (const [name, meta] of Object.entries(msg.spectrum_meta || {})) {
       node.spectrumMeta[name] = { fs: meta.fs, fftSize: meta.fft_size };
-    }
-    if (msg.scalars && Object.keys(msg.scalars).length) {
-      node.scalars = msg.scalars;
-    }
-    // time_series is {} on ~3/4 of frames (only piggybacks every 4th fused
-    // frame) -- merge per-key present, never wholesale-replace, or every
-    // following empty frame would wipe the buffered raw window and defeat
-    // the "latest window survives regardless of expand state" requirement.
-    for (const [name, payload] of Object.entries(msg.time_series || {})) {
-      node.timeSeries[name] = payload;
     }
     dirty.add(msg.node_id);
   }
@@ -433,24 +396,6 @@ const Charts = (() => {
     }
   }
 
-  // ---------------------------------------------------------------------
-  // Scalar tiles -- hand-rolled HTML, not Plotly: no zoom/pan needed, and
-  // they must update on the fast WS-driven dirty/flush() cadence rather
-  // than app.js's 5s poll. No standalone hero number anymore -- the
-  // "Anomaly score" Plotly chart (buildAnomalyFigure) is the only
-  // representation of that value now.
-  // ---------------------------------------------------------------------
-
-  function buildScalarTilesHtml(node) {
-    const present = SCALAR_TILE_DEFS.filter((def) => typeof node.scalars[def.key] === "number");
-    if (!present.length) return "";
-    return `<div class="scalar-tiles">${present.map((def) => `
-      <div class="scalar-tile">
-        <div class="scalar-tile__value">${node.scalars[def.key].toFixed(3)}</div>
-        <div class="scalar-tile__label">${def.label}</div>
-      </div>`).join("")}</div>`;
-  }
-
   // Recording labels are the operator's own words (bearing/loose/unbalanced/
   // healthy, etc, docs/EDGE_IMPULSE_DASHBOARD_WORKFLOW_PLAN.md), not Edge
   // Impulse jargon -- title-casing is all that's needed for display, no
@@ -459,8 +404,8 @@ const Charts = (() => {
     return String(label).replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
   }
 
-  // Hand-rolled bars, same idiom as buildScalarTilesHtml above (cheap plain
-  // HTML, no Plotly needed for a static per-frame snapshot). Deliberately a
+  // Hand-rolled bars, not Plotly (cheap plain HTML is enough for a static
+  // per-frame snapshot -- no zoom/pan needed). Deliberately a
   // single neutral accent, not STATUS_COLOR's green/amber/red -- that palette
   // is reserved dashboard-wide for NodeStatus (doc S2), and this is a
   // completely independent signal (pipeline/manager.py's classifier never
@@ -734,51 +679,6 @@ const Charts = (() => {
     return [traces, layout];
   }
 
-  function buildRawAccelFigure(nodeId, node) {
-    const names = ["accel_x_raw", "accel_y_raw", "accel_z_raw"].filter((n) => node.timeSeries[n]);
-    const traces = [];
-    const layout = { ...darkLayoutBase(), uirevision: nodeId, height: 190 };
-    if (names.length) {
-      layout.showlegend = true;
-      layout.legend = { orientation: "h", y: 1.2, font: smallFont() };
-      names.forEach((name) => {
-        const { fs, samples } = node.timeSeries[name];
-        const color = axisColorForRawName(name);
-        traces.push({
-          type: "scatter", mode: "lines",
-          x: samples.map((_, k) => k / fs), y: samples,
-          line: { color, width: 1 },
-          xaxis: "x", yaxis: "y", name,
-          hovertemplate: `${name} %{x:.3f}s: %{y:.3f}<extra></extra>`,
-        });
-      });
-    }
-    layout.xaxis = axisBase({ anchor: "y", fixedrange: true, title: { text: "Time (s)", font: smallFont() } });
-    layout.yaxis = axisBase({ anchor: "x", fixedrange: true });
-    return [traces, layout];
-  }
-
-  function buildRawMicFigure(nodeId, node) {
-    const payload = node.timeSeries.mic_raw;
-    const traces = [];
-    if (payload) {
-      const { fs, samples } = payload;
-      traces.push({
-        type: "scatter", mode: "lines",
-        x: samples.map((_, k) => k / fs), y: samples,
-        line: { color: AXIS_COLORS.mic, width: 1 },
-        xaxis: "x", yaxis: "y", name: "mic_raw",
-        hovertemplate: "mic %{x:.3f}s: %{y:.3f}<extra></extra>",
-      });
-    }
-    const layout = {
-      ...darkLayoutBase(), uirevision: nodeId, height: 160,
-      xaxis: axisBase({ anchor: "y", fixedrange: true, title: { text: "Time (s)", font: smallFont() } }),
-      yaxis: axisBase({ anchor: "x", fixedrange: true }),
-    };
-    return [traces, layout];
-  }
-
   // 2D mode: same heatmap trace/transposeZ as before, plus zsmooth -- the
   // scoped fix for "reads as a blocky grid, not organic" (doc §4).
   function buildWaterfall2DFigure(nodeId, node, channel) {
@@ -854,10 +754,6 @@ const Charts = (() => {
   // ---------------------------------------------------------------------
 
   function ensureHostElements(node) {
-    if (!node.tilesEl) {
-      node.tilesEl = document.createElement("div");
-      node.tilesEl.className = "chart-host";
-    }
     if (!node.classificationEl) {
       node.classificationEl = document.createElement("div");
       node.classificationEl.className = "chart-host";
@@ -874,14 +770,6 @@ const Charts = (() => {
       node.micSpectrumEl = document.createElement("div");
       node.micSpectrumEl.className = "chart-plotly";
     }
-    if (!node.rawAccelEl) {
-      node.rawAccelEl = document.createElement("div");
-      node.rawAccelEl.className = "chart-plotly";
-    }
-    if (!node.rawMicEl) {
-      node.rawMicEl = document.createElement("div");
-      node.rawMicEl.className = "chart-plotly";
-    }
     for (const channel of ALL_CHANNELS) {
       if (!node.waterfallEls[channel]) {
         const el = document.createElement("div");
@@ -889,31 +777,6 @@ const Charts = (() => {
         node.waterfallEls[channel] = el;
       }
     }
-  }
-
-  function mountRawAccelIfNeeded(nodeId, node) {
-    const hasData = ["accel_x_raw", "accel_y_raw", "accel_z_raw"].some((n) => node.timeSeries[n]);
-    if (!hasData) {
-      node.rawAccelEl.innerHTML = `<div class="chart-placeholder">Waiting for data…</div>`;
-      node.rawAccelMounted = false;
-      return;
-    }
-    node.rawAccelEl.innerHTML = "";
-    const [traces, layout] = buildRawAccelFigure(nodeId, node);
-    Plotly.newPlot(node.rawAccelEl, traces, layout, SPECTRUM_CONFIG);
-    node.rawAccelMounted = true;
-  }
-
-  function mountRawMicIfNeeded(nodeId, node) {
-    if (!node.timeSeries.mic_raw) {
-      node.rawMicEl.innerHTML = `<div class="chart-placeholder">Waiting for data…</div>`;
-      node.rawMicMounted = false;
-      return;
-    }
-    node.rawMicEl.innerHTML = "";
-    const [traces, layout] = buildRawMicFigure(nodeId, node);
-    Plotly.newPlot(node.rawMicEl, traces, layout, SPECTRUM_CONFIG);
-    node.rawMicMounted = true;
   }
 
   function mountWaterfallIfNeeded(nodeId, node, channel) {
@@ -953,9 +816,8 @@ const Charts = (() => {
     if (el.parentElement !== slot) slot.appendChild(el);
   }
 
-  function attachExpanded(expandedNodeIds, openRawIds, openWaterfallIds) {
+  function attachExpanded(expandedNodeIds, openWaterfallIds) {
     expandedIds = expandedNodeIds;
-    rawOpenIds = openRawIds;
     waterfallOpenIds = openWaterfallIds;
 
     for (const nodeId of expandedNodeIds) {
@@ -971,9 +833,6 @@ const Charts = (() => {
 
       const node = ensureNode(nodeId);
       ensureHostElements(node);
-
-      const tilesSlot = findSlot("chart-slot-tiles", nodeId);
-      if (tilesSlot) reparent(node.tilesEl, tilesSlot);
 
       const classificationSlot = findSlot("chart-slot-classification", nodeId);
       if (classificationSlot) reparent(node.classificationEl, classificationSlot);
@@ -1012,21 +871,8 @@ const Charts = (() => {
         }
       }
 
-      node.tilesEl.innerHTML = buildScalarTilesHtml(node);
       if (node.classificationEl) node.classificationEl.innerHTML = buildClassificationHtml(node);
 
-      if (openRawIds.has(nodeId)) {
-        const rawAccelSlot = findSlot("chart-slot-raw-accel", nodeId);
-        if (rawAccelSlot) {
-          reparent(node.rawAccelEl, rawAccelSlot);
-          mountRawAccelIfNeeded(nodeId, node);
-        }
-        const rawMicSlot = findSlot("chart-slot-raw-mic", nodeId);
-        if (rawMicSlot) {
-          reparent(node.rawMicEl, rawMicSlot);
-          mountRawMicIfNeeded(nodeId, node);
-        }
-      }
       if (openWaterfallIds.has(nodeId)) {
         for (const channel of ALL_CHANNELS) {
           const wfSlot = findSlot("chart-slot-waterfall", nodeId, channel);
@@ -1046,7 +892,6 @@ const Charts = (() => {
       const node = nodes[nodeId];
       if (!node || !node.anomalyEl) continue;
 
-      if (node.tilesEl) node.tilesEl.innerHTML = buildScalarTilesHtml(node);
       if (node.classificationEl) node.classificationEl.innerHTML = buildClassificationHtml(node);
 
       if (node.anomalyMounted) {
@@ -1062,20 +907,6 @@ const Charts = (() => {
         Plotly.react(node.micSpectrumEl, traces, layout, SPECTRUM_CONFIG);
       }
 
-      if (rawOpenIds.has(nodeId)) {
-        if (node.rawAccelMounted) {
-          const [traces, layout] = buildRawAccelFigure(nodeId, node);
-          Plotly.react(node.rawAccelEl, traces, layout, SPECTRUM_CONFIG);
-        } else {
-          mountRawAccelIfNeeded(nodeId, node); // data may have arrived since the panel opened
-        }
-        if (node.rawMicMounted) {
-          const [traces, layout] = buildRawMicFigure(nodeId, node);
-          Plotly.react(node.rawMicEl, traces, layout, SPECTRUM_CONFIG);
-        } else {
-          mountRawMicIfNeeded(nodeId, node);
-        }
-      }
       if (waterfallOpenIds.has(nodeId)) {
         for (const channel of ALL_CHANNELS) {
           if (!node.waterfallMounted[channel]) {
@@ -1097,9 +928,9 @@ const Charts = (() => {
   // Section-level omission (whole chart/collapsible present or not) is
   // decided from entry.sensor_config -- REST truth, known from frame 1, so
   // a brand-new node's first expand never flashes "no chart" waiting on a
-  // WS race. Within-chart conditionals (which axes overlay, which scalar
-  // tiles) are decided from this module's own WS-fed state at mount/render
-  // time instead (see the build*Figure functions).
+  // WS race. Within-chart conditionals (which axes overlay) are decided from
+  // this module's own WS-fed state at mount/render time instead (see the
+  // build*Figure functions).
   function detailBodyHtml(entry, uiState) {
     const nodeId = entry.node_id;
     const safeId = escapeAttr(nodeId);
@@ -1114,8 +945,7 @@ const Charts = (() => {
     const presentChannels = ALL_CHANNELS.filter((c) => sensorConfig.includes(c));
 
     // Anomaly score chart leads the section (always visible, no standalone
-    // number anymore) -- scalar tiles are demoted to a collapsible, same
-    // idiom as Raw signals/Waterfall, rather than always-on real estate.
+    // number anymore).
     // The outer wrapper (not the anomaly slot below) is attachExpanded()'s
     // "does this row exist at all" anchor now, since the anomaly section
     // itself is conditional -- see its own data-role.
@@ -1159,24 +989,7 @@ const Charts = (() => {
       </div>`;
     }
 
-    if (hasAccel || hasMic) {
-      html += `<details class="perf-tier" data-role="scalars-details" ${uiState.scalarsOpen ? "open" : ""}>
-        <summary class="perf-tier__header"><span class="perf-tier__chip">Scalar values</span></summary>
-        <div class="perf-tier__body">
-          ${chartSlotHtml("chart-slot-tiles", nodeId)}
-        </div>
-      </details>`;
-    }
-
     if (presentChannels.length) {
-      html += `<details class="perf-tier" data-role="raw-signals-details" ${uiState.rawOpen ? "open" : ""}>
-        <summary class="perf-tier__header"><span class="perf-tier__chip">Raw signals</span></summary>
-        <div class="perf-tier__body">
-          ${hasAccel ? `<div class="chart-section"><div class="chart-section__title">Accel</div>${chartSlotHtml("chart-slot-raw-accel", nodeId)}</div>` : ""}
-          ${hasMic ? `<div class="chart-section"><div class="chart-section__title">Mic</div>${chartSlotHtml("chart-slot-raw-mic", nodeId)}</div>` : ""}
-        </div>
-      </details>`;
-
       const mode = node.waterfallMode;
       html += `<details class="perf-tier" data-role="waterfall-details" ${uiState.waterfallOpen ? "open" : ""}>
         <summary class="perf-tier__header"><span class="perf-tier__chip">Waterfall</span></summary>

@@ -172,23 +172,18 @@
  * still far under the SPI link's budget even at this cadence. */
 #define FUSER_RAW_EPOCH_MS 100
 
-/* Normal-mode (FUSER_RAW_CAPTURE_MODE=0) time-domain piggyback: sending the
- * accel x/y/z + mic decimated time-series sections on every fused frame
- * would drag the whole frame's SPI pull time down with them (RPC-round-trip-
- * per-chunk dominated, not raw bit rate - see spi_reader.py's own reasoning),
- * which would also slow the anomaly score and spectrum charts riding the
- * same frame. Instead they ride only every Nth frame
- * (docs/CHART_CLUTTER_PLAN.md S1's collapsed "Raw signals" panel doesn't
- * need every-frame freshness); the fast path (spectra + scalar tiles) stays
- * on every frame. See fuser.cpp's fuser_epoch_count gating. */
-#define FUSER_TIME_SERIES_EVERY_N 4
-
-/* Time-domain sections are decimated (simple stride) to this many samples
- * before transmission - a chart line doesn't need the full FFT window
- * length (1024 accel / 2048 mic) to read as smooth, and this keeps the
- * piggybacked frame's size (and therefore its SPI pull time) bounded
- * regardless of which sensor's native window is longer. */
-#define FUSER_TS_DECIMATED_SAMPLES 256
+/* Normal mode (FUSER_RAW_CAPTURE_MODE=0) sends NO time-domain data over the
+ * MCU->MPU link. It used to piggyback decimated accel x/y/z + mic
+ * time-series sections every FUSER_TIME_SERIES_EVERY_N-th frame for a
+ * dashboard "Raw signals" panel; both that knob and
+ * FUSER_TS_DECIMATED_SAMPLES were removed on 2026-08-01 along with the
+ * panel. Those sections were the bulk of the frame and every byte rode the
+ * same chunked SPI pull (RPC-round-trip-per-chunk dominated, not raw bit
+ * rate - see spi_reader.py's own reasoning) as the anomaly score and
+ * spectrum charts, so they slowed everything that shares the frame. Nothing
+ * downstream consumed them: the model's feature vector is spectra +
+ * scalars only (pipeline/features.py). Raw windows are still sampled
+ * on-device for compute_scalars(); only transmission is gone. */
 
 /* --- Bridge link ----------------------------------------------------------
  * MCU<->MPU serial baud (Serial1 <-> /dev/ttyHS1). MUST match the router's

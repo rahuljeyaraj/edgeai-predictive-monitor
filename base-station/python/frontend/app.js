@@ -980,16 +980,13 @@ function hideCaptureSuggestions(input) {
 // it survives the innerHTML replace each poll does.
 const expandedNodeIds = new Set();
 
-// Which nodes have their "Scalar values" / "Raw signals" / "Waterfall"
-// <details> open -- parallel to expandedNodeIds, driving the `open`
-// attribute Charts.detailBodyHtml() renders (never left as native
-// uncontrolled state, since renderFleetList()'s innerHTML rebuild would
-// silently reset it every 5s poll otherwise). Scalars' content isn't
-// gated on this (cheap plain HTML, always kept current -- see charts.js),
-// this Set only exists to keep the panel's open/closed state sticky.
-const openRawIds = new Set();
+// Which nodes have their "Waterfall" <details> open -- parallel to
+// expandedNodeIds, driving the `open` attribute Charts.detailBodyHtml()
+// renders (never left as native uncontrolled state, since
+// renderFleetList()'s innerHTML rebuild would silently reset it every 5s
+// poll otherwise). Waterfall is the only collapsible left: "Scalar values"
+// and "Raw signals" were both removed on 2026-08-01 (see charts.js).
 const openWaterfallIds = new Set();
-const openScalarsIds = new Set();
 
 function motorRowHtml(entry) {
   const bucket = bucketFor(entry);
@@ -1098,9 +1095,7 @@ function motorRowHtml(entry) {
     <div class="motor-row__detail-main">
       ${protectionSectionHtml(entry)}
       ${Charts.detailBodyHtml(entry, {
-        rawOpen: openRawIds.has(entry.node_id),
         waterfallOpen: openWaterfallIds.has(entry.node_id),
-        scalarsOpen: openScalarsIds.has(entry.node_id),
       })}
     </div>
   </div>` : "";
@@ -1122,7 +1117,7 @@ function renderFleetList(nodes) {
   // list, including any chart-slot placeholders -- reparent each expanded
   // node's persistent Plotly <div>s (which survived, since they're held by
   // charts.js, not by this markup) back into the fresh slots.
-  Charts.attachExpanded(expandedNodeIds, openRawIds, openWaterfallIds);
+  Charts.attachExpanded(expandedNodeIds, openWaterfallIds);
 }
 
 function toggleExpand(nodeId) {
@@ -1341,14 +1336,11 @@ document.getElementById("fleet-list").addEventListener("click", (e) => {
 // rendered/computed until expanded."
 document.getElementById("fleet-list").addEventListener("toggle", (e) => {
   if (!(e.target instanceof HTMLDetailsElement)) return;
-  const role = e.target.dataset.role; // "scalars-details" | "raw-signals-details" | "waterfall-details"
+  const role = e.target.dataset.role; // "waterfall-details" -- the only one left
   const nodeId = e.target.closest(".motor-row-group")?.dataset.nodeId;
-  if (!nodeId || !role) return;
-  const set = role === "raw-signals-details" ? openRawIds
-    : role === "waterfall-details" ? openWaterfallIds
-    : openScalarsIds;
-  if (e.target.open) set.add(nodeId); else set.delete(nodeId);
-  Charts.attachExpanded(expandedNodeIds, openRawIds, openWaterfallIds);
+  if (!nodeId || role !== "waterfall-details") return;
+  if (e.target.open) openWaterfallIds.add(nodeId); else openWaterfallIds.delete(nodeId);
+  Charts.attachExpanded(expandedNodeIds, openWaterfallIds);
 }, true);
 
 // ---------------------------------------------------------------------
@@ -1565,14 +1557,8 @@ async function pollNodes() {
     for (const nodeId of expandedNodeIds) {
       if (!(nodeId in state.lastNodes)) expandedNodeIds.delete(nodeId);
     }
-    for (const nodeId of openRawIds) {
-      if (!(nodeId in state.lastNodes)) openRawIds.delete(nodeId);
-    }
     for (const nodeId of openWaterfallIds) {
       if (!(nodeId in state.lastNodes)) openWaterfallIds.delete(nodeId);
-    }
-    for (const nodeId of openScalarsIds) {
-      if (!(nodeId in state.lastNodes)) openScalarsIds.delete(nodeId);
     }
     // Re-base every countdown against this fresh trip_in_s before rendering
     // -- the local deadline is only an interpolation between polls, and the
@@ -1613,9 +1599,7 @@ Charts.init((msg) => {
     lastWsTouchAt[msg.node_id] = Date.now();
     delete state.lastNodes[msg.node_id];
     expandedNodeIds.delete(msg.node_id);
-    openRawIds.delete(msg.node_id);
     openWaterfallIds.delete(msg.node_id);
-    openScalarsIds.delete(msg.node_id);
     if (openRecordNodeId === msg.node_id) closeRecordDrawer();
   } else if (msg.type === "registry") {
     lastWsTouchAt[msg.node_id] = Date.now();

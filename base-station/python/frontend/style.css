@@ -587,13 +587,6 @@ body {
   min-height: 160px;
 }
 
-/* Tiles are hand-rolled HTML sized to their own content, not a Plotly
-   chart -- the 160px floor above is sized for chart area and left a large
-   dead gap above/below when applied here too. */
-.chart-slot[data-role="chart-slot-tiles"] {
-  min-height: 0;
-}
-
 .chart-plotly {
   width: 100%;
 }
@@ -632,40 +625,6 @@ body {
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-}
-
-/* ---- Scalar tiles: stat tiles, not charts (doc §1.2) -- same dark-card
-   idiom as .tile/.perf-card, neutral accent since these are raw physical
-   stats, not health-status buckets. ---- */
-
-.scalar-tiles {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(90px, 1fr));
-  gap: 10px;
-}
-
-.scalar-tile {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  padding: 10px 12px;
-  background-color: #1e293b;
-  border: 1px solid #334155;
-  border-radius: 8px;
-}
-
-.scalar-tile__value {
-  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-  font-variant-numeric: tabular-nums;
-  font-size: 20px;
-  font-weight: 700;
-  color: #e2e8f0;
-}
-
-.scalar-tile__label {
-  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
-  font-size: 13px;
-  color: #94a3b8;
 }
 
 /* ---- Fault classification bars -- Edge Impulse classifier's per-class
@@ -993,11 +952,6 @@ a.btn-label {
     flex-basis: 100%;
     justify-content: flex-end;
     flex-wrap: wrap;
-  }
-
-  .scalar-tiles {
-    grid-template-columns: repeat(auto-fit, minmax(80px, 1fr));
-    gap: 8px;
   }
 }
 

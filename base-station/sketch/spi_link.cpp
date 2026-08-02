@@ -89,15 +89,17 @@
 
 /* SPI framing. Magic is an arbitrary sentinel matched verbatim on the MPU side
  * (main.py / tests). Max payload is sized for the fuser's generic section-list
- * frame worst case (docs/SENSOR_TELEMETRY_FRAME_PLAN.md S3,
- * docs/CHART_CLUTTER_PLAN.md S1's dashboard data): 1 num_sections byte + 5
- * max-bin SPECTRUM sections (mic, accel-fused, accel_x/y/z; each 5-byte
- * section header + 8-byte fs/fft/bin_count preamble + 512*4 bins = 2061 B) +
- * 1 SCALAR_SET section (5-byte header + 1 count byte + 6 scalars * 6 B = 42 B)
- * + 4 decimated TIME_SERIES sections, piggybacked every FUSER_TIME_SERIES_EVERY_N-th
- * frame (5-byte header + 4-byte fs + 2-byte sample_count + 256*4 samples =
- * 1035 B each) = 1 + 5*2061 + 42 + 4*1035 = 14488 B; 14600 gives a little
- * slack. Kept as a named constant here rather than #include'ing fuser
+ * frame worst case (docs/SENSOR_TELEMETRY_FRAME_PLAN.md S3): 1 num_sections
+ * byte + 5 max-bin SPECTRUM sections (mic, accel-fused, accel_x/y/z; each
+ * 5-byte section header + 8-byte fs/fft/bin_count preamble + 512*4 bins =
+ * 2061 B) + 1 SCALAR_SET section (5-byte header + 1 count byte + 24 scalars
+ * * 6 B = 150 B) = 1 + 5*2061 + 150 = 10456 B; 10600 gives a little slack.
+ * Was 14600 until 2026-08-01, when the 4 decimated TIME_SERIES sections
+ * (1035 B each, piggybacked every Nth frame) were removed from normal mode
+ * entirely - see fuser.cpp's file header. That reclaims ~4 KB from EACH of
+ * spi_link_pending_buf/spi_link_frame_buf/spi_link_selftest_payload below,
+ * which matters on a board already flagged "Low memory available".
+ * Kept as a named constant here rather than #include'ing fuser
  * internals - spi_link_stage_frame() clamps to it defensively, and the fuser
  * sizes its own buffer identically. TSIZE and the GPDMA block length are both
  * 16-bit (max 65535), so even this larger frame fits with room to spare; the
@@ -109,7 +111,7 @@
  * FUSER_RAW_CAPTURE_MODE raises this instead: that mode's one combined frame
  * (accel x/y/z + mic raw TIME_SERIES sections, all in one epoch - see
  * fuser.cpp's FUSER_RAW_FRAME_BUF_LEN) needs 1 + 3*(11 + 1024*4) +
- * (11 + 2048*4) = 20525 B, well past normal mode's 14600. This is a real RAM
+ * (11 + 2048*4) = 20525 B, well past normal mode's 10600. This is a real RAM
  * tradeoff, not a free bump: it grows spi_link_pending_buf/spi_link_frame_buf
  * below AND spi_link_selftest_payload by the same delta each, on a board
  * already flagged "Low memory available, stability problems may occur" at
@@ -117,12 +119,12 @@
  * run gets exactly matched x/y/z/mic window counts instead of independently-
  * arriving, uneven ones - but this is exactly why FUSER_RAW_CAPTURE_MODE
  * stays a temporary, supervised data-collection build (app_config.h's own
- * comment): normal mode's buffers stay at the smaller, safer 14600. */
+ * comment): normal mode's buffers stay at the smaller, safer 10600. */
 #define SPI_LINK_MAGIC 0x46555331u /* "1SUF" on the wire (LE) - just a sentinel */
 #if FUSER_RAW_CAPTURE_MODE
 #define SPI_LINK_MAX_PAYLOAD 20525
 #else
-#define SPI_LINK_MAX_PAYLOAD 14600
+#define SPI_LINK_MAX_PAYLOAD 10600
 #endif
 #define SPI_LINK_HEADER_LEN 8 /* sizeof(spi_link_frame_header) */
 #define SPI_LINK_CRC_LEN 4

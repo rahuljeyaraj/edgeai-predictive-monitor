@@ -259,18 +259,19 @@ class SpiConsumer:
             else:
                 model_bins[name] = bins
 
-        # decoded.scalars/.time_series are raw wire ids (telemetry_frame.py's
-        # tested contract); resolve to the same friendly names decoded.bins
-        # already uses (schema.SCALAR_NAME_BY_ID/CHANNEL_NAME_BY_ID) for
-        # SensorFrame's dashboard-facing shape (docs/CHART_CLUTTER_PLAN.md S1).
-        # An id with no schema entry is dropped, same as an unmapped
-        # channel_id already is for .bins.
+        # decoded.scalars are raw wire ids (telemetry_frame.py's tested
+        # contract); resolve to the same friendly names decoded.bins already
+        # uses (schema.SCALAR_NAME_BY_ID) for the SensorFrame shape
+        # features.py expects. An id with no schema entry is dropped, same as
+        # an unmapped channel_id already is for .bins.
+        #
+        # decoded.time_series is deliberately NOT carried into SensorFrame:
+        # normal-mode firmware doesn't send TIME_SERIES sections at all, and
+        # the raw-capture tools that do read them go through on_decoded
+        # (DecodedFrame) instead -- see sensor_frame.py's docstring.
         scalars = {schema.SCALAR_NAME_BY_ID[sid]: value
                    for sid, value in decoded.scalars.items()
                    if sid in schema.SCALAR_NAME_BY_ID}
-        time_series = {schema.CHANNEL_NAME_BY_ID[cid]: (ts.fs, ts.samples)
-                       for cid, ts in decoded.time_series.items()
-                       if cid in schema.CHANNEL_NAME_BY_ID}
         # (fs, fft_size) per channel actually present in decoded.bins -- the
         # dashboard's frequency-axis conversion (charts.js) needs this
         # regardless of whether the channel is model- or display-only.
@@ -292,7 +293,6 @@ class SpiConsumer:
                 bins=model_bins,
                 display_bins=display_bins,
                 scalars=scalars,
-                time_series=time_series,
                 spectrum_meta=spectrum_meta,
             ))
         except Exception:
