@@ -29,13 +29,17 @@ c.link([(258, 248), (296, 248)])
 c.link([(548, 248), (586, 248)])
 c.link([(810, 248), (848, 248)])
 
-c.box(1092, 150, 194, 58, "Healthy", role="tell")
-c.box(1092, 226, 194, 58, "Warning", role="warn")
-c.box(1092, 302, 194, 58, "Fault", role="act")
+# Centred on the score box, so the three outcomes fork from one point on the
+# chain instead of each peeling off at its own height.
+c.box(1092, 143, 194, 58, "Healthy", role="tell")
+c.box(1092, 219, 194, 58, "Warning", role="warn")
+c.box(1092, 295, 194, 58, "Fault", role="act")
 
-c.link([(1052, 220), (1072, 220), (1072, 179), (1092, 179)])
-c.link([(1052, 255), (1092, 255)])
-c.link([(1052, 282), (1072, 282), (1072, 331), (1092, 331)], kind="arrowAct")
+# Fault drawn first so the two neutral branches overdraw the shared stub --
+# otherwise the trunk picks up the red of whichever branch was drawn last.
+c.link([(1052, 248), (1072, 248), (1072, 324), (1092, 324)], kind="arrowAct")
+c.link([(1052, 248), (1072, 248), (1072, 172), (1092, 172)])
+c.link([(1052, 248), (1092, 248)])
 
 c.lines(422, 348, ["128 bins × (accel x, y, z + mic)",
                    "+ 6 scalars each  =  536 numbers"], size=11.5, fill=INK_SOFT)

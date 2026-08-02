@@ -37,8 +37,9 @@ c.box(1060, 150, 226, 84, "5a · Tripped",
 c.box(1060, 282, 226, 84, "5b · Trip failed",
       ["still turning — status", "stays Fault, and says so"], role="warn")
 
-c.link([(972, 226), (1016, 226), (1016, 192), (1060, 192)], kind="arrowAct")
-c.link([(972, 262), (1016, 262), (1016, 324), (1060, 324)], kind="arrowSoft")
+# Both outcomes fork from the same point on the chain, level with step 4.
+c.link([(972, 244), (1016, 244), (1016, 192), (1060, 192)], kind="arrowAct")
+c.link([(972, 244), (1016, 244), (1016, 324), (1060, 324)], kind="arrowSoft")
 
 c.text(390, 320, "operator's only chance to intervene", size=11, anchor="middle",
        fill=INK_SOFT, style="italic")

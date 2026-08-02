@@ -20,12 +20,14 @@ c = Canvas(
 )
 
 # ---- setup spine ---------------------------------------------------------
+# Training sits over the Live group's right shoulder -- past the group's own
+# label chip -- so "first model saved" can drop straight down into it.
 c.box(34, 150, 180, 64, "New", role="ghost", title_size=16)
-c.box(300, 150, 190, 64, "Collecting", role="neutral", title_size=16)
-c.box(580, 150, 180, 64, "Training", role="neutral", title_size=16)
+c.box(364, 150, 190, 64, "Collecting", role="neutral", title_size=16)
+c.box(704, 150, 186, 64, "Training", role="neutral", title_size=16)
 
-c.link([(214, 182), (300, 182)], label="Commission")
-c.link([(490, 182), (580, 182)], label="Stop & train")
+c.link([(214, 182), (364, 182)], label="Commission")
+c.link([(554, 182), (704, 182)], label="Stop & train")
 
 # ---- the live, model-confirmed statuses ---------------------------------
 c.group(470, 280, 380, 300, "Live — re-scored on every frame", role="brain")
@@ -33,8 +35,11 @@ c.box(500, 322, 320, 62, "Healthy", role="tell", title_size=16)
 c.box(500, 404, 320, 62, "Warning", role="warn", title_size=16)
 c.box(500, 486, 320, 62, "Fault", role="act", title_size=16)
 
-c.link([(670, 214), (800, 214), (800, 280)], label="first model saved", label_seg=1)
-c.link([(500, 353), (420, 353), (420, 238), (395, 238), (395, 214)], label="Recommission", label_side="left", label_dy=-20)
+c.link([(797, 214), (797, 280)], label="first model saved", label_side="left")
+# Comes back up the gap between the reading key and the Live group, straight
+# into the underside of Collecting.
+c.link([(500, 353), (436, 353), (436, 214)], label="Recommission",
+       label_seg=1, label_side="left")
 
 # ---- machine not turning, and the two ways that happens ------------------
 c.box(930, 322, 200, 62, "Idle", role="sense", title_size=16)

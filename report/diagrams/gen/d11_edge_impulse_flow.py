@@ -49,7 +49,7 @@ c.box(730, 350, 552, 108, "3 · Train in Studio",
 
 c.link([(614, 248), (730, 248)], label="ingestion API")
 c.link([(1006, 302), (1006, 350)])
-c.link([(730, 404), (672, 404), (672, 404), (614, 404)], label="build + download")
+c.link([(730, 404), (614, 404)], label="build + download")
 
 # --- the pooled baseline ------------------------------------------------
 c.box(34, 556, 1272, 92, "The part that is easy to get wrong",

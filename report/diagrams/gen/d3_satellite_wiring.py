@@ -28,9 +28,11 @@ c.box(430, 158, 320, 400, "Seeed XIAO ESP32-S3",
        "", "samples, FFTs and pools", "the spectrum locally, then", "publishes one frame"],
       role="sense", title_size=17)
 
+# The MCU box is tall enough to meet all three peripherals head-on, so none of
+# these needs a jog.
 c.link([(302, 222), (430, 222)], label="SPI + data-ready INT")
-c.link([(302, 372), (366, 372), (366, 330), (430, 330)], label="I²S")
-c.link([(302, 508), (366, 508), (366, 432), (430, 432)], label="1-wire")
+c.link([(302, 372), (430, 372)], label="I²S")
+c.link([(430, 508), (302, 508)], label="1-wire")  # the ring is an output
 
 c.box(846, 208, 300, 122, "Base station",
       ["MQTT broker", "epm-base.local : 1883"], role="brain")

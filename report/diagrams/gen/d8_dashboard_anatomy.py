@@ -123,26 +123,26 @@ for i, lbl in enumerate(["Scalar values", "Raw signals", "Waterfall"]):
 NX, NW = 872, 334
 
 
-def note(y, h, title, rows, target_y, role="neutral"):
+def note(target_y, h, title, rows, role="neutral"):
+    """A callout is *centred* on the thing it points at, so its leader is a
+    straight line. Placing the note first and bending the leader to reach it
+    is what left the earlier version looking like a staircase."""
+    y = target_y - h / 2
     c.box(NX, y, NW, h, title, rows, role=role, title_size=12.5, body_size=10.5, rx=7)
-    c.link([(WX + WW, target_y), (NX - 18, target_y), (NX - 18, y + h / 2), (NX, y + h / 2)],
-           kind="arrowSoft", width=1.3)
+    c.link([(WX + WW, target_y), (NX, target_y)], kind="arrowSoft", width=1.3)
 
 
-note(158, 74, "Five tabs, one page",
-     ["Fleet · Classifier · Network ·", "Performance · Alerts"], WY + 27)
-note(248, 96, "Counts that are also filters",
-     ["Every tile is a toggle. Empty", "buckets hide themselves, so the", "row never fills with zeroes."],
-     WY + 123)
-note(360, 96, "One row per machine",
-     ["Nickname, node ID, asset class,", "status — and the classifier's", "read when there is a fault."],
-     WY + 220)
-note(472, 152, "Open a row for everything else",
+note(WY + 15, 74, "Five tabs, one page",
+     ["Fleet · Classifier · Network ·", "Performance · Alerts"])
+note(WY + 125, 96, "Counts that are also filters",
+     ["Every tile is a toggle. Empty", "buckets hide themselves, so the", "row never fills with zeroes."])
+note(WY + 240, 96, "One row per machine",
+     ["Nickname, node ID, asset class,", "status — and the classifier's", "read when there is a fault."])
+note(WY + 420, 152, "Open a row for everything else",
      ["Protection controls first (the only", "time-critical thing on screen),",
       "then the anomaly trend, the fault", "classification, live spectra, and",
-      "three collapsed deep-dive panels."], WY + 420)
-note(640, 96, "Charts survive the list",
-     ["Plotly elements are re-parented,", "never rebuilt — a zoom you set", "outlives every live update."],
-     WY + 560)
+      "three collapsed deep-dive panels."])
+note(WY + 580, 96, "Charts survive the list",
+     ["Plotly elements are re-parented,", "never rebuilt — a zoom you set", "outlives every live update."])
 
 save(c, "08-dashboard-anatomy")

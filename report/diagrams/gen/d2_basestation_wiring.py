@@ -19,9 +19,9 @@ c = Canvas(
 
 c.box(34, 150, 268, 128, "KX134-1211",
       ["3-axis accelerometer", "±8/16/32/64 g, 16-bit", "512-byte hardware FIFO"], role="sense")
-c.box(34, 316, 268, 112, "INMP441",
+c.box(34, 296, 268, 112, "INMP441",
       ["I²S MEMS microphone", "24-bit, 61 dBA SNR"], role="sense")
-c.box(34, 466, 268, 100, "WS2812B ring",
+c.box(34, 426, 268, 100, "WS2812B ring",
       ["8 addressable pixels", "local status light"], role="tell")
 
 c.group(414, 128, 352, 498, "Arduino UNO Q — one board, two brains", role="brain")
@@ -31,9 +31,15 @@ c.box(444, 162, 292, 250, "STM32U585",
 c.box(444, 462, 292, 142, "QRB2210",
       ["Debian Linux, quad-core", "", "models, registry, dashboard"], role="brain", title_size=16)
 
+# Two of the three peripherals sit level with the MCU box and go in straight.
+# The ring can't: three peripherals stacked are taller than the MCU box, so one
+# of them has to climb. It is the ring, because it is the only output here.
 c.link([(302, 214), (444, 214)], label="SPI1 + data-ready INT")
-c.link([(302, 372), (373, 372), (373, 318), (444, 318)], label="SAI1 · I²S")
-c.link([(302, 516), (373, 516), (373, 388), (444, 388)], label="timer + DMA", label_side="left")
+c.link([(302, 352), (444, 352)], label="SAI1 · I²S")
+# Drawn MCU → ring, because the ring is the one peripheral here that is an
+# output. label_dx keeps the plate out of the ring box's top-right corner.
+c.link([(444, 392), (373, 392), (373, 476), (302, 476)], label="timer + DMA",
+       label_seg=2, label_dx=28)
 
 c.link([(534, 412), (534, 462)], label="LPUART1 · 500 k", both=True, label_side="left")
 c.link([(652, 412), (652, 462)], label="SPI · ~40 MHz", both=True)

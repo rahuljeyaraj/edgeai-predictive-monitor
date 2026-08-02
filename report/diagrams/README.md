@@ -71,6 +71,15 @@ generation of these diagrams had:
 * **Orthogonal routing.** `link()` takes explicit points and `elbow()` jogs on
   one axis. Diagonals through a block diagram read as sketchy, and were the main
   source of label collisions.
+* **A bend has to mean something.** This one the scripts have to keep, because
+  `link()` takes the points it's given. Two boxes joined by one edge sit on the
+  *same* centre line, so the edge is straight: a jog only because a box was
+  placed at a round number reads as a detour the data actually takes, and a page
+  of them reads as a staircase. When one box fans out to several — which cannot
+  all be level with it — the branches leave from one shared point and climb one
+  shared riser, so it reads as one fan (see `d5`, `d4`, `d7`). Draw an
+  odd-coloured branch first, so the neutral ones overdraw the shared trunk and
+  it doesn't pick up their colour.
 * **One palette, one meaning.** `ROLES`: slate = senses, blue = decides,
   red = acts physically, green = tells a human, amber = degraded, ghost = derived
   or not-a-decision. The reader learns the colour code once and it holds across

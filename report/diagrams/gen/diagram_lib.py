@@ -22,6 +22,14 @@ Design rules this library enforces (rather than leaving to each script):
   * Edges route orthogonally by default (`elbow`). Diagonal lines through a
     block diagram read as sketchy and are the other thing that made the
     first generation collide with its own labels.
+  * A bend has to mean something. Two boxes joined by one edge are placed at
+    the *same* centre line so the edge is straight -- a 15 px jog because a
+    box was dropped at a round number reads as a detour the data actually
+    takes, and a page of them reads as a staircase. Where one box genuinely
+    fans out to several (which cannot all be level with it), the branches
+    share one exit point and one riser, so the reader sees one fan rather
+    than N unrelated jogs; draw the odd-coloured branch *first* so the
+    neutral ones overdraw the shared trunk.
   * One semantic palette, used identically in every diagram, so the reader
     learns the colour code once: slate = senses, blue = decides,
     red = acts physically, green = tells a human, amber = degraded/warning.

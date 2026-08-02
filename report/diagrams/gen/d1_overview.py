@@ -28,20 +28,23 @@ c.box(400, 176, 300, 216, "Base station",
        "running/stopped gate", "fault classifier", "trip decision"],
       role="brain", title_size=17)
 
-c.box(834, 150, 312, 66, "Live dashboard", role="tell")
-c.box(834, 236, 312, 66, "Phone alert (Telegram)", role="tell")
-c.box(834, 322, 312, 66, "Status ring + LED matrix", role="tell")
+# The three outputs are centred on the base station, so every reporting path is
+# a straight line in and a straight line out. Only the trip bends, and it bends
+# because it leaves from the bottom -- it is the one edge that isn't reporting.
+c.box(834, 165, 312, 66, "Live dashboard", role="tell")
+c.box(834, 251, 312, 66, "Phone alert (Telegram)", role="tell")
+c.box(834, 337, 312, 66, "Status ring + LED matrix", role="tell")
 c.box(834, 432, 312, 96, "Motor power",
       ["stopped on a confirmed fault,", "stays refused until cleared by hand"],
       role="act", title_size=16)
 
-c.link([(292, 214), (346, 214), (346, 226), (400, 226)], label="sensor frames")
-c.link([(292, 348), (346, 348), (346, 340), (400, 340)], label="Wi-Fi / MQTT")
+c.link([(292, 214), (400, 214)], label="sensor frames")
+c.link([(292, 348), (400, 348)], label="Wi-Fi / MQTT")
 
-c.link([(700, 216), (768, 216), (768, 183), (834, 183)], label="status + scores")
-c.link([(700, 269), (834, 269)], label="fault message")
-c.link([(700, 322), (768, 322), (768, 355), (834, 355)], label="colour + mode")
-c.link([(700, 372), (744, 372), (744, 480), (834, 480)],
+c.link([(700, 198), (834, 198)], label="status + scores")
+c.link([(700, 284), (834, 284)], label="fault message")
+c.link([(700, 370), (834, 370)], label="colour + mode")
+c.link([(640, 392), (640, 480), (834, 480)],
        label="STOP  motor N", kind="arrowAct", width=2.4)
 
 save(c, "01-system-at-a-glance")

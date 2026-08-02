@@ -18,10 +18,12 @@ c = Canvas(
 )
 
 # Ordered to match the chips they feed (STM32 on top, QRB2210 below), so the
-# two ingest paths never have to cross each other or share a label lane.
-c.box(34, 180, 250, 106, "Base station's own",
+# two ingest paths never have to cross each other or share a label lane. Each
+# box is centred on the exact y it enters, so both feeds are straight lines --
+# a jog here reads as a detour the data actually takes.
+c.box(34, 196, 250, 106, "Base station's own",
       ["accel + mic + ring", "+ 8×13 LED matrix"], role="sense")
-c.box(34, 318, 250, 106, "Satellite node × N",
+c.box(34, 377, 250, 106, "Satellite node × N",
       ["XIAO ESP32-S3", "accel + mic + ring"], role="sense")
 
 c.group(400, 150, 372, 476, "Arduino UNO Q", role="brain")
@@ -33,26 +35,26 @@ c.box(428, 366, 316, 244, "QRB2210 · Debian Linux",
        "asset registry + history", "protection / trip logic", "dashboard web server"],
       role="brain", title_size=15)
 
-c.link([(284, 233), (356, 233), (356, 250), (428, 250)], label="SPI · I²S")
-c.link([(284, 371), (356, 371), (356, 404), (428, 404)], label="Wi-Fi / MQTT")
+c.link([(284, 249), (428, 249)], label="SPI · I²S")
+c.link([(284, 430), (428, 430)], label="Wi-Fi / MQTT")
 c.link([(536, 308), (536, 366)], label="LPUART1", both=True)
 c.link([(654, 308), (654, 366)], label="SPI", both=True)
 
-c.box(880, 168, 406, 76, "Live dashboard", ["browser on the shop LAN"], role="tell")
-c.box(880, 262, 406, 76, "Telegram", ["one message per confirmed fault"], role="tell")
-c.box(880, 356, 406, 76, "Status ring + LED matrix", role="tell")
-c.box(880, 470, 406, 130, "Motor-driver rig",
+c.box(920, 168, 366, 76, "Live dashboard", ["browser on the shop LAN"], role="tell")
+c.box(920, 262, 366, 76, "Telegram", ["one message per confirmed fault"], role="tell")
+c.box(920, 356, 366, 76, "Status ring + LED matrix", role="tell")
+c.box(920, 470, 366, 130, "Motor-driver rig",
       ["Arduino Uno + CNC Shield V3", "3 × A4988 · 3 × NEMA-17",
        "per-motor stop, latched until cleared"], role="act", title_size=16)
 
-c.link([(744, 400), (812, 400), (812, 206), (880, 206)], label="WebSocket",
-       label_seg=0, label_dx=8)
-c.link([(744, 430), (830, 430), (830, 300), (880, 300)], label="Bot API",
-       label_seg=0, label_dx=8)
-c.link([(744, 462), (846, 462), (846, 394), (880, 394)], label="STATUS_LED",
-       label_seg=0, label_dx=8)
-c.link([(744, 522), (812, 522), (812, 535), (880, 535)],
-       label="STOP motor N", kind="arrowAct", width=2.4, label_seg=0,
-       label_dx=42, label_dy=-13)
+# The three "tell" outputs leave the QRB from one point and share one riser at
+# x=812, so they read as a single fan-out rather than as a staircase of three
+# differently-placed jogs. The trip is deliberately not on that bus: it leaves
+# the QRB dead level with the rig, the only straight line on this side.
+for entry, label in ((206, "WebSocket"), (300, "Bot API"), (394, "STATUS_LED")):
+    c.link([(744, 488), (812, 488), (812, entry), (920, entry)], label=label,
+           label_seg=2)
+c.link([(744, 535), (920, 535)],
+       label="STOP motor N", kind="arrowAct", width=2.4)
 
 save(c, "05-full-architecture")
