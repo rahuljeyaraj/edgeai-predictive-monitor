@@ -167,11 +167,14 @@ body {
   /* Machinery protection (docs/MOTOR_STOP_PLAN.md). Tripped is a deeper,
      darker red than --color-fault: same family, because it IS the fault's
      consequence, but distinguishable side by side so a fleet list with both
-     doesn't read as one undifferentiated block of red. Idle is blue -- a
+     doesn't read as one undifferentiated block of red. Idle is fuchsia -- a
      machine an operator switched off is a normal condition, not a degraded
-     one, so it must not borrow the greys that mean "no data from this node". */
+     one, so it must not borrow the greys that mean "no data from this node",
+     and it must not sit in the blue/cyan family either: --color-new is cyan
+     and the two tiles are often side by side, where a blue idle read as a
+     second shade of "new" on the real board. */
   --color-tripped: #b91c1c;
-  --color-idle: #3b82f6;
+  --color-idle: #d946ef;
 }
 
 .tile--all { --accent: var(--color-all); }

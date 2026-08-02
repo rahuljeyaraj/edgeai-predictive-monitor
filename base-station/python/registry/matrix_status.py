@@ -21,20 +21,21 @@ from registry import NodeStatus, RegistryEntry
 OFFLINE_AFTER_S = 30
 
 # Statuses excluded from every count (LED_MATRIX_STATUS_PLAN.md §2/§3):
-# uncommissioned/commissioning_* are "New" (their own dashboard flow, no point
-# duplicating on a hard-to-read display), and PAUSED is intentional/expected.
-# Neither belongs in an at-a-glance fleet-health readout.
-# IDLE joins them for the same reason PAUSED is here: a machine an operator
-# switched off is an expected condition, not a fleet-health problem, and this
-# display exists to answer "is anything wrong". TRIPPED is the opposite -- it
-# means this system stopped a machine, which is the single most important
-# thing the fleet can be doing, so it counts and ranks above FAULT below.
+# uncommissioned/commissioning_* are "New" -- a node mid-setup is already in
+# front of whoever is setting it up, on the dashboard, so duplicating it on a
+# hard-to-read display buys nothing.
+# IDLE and PAUSED used to be excluded on the same reasoning, since neither is
+# a fleet-health problem and this display was scoped to "is anything wrong".
+# They count now (2026-08-02): a stopped or paused machine is still a machine
+# not producing, so "nothing wrong" and "nothing running" are different
+# answers and the board was silent about the difference. They rank last,
+# after healthy -- see the severity order below. TRIPPED is the opposite end
+# of that scale: it means this system stopped a machine, the single most
+# important thing the fleet can be doing, so it ranks above FAULT.
 _UNCOUNTED = frozenset({
     NodeStatus.UNCOMMISSIONED,
     NodeStatus.COMMISSIONING_COLLECTING,
     NodeStatus.COMMISSIONING_TRAINING,
-    NodeStatus.PAUSED,
-    NodeStatus.IDLE,
 })
 
 # Shorthand words for the matrix (not the NodeStatus vocabulary used
@@ -50,6 +51,8 @@ _FAULT_WORD = "FLT"
 _WARNING_WORD = "WRN"
 _OFFLINE_WORD = "OFF"
 _TRIPPED_WORD = "TRP"
+_IDLE_WORD = "IDL"
+_PAUSED_WORD = "PSE"
 
 
 def fleet_status_text(entries: Iterable[RegistryEntry],
@@ -62,15 +65,22 @@ def fleet_status_text(entries: Iterable[RegistryEntry],
     if now is None:
         now = time.time()
 
-    healthy = warning = fault = offline = tripped = 0
+    healthy = warning = fault = offline = tripped = idle = paused = 0
     for entry in entries:
         if entry.status in _UNCOUNTED:
             continue
-        # Commissioned (HEALTHY/WARNING/FAULT). Staleness wins over the stored
-        # status -- a node that went quiet is OFFLINE regardless of what it
-        # last confirmed, matching frontend/app.js's bucketFor() (PAUSED is
-        # already excluded above, preserving that function's precedence).
-        # NodeStatus.OFFLINE is handled too, though nothing ever stores it.
+        # PAUSED is checked before staleness, deliberately, and IDLE after --
+        # exactly the precedence frontend/app.js's bucketFor() uses. Pausing is
+        # a standing operator intent that outranks the node going quiet (a
+        # paused node is *expected* to stop reporting), while a machine merely
+        # switched off at the rig is offline first and idle second, the same
+        # way a faulted node that goes quiet reads offline.
+        if entry.status == NodeStatus.PAUSED:
+            paused += 1
+            continue
+        # Staleness wins over the stored status -- a node that went quiet is
+        # OFFLINE regardless of what it last confirmed. NodeStatus.OFFLINE is
+        # handled too, though nothing ever stores it.
         stale = entry.last_seen is not None and now - entry.last_seen > OFFLINE_AFTER_S
         if stale or entry.status == NodeStatus.OFFLINE:
             offline += 1
@@ -82,20 +92,26 @@ def fleet_status_text(entries: Iterable[RegistryEntry],
             fault += 1
         elif entry.status == NodeStatus.TRIPPED:
             tripped += 1
+        elif entry.status == NodeStatus.IDLE:
+            idle += 1
 
-    if healthy == 0 and warning == 0 and fault == 0 and offline == 0 and tripped == 0:
+    if (healthy == 0 and warning == 0 and fault == 0 and offline == 0
+            and tripped == 0 and idle == 0 and paused == 0):
         # Empty fleet, or nothing commissioned yet -> blank display.
         return ""
-    if warning == 0 and fault == 0 and offline == 0 and tripped == 0:
+    if (warning == 0 and fault == 0 and offline == 0 and tripped == 0
+            and idle == 0 and paused == 0):
         # Everything healthy -> just the count (doubles as a fleet-size
         # readout), not a bare "ALL GOOD".
         return f"{healthy}{_HEALTHY_WORD}"
-    # Anything wrong: nonzero buckets, fixed severity order
-    # tripped -> fault -> warning -> offline, healthy last if nonzero. The word
-    # shortening (OK/TRP/FLT/WRN/OFF) made room to keep healthy in the message
-    # even here, instead of dropping it (§3 revision). TRIPPED leads because a
-    # machine this system has physically stopped outranks one that is merely
-    # faulted -- it's the one state that already had a real-world consequence.
+    # Anything else: nonzero buckets, fixed severity order tripped -> fault ->
+    # warning -> offline, then healthy, then idle -> paused last. The word
+    # shortening (OK/TRP/FLT/WRN/OFF/IDL/PSE) made room to keep healthy in the
+    # message even here, instead of dropping it (§3 revision). TRIPPED leads
+    # because a machine this system has physically stopped outranks one that is
+    # merely faulted -- it's the one state that already had a real-world
+    # consequence. IDLE and PAUSED trail healthy because neither is a problem
+    # at all; they're here to say "not running", not "not well".
     parts = []
     if tripped:
         parts.append(f"{tripped}{_TRIPPED_WORD}")
@@ -107,4 +123,8 @@ def fleet_status_text(entries: Iterable[RegistryEntry],
         parts.append(f"{offline}{_OFFLINE_WORD}")
     if healthy:
         parts.append(f"{healthy}{_HEALTHY_WORD}")
+    if idle:
+        parts.append(f"{idle}{_IDLE_WORD}")
+    if paused:
+        parts.append(f"{paused}{_PAUSED_WORD}")
     return ",".join(parts)

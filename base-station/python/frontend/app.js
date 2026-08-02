@@ -138,9 +138,10 @@ const STATUS_LABEL = {
   warning: "Warning",
   fault: "Faulty",
   paused: "Paused",
-  // "Stopped" rather than "Idle" for the pill: it says what an operator can
-  // see at the machine. The tile keeps the shorter "Idle".
-  idle: "Stopped",
+  // "Idle", matching the summary tile's label exactly -- the pill used to say
+  // "Stopped" (what an operator sees at the machine), but one status wearing
+  // two words across the same screen just reads as two different states.
+  idle: "Idle",
   tripped: "Tripped",
 };
 
