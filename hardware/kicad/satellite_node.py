@@ -3,10 +3,16 @@ from gen import Part, Schematic
 
 sch = Schematic("EdgeAI Predictive Monitor - Satellite Node Wiring (Seeed XIAO ESP32S3)")
 
+# Pins are named the way the XIAO itself names them -- the D0-D10 breakout
+# labels on the board, not the ESP32-S3 function or GPIO number. Mapping is
+# from framework-arduinoespressif32's variants/XIAO_ESP32S3/pins_arduino.h
+# (D0=GPIO1 .. D5=GPIO6, D8=GPIO7, D9=GPIO8, D10=GPIO9), the same source
+# satellite/include/board_pins.h cites. D8/D9/D10 are the variant's fixed
+# hardware SPI pins; everything else is a free GPIO choice.
 XIAO = Part(
     "epm:XIAO_ESP32S3", "U", "Seeed Studio XIAO ESP32S3",
-    right=["SCK", "MISO", "MOSI", "CS", "INT", "I2S_WS", "I2S_CLK", "I2S_SD",
-           "LED_DIN", "5V", "3V3", "GND"],
+    right=["D8", "D9", "D10", "D3", "D2", "D0", "D1", "D4",
+           "D5", "5V", "3V3", "GND"],
     width=45.72,
 )
 KX134 = Part(
@@ -26,10 +32,10 @@ RING = Part(
 )
 
 sch.place(XIAO, "U1", 60, 100, {
-    "SCK": "SPI_SCK_D8", "MISO": "SPI_MISO_D9", "MOSI": "SPI_MOSI_D10",
-    "CS": "ACC_CS_D3", "INT": "ACC_INT_D2",
-    "I2S_WS": "MIC_WS_D0", "I2S_CLK": "MIC_SCK_D1", "I2S_SD": "MIC_SD_D4",
-    "LED_DIN": "LED_DIN_D5",
+    "D8": "SPI_SCK_D8", "D9": "SPI_MISO_D9", "D10": "SPI_MOSI_D10",
+    "D3": "ACC_CS_D3", "D2": "ACC_INT_D2",
+    "D0": "MIC_WS_D0", "D1": "MIC_SCK_D1", "D4": "MIC_SD_D4",
+    "D5": "LED_DIN_D5",
     "5V": "PWR:+5V", "3V3": "PWR:+3V3", "GND": "PWR:GND",
 })
 
@@ -49,8 +55,8 @@ sch.place(RING, "U4", 170, 170, {
 })
 
 sch.note("EdgeAI Predictive Monitor -- Satellite Node Wiring", 20, 25, size=3.0)
-sch.note("Seeed Studio XIAO ESP32S3. Same sensor set as the base station, wired to the XIAO's 11 breakout GPIOs.", 20, 32, size=1.8)
-sch.note("Report ref: Chapter 3.3 / Appendix B.2. No LED matrix on this node -- the ring alone carries status.", 20, 38, size=1.5)
+sch.note("Seeed Studio XIAO ESP32S3. Same sensor set as the base station, on the XIAO's 11 breakout GPIOs. No LED matrix here -- the ring alone carries status.", 20, 32, size=1.8)
+sch.note("Report ref: Chapter 3.3 / Appendix B.2. XIAO pins are named by its own D0-D10 breakout labels -- not by GPIO number.", 20, 38, size=1.5)
 
 open("satellite_node.kicad_sch", "w").write(sch.render())
 print("wrote satellite_node.kicad_sch")

@@ -13,10 +13,21 @@ Chapter 2.3 / 3.3 / Appendix B — if a pin changes there, regenerate here.
 
 Each `.kicad_sch` opens directly in KiCad (Eeschema). Every part -- UNO Q,
 XIAO ESP32S3, KX134, INMP441, WS2812 ring, A4988/DRV8825, NEMA-17 -- is a
-generated generic box symbol with datasheet-style pin names, since none of
-these breakout boards have official KiCad library parts. Connections are
-drawn as short pin stubs + matching net labels (not long point-to-point
-wires), which is what keeps the layout readable.
+generated generic box symbol, since none of these breakout boards have
+official KiCad library parts. Connections are drawn as short pin stubs +
+matching net labels (not long point-to-point wires), which is what keeps the
+layout readable.
+
+**Controller pins are named the way the board names them**, not by MCU
+function or port: `D13`/`A4`/`SCL` on the UNO Q, `D0`-`D10` on the XIAO,
+`D2`-`D8` on the Uno under the CNC shield. That is what is printed on the
+silkscreen and what you probe, so it is what the symbol says; the signal's
+role lives in the net label instead (`SPI_SCK_D13`, `MIC_SD_A4`). Sensor and
+driver parts keep their datasheet pin names -- those boards really are
+labelled `SCK`/`SDO`/`STEP`. Port-level mapping for the UNO Q comes from the
+board's own `gpio-map` in `zephyr/boards/arduino/uno_q/
+arduino_r3_connector.dtsi`; for the XIAO, from
+`satellite/include/board_pins.h`.
 
 ## Regenerating
 
@@ -44,8 +55,19 @@ python3 -m venv .venv && .venv/bin/pip install cairosvg
 .venv/bin/python -c "import cairosvg; cairosvg.svg2png(url='base_station.svg', write_to='base_station.png', scale=3.0)"
 ```
 
-The PNGs used in the report are cropped copies (drawing-sheet border
-excluded, whitespace trimmed) -- see the export commands' history for the
-exact crop boxes if regenerating. Report copies live in
-`report/diagrams/` as `02b-`, `03b-`, and `06-*-schematic-kicad.png`, kept
-separate from the report's own hand-built block diagrams.
+The PNGs used in the report are cropped copies with the drawing-sheet border
+and title block removed, so the schematic itself fills the figure. The crop
+is derived, not hand-measured -- scan for ink inside `[200:2800, 200:3300]`
+(a window that clears the sheet's ruler ticks on all four edges and the
+title block at bottom right), take the bounding box, pad by 55px:
+
+```python
+im = Image.open("base_station.png").convert("RGB")
+a = np.array(im.convert("L"))
+ys, xs = np.where(a[200:2800, 200:3300] < 200)
+im.crop((xs.min()+145, ys.min()+145, xs.max()+255, ys.max()+255)).save(out)
+```
+
+Report copies live in `report/diagrams/` as `02b-`, `03b-`, and
+`06-*-schematic-kicad.png`, kept separate from the report's own hand-built
+block diagrams.

@@ -2233,8 +2233,15 @@ link here for the pins.
 | KX134 accelerometer | SPI SCK / MISO / MOSI | D13 / D12 / D11 (main header SPI) |
 | | Chip select | D8 (PB4, software GPIO) |
 | | INT1, buffer-full interrupt | D9 (PB8) |
-| INMP441 microphone | SAI1 clock / frame-sync / data | PB10 / PB9 / PC1 |
-| WS2812B ring | Data in | PB0 (TIM3 channel 3, DMA-driven) |
+| INMP441 microphone | SAI1 clock / frame-sync / data | SCL / D10 / A4 (PB10 / PB9 / PC1) |
+| WS2812B ring | Data in | D3 (PB0, TIM3 channel 3, DMA-driven) |
+
+Pins are given as the UNO Q's own header labels, which is what the board is
+silkscreened with and what you actually plug a wire into; the STM32U585 port
+name follows in brackets where the two are worth relating. The microphone's bit
+clock is the one signal without a D-number: SAI1's clock line is PB10, which
+this board brings out as the dedicated **SCL** pin rather than as part of D0–D13
+(the I2C peripheral is disabled to free it, and nothing here uses I2C).
 
 Nothing connects to the QRB2210 side. Debug logging runs on a separate physical
 link — USART1 on the JDIGITAL D0/D1 header, straight to a host PC over a
