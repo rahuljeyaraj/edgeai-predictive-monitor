@@ -22,7 +22,8 @@ layout readable.
 function or port: `D13`/`A4`/`SCL` on the UNO Q, `D0`-`D10` on the XIAO,
 `D2`-`D8` on the Uno under the CNC shield. That is what is printed on the
 silkscreen and what you probe, so it is what the symbol says; the signal's
-role lives in the net label instead (`SPI_SCK_D13`, `MIC_SD_A4`). Sensor and
+role lives in the net label instead (`SPI_SCK`, `MIC_SD`) -- the pin number
+isn't repeated there since the symbol pin already shows it. Sensor and
 driver parts keep their datasheet pin names -- those boards really are
 labelled `SCK`/`SDO`/`STEP`. Port-level mapping for the UNO Q comes from the
 board's own `gpio-map` in `zephyr/boards/arduino/uno_q/

@@ -32,26 +32,26 @@ RING = Part(
 )
 
 sch.place(XIAO, "U1", 60, 100, {
-    "D8": "SPI_SCK_D8", "D9": "SPI_MISO_D9", "D10": "SPI_MOSI_D10",
-    "D3": "ACC_CS_D3", "D2": "ACC_INT_D2",
-    "D0": "MIC_WS_D0", "D1": "MIC_SCK_D1", "D4": "MIC_SD_D4",
-    "D5": "LED_DIN_D5",
+    "D8": "SPI_SCK", "D9": "SPI_MISO", "D10": "SPI_MOSI",
+    "D3": "ACC_CS", "D2": "ACC_INT",
+    "D0": "MIC_WS", "D1": "MIC_SCK", "D4": "MIC_SD",
+    "D5": "LED_DIN",
     "5V": "PWR:+5V", "3V3": "PWR:+3V3", "GND": "PWR:GND",
 })
 
 sch.place(KX134, "U2", 170, 70, {
-    "SCK": "SPI_SCK_D8", "SDO": "SPI_MISO_D9", "SDI": "SPI_MOSI_D10",
-    "CS": "ACC_CS_D3", "INT1": "ACC_INT_D2",
+    "SCK": "SPI_SCK", "SDO": "SPI_MISO", "SDI": "SPI_MOSI",
+    "CS": "ACC_CS", "INT1": "ACC_INT",
     "VCC": "PWR:+3V3", "GND": "PWR:GND",
 })
 
 sch.place(INMP441, "U3", 170, 125, {
-    "SCK": "MIC_SCK_D1", "WS": "MIC_WS_D0", "SD": "MIC_SD_D4",
+    "SCK": "MIC_SCK", "WS": "MIC_WS", "SD": "MIC_SD",
     "L/R": "PWR:GND", "VDD": "PWR:+3V3", "GND": "PWR:GND",
 })
 
 sch.place(RING, "U4", 170, 170, {
-    "DIN": "LED_DIN_D5", "VCC": "PWR:+5V", "GND": "PWR:GND",
+    "DIN": "LED_DIN", "VCC": "PWR:+5V", "GND": "PWR:GND",
 })
 
 sch.note("EdgeAI Predictive Monitor -- Satellite Node Wiring", 20, 25, size=3.0)

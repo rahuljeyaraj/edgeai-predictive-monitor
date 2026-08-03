@@ -30,19 +30,19 @@ PSU = Part(
 )
 
 sch.place(HUB, "U1", 60, 100, {
-    "D8": "ENABLE_D8", "GND": "PWR:GND",
-    "D2": "M1_STEP_D2", "D5": "M1_DIR_D5",
-    "D3": "M2_STEP_D3", "D6": "M2_DIR_D6",
-    "D4": "M3_STEP_D4", "D7": "M3_DIR_D7",
+    "D8": "ENABLE", "GND": "PWR:GND",
+    "D2": "M1_STEP", "D5": "M1_DIR",
+    "D3": "M2_STEP", "D6": "M2_DIR",
+    "D4": "M3_STEP", "D7": "M3_DIR",
 })
 
 motor_y = [70, 125, 180]
 for idx, y in zip((1, 2, 3), motor_y):
     ref_d = chr(ord("A") + idx - 1)
     sch.place(DRIVER, f"A{idx}", 175, y, {
-        "STEP": f"M{idx}_STEP_D{ {1:2,2:3,3:4}[idx] }",
-        "DIR": f"M{idx}_DIR_D{ {1:5,2:6,3:7}[idx] }",
-        "EN": "ENABLE_D8",
+        "STEP": f"M{idx}_STEP",
+        "DIR": f"M{idx}_DIR",
+        "EN": "ENABLE",
         "GND": "PWR:GND",
         "VMOT": "VMOT",
         "1A": f"M{idx}_A1", "1B": f"M{idx}_A2",

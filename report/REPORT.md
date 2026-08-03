@@ -2248,7 +2248,7 @@ link — USART1 on the JDIGITAL D0/D1 header, straight to a host PC over a
 USB-UART adapter — fully decoupled from the inter-processor link, so attaching a
 log console can never compete with sensor or model traffic.
 
-![Base station schematic (KiCad): UNO Q, KX134, INMP441 and the WS2812 ring, every net labelled by header pin](diagrams/02b-base-station-schematic-kicad.png)
+![Base station schematic (KiCad): UNO Q, KX134, INMP441 and the WS2812 ring, every net labelled by signal role](diagrams/02b-base-station-schematic-kicad.png)
 
 ## B.2 Satellite node — Seeed XIAO ESP32-S3
 
@@ -2268,7 +2268,7 @@ peripheral that genuinely needs them. Node identity is derived from the board's
 own Wi-Fi MAC address; there is no per-unit ID to set, no jumper to solder, and
 no build flag to change between units.
 
-![Satellite node schematic (KiCad): XIAO ESP32-S3, KX134, INMP441 and the WS2812 ring, every net labelled by GPIO](diagrams/03b-satellite-node-schematic-kicad.png)
+![Satellite node schematic (KiCad): XIAO ESP32-S3, KX134, INMP441 and the WS2812 ring, every net labelled by signal role](diagrams/03b-satellite-node-schematic-kicad.png)
 
 ## B.3 Motor-driver rig — Arduino Uno + CNC Shield V3
 

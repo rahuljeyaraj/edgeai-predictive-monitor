@@ -35,26 +35,26 @@ RING = Part(
 )
 
 sch.place(UNOQ, "U1", 60, 100, {
-    "D13": "SPI_SCK_D13", "D12": "SPI_MISO_D12", "D11": "SPI_MOSI_D11",
-    "D8": "ACC_CS_D8", "D9": "ACC_INT_D9",
-    "SCL": "MIC_SCK_SCL", "D10": "MIC_WS_D10", "A4": "MIC_SD_A4",
-    "D3": "LED_DIN_D3",
+    "D13": "SPI_SCK", "D12": "SPI_MISO", "D11": "SPI_MOSI",
+    "D8": "ACC_CS", "D9": "ACC_INT",
+    "SCL": "MIC_SCK", "D10": "MIC_WS", "A4": "MIC_SD",
+    "D3": "LED_DIN",
     "5V": "PWR:+5V", "3V3": "PWR:+3V3", "GND": "PWR:GND",
 })
 
 sch.place(KX134, "U2", 170, 70, {
-    "SCK": "SPI_SCK_D13", "SDO": "SPI_MISO_D12", "SDI": "SPI_MOSI_D11",
-    "CS": "ACC_CS_D8", "INT1": "ACC_INT_D9",
+    "SCK": "SPI_SCK", "SDO": "SPI_MISO", "SDI": "SPI_MOSI",
+    "CS": "ACC_CS", "INT1": "ACC_INT",
     "VCC": "PWR:+3V3", "GND": "PWR:GND",
 })
 
 sch.place(INMP441, "U3", 170, 125, {
-    "SCK": "MIC_SCK_SCL", "WS": "MIC_WS_D10", "SD": "MIC_SD_A4",
+    "SCK": "MIC_SCK", "WS": "MIC_WS", "SD": "MIC_SD",
     "L/R": "PWR:GND", "VDD": "PWR:+3V3", "GND": "PWR:GND",
 })
 
 sch.place(RING, "U4", 170, 170, {
-    "DIN": "LED_DIN_D3", "VCC": "PWR:+5V", "GND": "PWR:GND",
+    "DIN": "LED_DIN", "VCC": "PWR:+5V", "GND": "PWR:GND",
 })
 
 sch.note("EdgeAI Predictive Monitor -- Base Station Wiring", 20, 25, size=3.0)
