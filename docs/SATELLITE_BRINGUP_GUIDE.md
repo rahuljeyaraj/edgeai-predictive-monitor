@@ -165,8 +165,9 @@ task's handle exists — every 30 s it logs stack high-water marks, heap free
 (internal/largest-free/PSRAM/IRAM), and per-module counters (WiFi
 connects/disconnects, MQTT connects/publishes/failures, mic/accel/DSP
 error counts). It also carries a self-heal watchdog: 10 consecutive MQTT
-reconnect failures (~130 s at the observed retry cadence) triggers
-`esp_restart()` — see
+reconnect failures triggers `esp_restart()` — measured real self-heal time is
+~152s (`ADR-036`), not just a calculated retry-count × interval estimate —
+see
 [docs/satellite/decisions/ADR-036-mqtt-reconnect-watchdog.md](satellite/decisions/ADR-036-mqtt-reconnect-watchdog.md).
 This is your primary "is it healthy" tool once everything is running (Stage 6).
 
@@ -400,7 +401,7 @@ Troubleshooting:
 | Ring stuck blue breathe, log repeats `Disconnect reason: ... attempt=N` | Wrong SSID/password in `wifi_creds.h`, or not 2.4 GHz (ESP32-S3 STA is 2.4 GHz only). Fix `wifi_creds.h` and reflash — a plain flash doesn't touch NVS, but a *first-boot* seed only happens once, so if a bad credential already got seeded, `pio run --target erase` first. |
 | Got IP, but no `connected, subscribed to ...` line | Wrong `EPM_MQTT_BROKER_HOST` build flag, broker not listening on `0.0.0.0`, or firewall. Recheck §4a. From the desktop try `mosquitto_sub -h <desktop-ip> -t test` to prove the broker is reachable by IP, not just localhost. |
 | `esp_mqtt_client_start failed: 0x...` | Broker unreachable at the configured host/port — recheck the IP is current (desktop IPs can change on DHCP renewal) and that you rebuilt after editing `build_flags`. |
-| Ring goes violet breathe after previously connecting | MQTT-level disconnect (broker restarted, network blip). Self-heals; if it doesn't clear within ~130 s the watchdog restarts the board automatically (§3). |
+| Ring goes violet breathe after previously connecting | MQTT-level disconnect (broker restarted, network blip). Self-heals; if it doesn't clear within ~152s the watchdog restarts the board automatically (§3). |
 | Portal AP never appears | The node already has saved credentials from a previous boot — `pio run --target erase` first if you want to force provisioning. |
 
 ---
@@ -516,9 +517,9 @@ boot — there's no separate "combine" step. Leave it publishing and watch:
   signal once the board is left running unattended; a slowly falling
   `largest_free` with `internal` roughly stable points at fragmentation, both
   falling together points at real exhaustion.
-- If MQTT gets stuck (10 consecutive reconnect failures, ~130 s), the board
+- If MQTT gets stuck (10 consecutive reconnect failures), the board
   self-restarts (`DIAG: mqtt stuck: ... restarting to recover (ADR-036)`) —
-  expected self-heal behavior, not a crash.
+  measured real self-heal time is ~152s, expected behavior, not a crash.
 
 🎉 That's a fully working satellite node talking to your desktop.
 
@@ -530,7 +531,7 @@ boot — there's no separate "combine" step. Leave it publishing and watch:
 |---|---|---|
 | Ring stays dark / no `EPM: mic=...` boot line | board | flash failed — retry `pio run --target upload -e xiao_esp32s3` |
 | Ring blue breathe, `Disconnect reason: ...` repeating | serial / ring | wrong WiFi creds in `wifi_creds.h`, or not 2.4 GHz |
-| Ring violet breathe | serial / ring | MQTT-level disconnect (WiFi still up) — self-heals within ~130 s or the board restarts |
+| Ring violet breathe | serial / ring | MQTT-level disconnect (WiFi still up) — self-heals within ~152s or the board restarts |
 | WiFi OK (`Got IP: ...`), no `connected, subscribed to ...` | serial | wrong `EPM_MQTT_BROKER_HOST` build flag, broker not on `0.0.0.0`, or firewall |
 | Node absent from dashboard | dashboard | no *data* frames — check `mosquitto_sub` |
 | `WHO_AM_I mismatch` | serial | KX134 SPI wiring (CS/SCK/MISO/MOSI = D6/D8/D9/D10) |

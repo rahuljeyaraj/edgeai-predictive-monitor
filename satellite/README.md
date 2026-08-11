@@ -168,7 +168,7 @@ Specifics live in `docs/satellite/` (curated from the upstream repo's own
 rig, and a live interop session against this reference repository's own
 unmodified dashboard/classifier code. One open item: the reconnect logic in
 `src/threads/wifi_provision_task.c` self-heals a dropped MQTT session inside
-~150s via a watchdog restart
+~152s via a watchdog restart
 (`docs/satellite/decisions/ADR-036-mqtt-reconnect-watchdog.md`) — real but
 not instant, worth knowing about before assuming a "blue breathing" LED
 means a hard failure.
