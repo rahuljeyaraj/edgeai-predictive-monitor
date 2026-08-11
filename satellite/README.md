@@ -118,15 +118,23 @@ its own AP, `EPM-SAT-<node_id>`, with a captive portal:
    boot — write it down.
 2. The OS should auto-open the captive-portal form; if not, browse to
    `192.168.4.1`.
-3. Submit WiFi SSID, WiFi password, MQTT broker host (the UNO Q's LAN IP
-   or hostname), and MQTT broker port (default `1883`). Credentials persist
-   in NVS and survive reboots/reflashes.
+3. Submit WiFi SSID and WiFi password. Credentials persist in NVS and
+   survive reboots/reflashes.
 
 `src/epm_config.h`'s `WIFI_SSID`/`WIFI_PASS` `#define`s are only a first-boot
 seed for the very first join attempt before NVS holds anything — they're
 overridden immediately once a credential is submitted through the portal,
 and can themselves be overridden without editing tracked source by dropping
 a gitignored `src/wifi_creds.h` next to them (`#if __has_include(...)`).
+
+The portal form also has MQTT broker host/port fields, and submitted values
+are persisted to NVS alongside the WiFi credentials — but nothing in the
+runtime MQTT-connect path (`components/epm_drivers/link_mqtt.c`) reads them
+back. The actual broker target is always the compile-time
+`EPM_MQTT_BROKER_HOST`/`EPM_MQTT_BROKER_PORT` macros (default `10.42.0.1` :
+`1883`), overridable only via a `platformio.ini` `build_flags` entry, e.g.
+`-DEPM_MQTT_BROKER_HOST='"192.168.1.50"'`. Treat the portal's broker fields
+as inert until that's wired up.
 
 Node identity is derived automatically from the ESP32's WiFi MAC address
 (last 3 octets, lowercase hex, no separators) — no per-device
