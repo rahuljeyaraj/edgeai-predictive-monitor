@@ -1,0 +1,85 @@
+{
+  "__doc__": [
+    "Single source of truth for the generic sensor telemetry frame format",
+    "(docs/SENSOR_TELEMETRY_FRAME_PLAN.md S2). Every channel/scalar/kind a",
+    "deployment uses is declared once here, then BOTH sides are generated from",
+    "it so the MCU writer and the MPU parser can't independently drift the way",
+    "load_signal() did (see EDGE_IMPULSE_FAULT_CLASSIFICATION_PLAN.md S3.3).",
+    "",
+    "Edit this file, then run:  python3 python/tools/gen_telemetry_schema.py",
+    "which regenerates sketch/telemetry_schema.h (MCU build) and",
+    "python/common/telemetry_schema.py (MPU parser). Do not hand-edit either",
+    "generated file.",
+    "",
+    "This is Phase A (experimentation) -- add/remove channels or change bins",
+    "freely; the MPU parser needs zero code changes (it loops over sections and",
+    "dispatches on data_kind). The MCU side becomes a config toggle over which",
+    "section-writer calls run. Both `id` values are opaque numeric identity on",
+    "the wire; the semantic meaning ('mic' vs 'accel') lives ONLY here.",
+    "",
+    "channel `name` MUST equal the SensorChannel enum value in",
+    "python/registry/registry.py for any channel that feeds the model, so a",
+    "decoded section lands in SensorFrame.bins under the key downstream",
+    "(features.py / registry input_dim_for) already expects."
+  ],
+  "sources": {
+    "base_station": 0,
+    "satellite": 1
+  },
+  "data_kinds": {
+    "SPECTRUM": 1,
+    "TIME_SERIES": 2,
+    "SCALAR_SET": 3
+  },
+  "channels": [
+    {"name": "mic",   "id": 0, "kind": "SPECTRUM"},
+    {"name": "accel", "id": 1, "kind": "SPECTRUM"},
+    {"name": "accel_x_raw", "id": 2, "kind": "TIME_SERIES"},
+    {"name": "accel_y_raw", "id": 3, "kind": "TIME_SERIES"},
+    {"name": "accel_z_raw", "id": 4, "kind": "TIME_SERIES"},
+    {"name": "mic_raw",     "id": 5, "kind": "TIME_SERIES"},
+    {"name": "accel_x", "id": 6, "kind": "SPECTRUM"},
+    {"name": "accel_y", "id": 7, "kind": "SPECTRUM"},
+    {"name": "accel_z", "id": 8, "kind": "SPECTRUM"},
+    {"name": "accel_x_envelope", "id": 9, "kind": "SPECTRUM"},
+    {"name": "accel_y_envelope", "id": 10, "kind": "SPECTRUM"},
+    {"name": "accel_z_envelope", "id": 11, "kind": "SPECTRUM"}
+  ],
+  "perf_channel_id": 255,
+  "scalars": {
+    "rms": 1,
+    "kurtosis": 2,
+    "crest_factor": 3,
+    "peak": 4,
+    "std": 5,
+    "skewness": 6,
+
+    "rms_x": 7,
+    "kurtosis_x": 8,
+    "std_x": 9,
+    "peak_x": 10,
+    "crest_factor_x": 11,
+    "skewness_x": 12,
+
+    "rms_y": 13,
+    "kurtosis_y": 14,
+    "std_y": 15,
+    "peak_y": 16,
+    "crest_factor_y": 17,
+    "skewness_y": 18,
+
+    "rms_z": 19,
+    "kurtosis_z": 20,
+    "std_z": 21,
+    "peak_z": 22,
+    "crest_factor_z": 23,
+    "skewness_z": 24,
+
+    "rms_mic": 25,
+    "kurtosis_mic": 26,
+    "std_mic": 27,
+    "peak_mic": 28,
+    "crest_factor_mic": 29,
+    "skewness_mic": 30
+  }
+}

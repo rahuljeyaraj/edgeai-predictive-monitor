@@ -1,0 +1,189 @@
+# EPM project sdkconfig overrides.
+# These values are merged with the board defaults on every `idf.py menuconfig`
+# or PlatformIO build.  Only include settings that differ from IDF defaults.
+
+# ── System ──────────────────────────────────────────────────────────────────
+
+# app_main calls esp_wifi_init + phy_init chain which uses ~4 KB of stack.
+# Default 3584 overflows → corrupted TCB on vTaskDelete.
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
+
+# Interrupt WDT timeout for WiFi RF PHY calibration.
+#
+# ESP32-S3 WiFi PHY full calibration (runs in ISR context on Core 0) takes:
+#   ~200 ms   — partial calibration (NVS cache hit, subsequent boots)
+#   ~1500 ms  — FULL calibration   (first boot after flash erase, empty phy_init partition)
+#
+# With an empty phy_init partition the driver always does full calibration.
+# 1200 ms was too short — the IWDT fired every boot, causing an infinite crash loop
+# (confirmed by UART log: "Interrupt wdt timeout on CPU0" immediately after
+# "I (417) net80211: net80211 rom version").
+#
+# 2000 ms gives enough headroom for full calibration on first boot.
+# After the first successful boot the PHY data is stored in NVS and
+# subsequent boots use the fast partial path (<200 ms).
+CONFIG_ESP_INT_WDT_TIMEOUT_MS=2000
+
+# ── Compiler optimisation ────────────────────────────────────────────────────
+
+# Use -O2 (performance) instead of -Og (debug).
+# DSP pipeline benefits significantly: kurtosis inner loop, FFT windowing,
+# cosf phase accumulators.  The IDF WiFi blobs are pre-compiled — they are
+# not affected by this setting.
+CONFIG_COMPILER_OPTIMIZATION_PERF=y
+
+# ── LWIP TCP tuning for 14 KB frames ────────────────────────────────────────
+
+# Default TCP send buffer is 5740 bytes.  Each EPM frame is ~14.3 KB.
+# Raising to 32 KB allows the TCP stack to buffer a full frame before
+# ACKing, reducing the number of send() calls that block waiting for
+# window space.
+CONFIG_LWIP_TCP_SND_BUF_DEFAULT=32768
+
+# TCP receive window: how much data the peer can send before waiting for ACK.
+# Larger window improves throughput on high-latency links (WiFi retransmits).
+CONFIG_LWIP_TCP_WND_DEFAULT=32768
+
+# TCP receive mailbox (pbuf queue depth per socket).  Default 6 is tight
+# for a 14 KB frame arriving as multiple 1460-byte segments.
+CONFIG_LWIP_TCP_RECVMBOX_SIZE=16
+
+# ── WiFi ─────────────────────────────────────────────────────────────────────
+
+# Keep dynamic TX buffers at 32 (default) — avoids dropping frames when
+# WiFi retransmits.  Dynamic RX buffers raised to 32 to absorb bursts from
+# the gateway's alert byte and any DHCP/ARP traffic.
+CONFIG_ESP_WIFI_DYNAMIC_TX_BUFFER_NUM=32
+CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=32
+
+# ── Power management ─────────────────────────────────────────────────────────
+#
+# wifi_task.c calls esp_wifi_set_ps(WIFI_PS_NONE) — modem sleep disabled.
+# This gives maximum TCP throughput for 14.3 KB/frame at ~2.2 fps.
+#
+# For LiPo / battery-powered deployment change that call to:
+#   esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
+# Saves ~30% WiFi power with up to 100 ms extra frame latency.
+#
+# Dynamic CPU frequency scaling (240→80 MHz) and tickless idle are now active.
+# wifi_task.c calls esp_pm_configure() after WiFi connects.
+CONFIG_PM_ENABLE=y
+CONFIG_FREERTOS_USE_TICKLESS_IDLE=y
+
+# ── PSRAM ─────────────────────────────────────────────────────────────────────
+#
+# PSRAM ENABLED — confirmed working (Session 7). 8 MB Octal PSRAM initialises
+# cleanly at boot; heap_caps_get_free_size(MALLOC_CAP_SPIRAM) reports ~8.2 MB
+# free at runtime. The earlier OPI boot-loop (bootloader panic on PSRAM init)
+# is resolved — see PROJECT_STATUS.md Session 7 for the fix history. No
+# bootloader-level workaround is needed; the four settings below are the
+# complete, sufficient PSRAM configuration for this board.
+#
+# EXT_RAM_BSS_ATTR has been restored on the buffers that were temporarily
+# moved to internal DRAM during the PSRAM outage:
+#   dsp_task.c   → s_mag_db[FFT_HALF]       (2 KB)
+#   imu_task.c   → s_frame (imu_frame_t)    (12 KB)
+#
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_USE_CAPS_ALLOC=y
+CONFIG_SPIRAM_IGNORE_NOTFOUND=y
+CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY=y
+
+# ── LEDC fade ISR in IRAM ─────────────────────────────────────────────────────
+#
+# Places the LEDC fade ISR and control functions in IRAM so they remain
+# accessible when the flash instruction cache is disabled during WiFi TX bursts.
+# Without these, a cache miss during a WiFi packet can delay the fade-end
+# callback by up to 800 µs — visible as a LED glitch.
+CONFIG_LEDC_FADE_ISR_IN_IRAM=y
+CONFIG_LEDC_CTRL_FUNC_IN_IRAM=y
+
+# ── I2S ISR in IRAM ───────────────────────────────────────────────────────────
+#
+# HW-OPT: Keeps the I2S DMA interrupt handler in IRAM so DMA buffer completion
+# events are processed immediately even when the flash cache is disabled during
+# a WiFi TX burst.  Without this, an 800 µs cache-miss window can cause the
+# I2S DMA ISR to miss a buffer-full interrupt, resulting in a silent audio gap
+# and an incrementing overflow_count in the EPM frame header.
+CONFIG_I2S_ISR_IRAM_SAFE=y
+
+# ── SPI master ISR in IRAM ────────────────────────────────────────────────────
+#
+# HW-OPT: Keeps the SPI master interrupt handler in IRAM.  Required when the
+# KX134 SPI driver is active — a cache miss during a WiFi TX burst would delay
+# the SPI DMA completion ISR, causing an SPI transaction overrun.
+# Safe to include even while the IMU is a stub (flag has no effect on
+# a bus that is not initialised).
+CONFIG_SPI_MASTER_ISR_IN_IRAM=y
+
+# ── WiFi IRAM optimisation ────────────────────────────────────────────────────
+#
+# HW-OPT: Places the WiFi driver's TX/RX hot path and the 802.11 MAC interrupt
+# handler in IRAM.  Expected improvement: up to 20% higher WiFi throughput and
+# lower jitter on the 14 KB EPM frame sends.  Required because the WiFi driver
+# itself can be interrupted by other ISRs; having the handler in IRAM prevents
+# recursive cache misses.
+CONFIG_ESP_WIFI_IRAM_OPT=y
+CONFIG_ESP_WIFI_RX_IRAM_OPT=y
+
+# ── mbedTLS hardware acceleration ────────────────────────────────────────────
+#
+# HW-OPT: Routes AES-128-GCM encryption through the ESP32-S3 hardware AES
+# accelerator + GDMA engine instead of the software AES path.
+#
+#   Frame size   = 14 336 bytes (EPM_PLAIN_LEN)
+#   Software AES = ~30 cycles/byte → 14 336 × 30 / 240 000 000 ≈ 1.79 ms
+#                = 35.8 % CPU at 2.2 fps
+#   Hardware AES = GDMA offload, < 0.2 ms ≈ 3 % CPU at 2.2 fps
+#
+# CONFIG_MBEDTLS_AES_USE_INTERRUPT=y: AES engine triggers an interrupt on
+# completion rather than busy-waiting in the WiFi task, allowing the CPU to
+# handle other ISRs during the ~0.2 ms AES operation.
+CONFIG_MBEDTLS_HARDWARE_AES=y
+CONFIG_MBEDTLS_HARDWARE_SHA=y
+CONFIG_MBEDTLS_AES_USE_INTERRUPT=y
+
+# ── PSRAM: Octal mode ────────────────────────────────────────────────────────
+#
+# XIAO ESP32-S3 uses an Octal (8-line) PSRAM interface, not Quad.
+# CONFIG_SPIRAM_MODE_OCT=y activates the OPI (Octal Peripheral Interface)
+# driver which doubles the peak bandwidth vs Quad mode
+# (up to ~80 MB/s vs ~40 MB/s at 80 MHz OPI DDR).
+# Without this, the Octal PSRAM runs in compatibility Quad mode — slower and
+# consumes more transactions per PSRAM access.
+CONFIG_SPIRAM_MODE_OCT=y
+
+# ── FreeRTOS runtime statistics ──────────────────────────────────────────────
+#
+# Required for vTaskGetRunTimeStats() in diagnostics_task.
+# CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS enables the per-task CPU counter.
+# CONFIG_FREERTOS_USE_TRACE_FACILITY adds uxTaskGetSystemState() support.
+# CONFIG_FREERTOS_USE_STATS_FORMATTING_FUNCTIONS provides vTaskGetRunTimeStats().
+# All three are required together.
+CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS=y
+CONFIG_FREERTOS_USE_TRACE_FACILITY=y
+CONFIG_FREERTOS_USE_STATS_FORMATTING_FUNCTIONS=y
+
+# ── Flash size: 8MB (XIAO ESP32-S3 physical flash) ──────────────────────────
+# Stale sdkconfig.xiao_esp32s3 had CONFIG_ESPTOOLPY_FLASHSIZE_2MB=y which
+# caused "WARNING: Flash memory size mismatch: Expected 8MB, found 2MB" on
+# every flash and limited the app address space to 2MB. Physical chip is 8MB.
+CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="8MB"
+
+# ── Partition table: 8MB single-app layout (SIMPLIFIED — OTA disabled) ───────
+# Using single-app factory layout to avoid OTA bootloader boot-loop.
+# OTA partition table (partitions_8mb.csv) caused boot-loop: the JTAG upload
+# does NOT flash ota_data_initial.bin at 0x10000, leaving the otadata region
+# at all-0xFF. Switching to factory-app avoids the OTA state machine entirely.
+# To restore OTA later: switch back to partitions_8mb.csv AND ensure esptool
+# flashes ota_data_initial.bin at 0x10000 (see flasher_args.json).
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions_simple_8mb.csv"
+CONFIG_PARTITION_TABLE_OFFSET=0x8000
+
+# ── LWIP hostname ─────────────────────────────────────────────────────────────
+# Change from IDF default "espressif" to a project-specific name for mDNS
+# and network debugging. Shows in ARP tables and mDNS browser as "epm-sat".
+CONFIG_LWIP_LOCAL_HOSTNAME="epm-sat"
+                                                                                                                                                                                                                                                                        

@@ -1,0 +1,9 @@
+# ESP32-S3 8MB Flash — simple single-app layout (no OTA)
+# Use this if the OTA bootloader has trouble with uninitialized otadata.
+# Reverts to factory-app boot which requires no OTA state machine.
+#
+# Name,     Type,  SubType,  Offset,    Size
+nvs,        data,  nvs,      0x9000,    0x6000,
+phy_init,   data,  phy,      0xf000,    0x1000,
+factory,    app,   factory,  0x10000,   0x6F0000,
+spiffs,     data,  spiffs,   0x700000,  0x100000,
