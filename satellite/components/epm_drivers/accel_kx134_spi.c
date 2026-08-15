@@ -440,7 +440,11 @@ static int kx134_fill_epoch(float *out_x, size_t want)
         ESP_LOGW(TAG, "FIFO seen at max capacity (%u/%u frames) -- possible dropped samples",
                   (unsigned)max_smp_frames, (unsigned)KX134_FIFO_MAX_FRAMES);
     }
-    ESP_LOGI(TAG, "epoch: n=%u mean_g x=%.3f y=%.3f z=%.3f max_fifo=%u/%u",
+    /* Quiet by default (fires every epoch, ~180ms): ESP_LOGD compiles out
+     * under the default INFO log level (see main.c's diagnostics_task_fn for
+     * the re-enable path). The FIFO-max-capacity ESP_LOGW above stays at its
+     * own level either way. */
+    ESP_LOGD(TAG, "epoch: n=%u mean_g x=%.3f y=%.3f z=%.3f max_fifo=%u/%u",
               (unsigned)s_stage_n, (float)(sum_x / s_stage_n), (float)(sum_y / s_stage_n),
               (float)(sum_z / s_stage_n), (unsigned)max_smp_frames, (unsigned)KX134_FIFO_MAX_FRAMES);
 

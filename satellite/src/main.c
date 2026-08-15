@@ -64,6 +64,13 @@ typedef struct {
 
 static diag_args_t s_diag_args;
 
+/* Quiet by default: every line below is ESP_LOGD, which ESP-IDF's default
+ * CONFIG_LOG_DEFAULT_LEVEL (INFO) compiles out entirely, so none of this
+ * reaches the serial console in a normal build. To get it back for a
+ * soak/stress test (see docs/satellite/SATELLITE_STRESS_STABILITY_TEST.md),
+ * rebuild with CONFIG_LOG_DEFAULT_LEVEL_DEBUG=y (menuconfig: Component
+ * config -> Log output -> Default log verbosity -> Debug). The mqtt-stuck
+ * ESP_LOGE self-heal line stays at its own level either way. */
 static void diagnostics_task_fn(void *arg)
 {
     diag_args_t  *a     = (diag_args_t *)arg;
@@ -74,7 +81,7 @@ static void diagnostics_task_fn(void *arg)
 
         /* Stack watermarks — minimum ever-free bytes (IDF 5.x returns bytes).
          * A value approaching 0 signals an imminent stack overflow. */
-        ESP_LOGI("DIAG", "Stack HWM (bytes free): mic=%lu dsp=%lu rgb=%lu imu=%lu diag=%lu",
+        ESP_LOGD("DIAG", "Stack HWM (bytes free): mic=%lu dsp=%lu rgb=%lu imu=%lu diag=%lu",
             (unsigned long)uxTaskGetStackHighWaterMark(a->h_mic),
             (unsigned long)uxTaskGetStackHighWaterMark(a->h_dsp),
             (unsigned long)uxTaskGetStackHighWaterMark(a->h_rgb),
@@ -89,9 +96,9 @@ static void diagnostics_task_fn(void *arg)
         /* Static keeps the 1024-byte text table off the 3072-byte task stack. */
         static char s_stats[1024];
         vTaskGetRunTimeStats(s_stats);
-        ESP_LOGI("DIAG", "CPU runtime:\n%s", s_stats);
+        ESP_LOGD("DIAG", "CPU runtime:\n%s", s_stats);
 #else
-        ESP_LOGI("DIAG", "CPU runtime stats: not available (SMP FreeRTOS)");
+        ESP_LOGD("DIAG", "CPU runtime stats: not available (SMP FreeRTOS)");
 #endif
 
         /* Heap health. largest_free tells fragmentation (falling free with
@@ -106,7 +113,7 @@ static void diagnostics_task_fn(void *arg)
          * https://docs.espressif.com/projects/esp-idf/en/stable/esp32/migration-guides/release-6.x/6.0/system.html */
         unsigned long iram_free = 0;
 #endif
-        ESP_LOGI("DIAG", "Heap free: internal=%lu largest_free=%lu PSRAM=%lu IRAM=%lu",
+        ESP_LOGD("DIAG", "Heap free: internal=%lu largest_free=%lu PSRAM=%lu IRAM=%lu",
             (unsigned long)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
             (unsigned long)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
             (unsigned long)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
@@ -117,7 +124,7 @@ static void diagnostics_task_fn(void *arg)
          * escalates to a crash/reboot, even on units nobody is watching live. */
         struct wifi_task_stats wifi_st;
         wifi_task_get_stats(&wifi_st);
-        ESP_LOGI("DIAG", "wifi: connects=%lu disconnects=%lu retry_cnt=%lu",
+        ESP_LOGD("DIAG", "wifi: connects=%lu disconnects=%lu retry_cnt=%lu",
             (unsigned long)wifi_st.connects, (unsigned long)wifi_st.disconnects,
             (unsigned long)wifi_st.retry_cnt);
 
@@ -128,7 +135,7 @@ static void diagnostics_task_fn(void *arg)
          * timeouts) vs. WiFi-level drops. */
         struct link_mqtt_stats mqtt_st;
         link_mqtt_get_stats(&mqtt_st);
-        ESP_LOGI("DIAG", "mqtt: connects=%lu disconnects=%lu publishes=%lu "
+        ESP_LOGD("DIAG", "mqtt: connects=%lu disconnects=%lu publishes=%lu "
                  "publish_failures=%lu cmds_received=%lu",
             (unsigned long)mqtt_st.connects, (unsigned long)mqtt_st.disconnects,
             (unsigned long)mqtt_st.publishes, (unsigned long)mqtt_st.publish_failures,
@@ -173,7 +180,7 @@ static void diagnostics_task_fn(void *arg)
 
         struct wifi_provision_stats prov_st;
         wifi_provision_task_get_stats(&prov_st);
-        ESP_LOGI("DIAG", "wifi_prov: state=%lu provisioning_entries=%lu "
+        ESP_LOGD("DIAG", "wifi_prov: state=%lu provisioning_entries=%lu "
                  "recovery_entries=%lu recovery_successes=%lu",
             (unsigned long)g_wifi_provision_state,
             (unsigned long)prov_st.provisioning_entries,
@@ -182,7 +189,7 @@ static void diagnostics_task_fn(void *arg)
 
         struct mic_task_stats mic_st;
         mic_task_get_stats(&mic_st);
-        ESP_LOGI("DIAG", "mic: blocks_ok=%lu capture_failures=%lu rb_drops=%lu",
+        ESP_LOGD("DIAG", "mic: blocks_ok=%lu capture_failures=%lu rb_drops=%lu",
             (unsigned long)mic_st.blocks_ok, (unsigned long)mic_st.capture_failures,
             (unsigned long)mic_st.rb_drops);
 
@@ -196,31 +203,31 @@ static void diagnostics_task_fn(void *arg)
                 (unsigned long)mic_i2s_st.read_errors,
                 (unsigned long)mic_i2s_st.short_reads);
         } else {
-            ESP_LOGI("DIAG", "mic i2s: overflow_count=0 (clean) read_errors=%lu short_reads=%lu",
+            ESP_LOGD("DIAG", "mic i2s: overflow_count=0 (clean) read_errors=%lu short_reads=%lu",
                 (unsigned long)mic_i2s_st.read_errors, (unsigned long)mic_i2s_st.short_reads);
         }
 
         struct dsp_task_stats dsp_st;
         dsp_task_get_stats(&dsp_st);
-        ESP_LOGI("DIAG", "dsp: fft_count=%lu frames_emitted=%lu rb_timeouts=%lu last_fft_us=%lu",
+        ESP_LOGD("DIAG", "dsp: fft_count=%lu frames_emitted=%lu rb_timeouts=%lu last_fft_us=%lu",
             (unsigned long)dsp_st.fft_count, (unsigned long)dsp_st.frames_emitted,
             (unsigned long)dsp_st.rb_timeouts, (unsigned long)dsp_st.last_fft_us);
 
         struct imu_task_stats imu_st;
         imu_task_get_stats(&imu_st);
-        ESP_LOGI("DIAG", "imu: epochs=%lu read_errors=%lu reinit_attempts=%lu reinit_successes=%lu",
+        ESP_LOGD("DIAG", "imu: epochs=%lu read_errors=%lu reinit_attempts=%lu reinit_successes=%lu",
             (unsigned long)imu_st.epochs, (unsigned long)imu_st.read_errors,
             (unsigned long)imu_st.reinit_attempts, (unsigned long)imu_st.reinit_successes);
 
         struct hal_accel_stats accel_st;
         hal_accel_get_stats(&accel_st);
-        ESP_LOGI("DIAG", "accel: reads_ok=%lu read_errors=%lu fifo_max_hits=%lu",
+        ESP_LOGD("DIAG", "accel: reads_ok=%lu read_errors=%lu fifo_max_hits=%lu",
             (unsigned long)accel_st.reads_ok, (unsigned long)accel_st.read_errors,
             (unsigned long)accel_st.fifo_max_hits);
 
         struct net_task_stats net_st;
         net_task_get_stats(&net_st);
-        ESP_LOGI("DIAG", "net: frames_built=%lu build_failures=%lu publish_failures=%lu "
+        ESP_LOGD("DIAG", "net: frames_built=%lu build_failures=%lu publish_failures=%lu "
                  "cmd_malformed=%lu disconnect_reverts=%lu",
             (unsigned long)net_st.frames_built, (unsigned long)net_st.build_failures,
             (unsigned long)net_st.publish_failures, (unsigned long)net_st.cmd_malformed,
@@ -228,7 +235,7 @@ static void diagnostics_task_fn(void *arg)
 
         struct rgb_led_stats led_st;
         led_task_get_stats(&led_st);
-        ESP_LOGI("DIAG", "led: state_changes=%lu remote_updates=%lu hw_errors=%lu",
+        ESP_LOGD("DIAG", "led: state_changes=%lu remote_updates=%lu hw_errors=%lu",
             (unsigned long)led_st.state_changes, (unsigned long)led_st.remote_updates,
             (unsigned long)led_st.hw_errors);
     }
