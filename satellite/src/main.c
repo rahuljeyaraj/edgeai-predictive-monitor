@@ -98,11 +98,19 @@ static void diagnostics_task_fn(void *arg)
          * stable largest_free) apart from real exhaustion (both falling
          * together) — stress-soak instrumentation, see
          * docs/performance/SATELLITE_STRESS_STABILITY_TEST.md. */
+#ifdef MALLOC_CAP_EXEC
+        unsigned long iram_free = (unsigned long)heap_caps_get_free_size(MALLOC_CAP_EXEC);
+#else
+        /* MALLOC_CAP_EXEC is undefined when CONFIG_ESP_SYSTEM_MEMPROT is
+         * enabled (default on ESP32-S3 since IDF 6.0) — see
+         * https://docs.espressif.com/projects/esp-idf/en/stable/esp32/migration-guides/release-6.x/6.0/system.html */
+        unsigned long iram_free = 0;
+#endif
         ESP_LOGI("DIAG", "Heap free: internal=%lu largest_free=%lu PSRAM=%lu IRAM=%lu",
             (unsigned long)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
             (unsigned long)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
             (unsigned long)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
-            (unsigned long)heap_caps_get_free_size(MALLOC_CAP_EXEC));
+            iram_free);
 
         /* Per-module health counters (Part I's <module>_get_stats() convention).
          * Logged every cycle so a field failure shows up here well before it
@@ -245,11 +253,18 @@ void app_main(void)
 
     /* HW-OPT: Boot memory map — logged before any tasks allocate heap.
      * Use these numbers in HARDWARE_AUDIT_RESULTS.md baseline table. */
+#ifdef MALLOC_CAP_EXEC
+    unsigned long boot_iram_free = (unsigned long)heap_caps_get_free_size(MALLOC_CAP_EXEC);
+#else
+    /* MALLOC_CAP_EXEC is undefined when CONFIG_ESP_SYSTEM_MEMPROT is
+     * enabled (default on ESP32-S3 since IDF 6.0). */
+    unsigned long boot_iram_free = 0;
+#endif
     ESP_LOGI(TAG, "Boot memory (before tasks): "
              "DRAM free=%lu PSRAM free=%lu IRAM free=%lu",
         (unsigned long)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
         (unsigned long)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
-        (unsigned long)heap_caps_get_free_size(MALLOC_CAP_EXEC));
+        boot_iram_free);
 
     /* Initialise FFT twiddle-factor table once with the largest needed size.
      * FFT_IMU_N >= FFT_MIC_N, so a single init covers both tasks.

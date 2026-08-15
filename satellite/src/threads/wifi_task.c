@@ -15,6 +15,7 @@
  * On WIFI_EVENT_STA_DISCONNECTED: clears WIFI_CONNECTED_BIT and reconnects.
  */
 
+#include <stdio.h>
 #include <string.h>
 #include <errno.h>
 
@@ -263,10 +264,12 @@ void wifi_rf_init(void)
             .pmf_cfg            = { .capable = false, .required = false },
         },
     };
-    strncpy((char *)wifi_cfg.sta.ssid, creds.wifi_ssid, sizeof(wifi_cfg.sta.ssid) - 1);
-    strncpy((char *)wifi_cfg.sta.password, creds.wifi_password, sizeof(wifi_cfg.sta.password) - 1);
+    snprintf((char *)wifi_cfg.sta.ssid, sizeof(wifi_cfg.sta.ssid), "%.*s",
+             (int)(sizeof(wifi_cfg.sta.ssid) - 1), creds.wifi_ssid);
+    snprintf((char *)wifi_cfg.sta.password, sizeof(wifi_cfg.sta.password), "%.*s",
+             (int)(sizeof(wifi_cfg.sta.password) - 1), creds.wifi_password);
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_cfg));
-    strncpy(s_current_ssid, creds.wifi_ssid, sizeof(s_current_ssid) - 1);
+    snprintf(s_current_ssid, sizeof(s_current_ssid), "%s", creds.wifi_ssid);
     ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
     ESP_ERROR_CHECK(esp_wifi_start());
 

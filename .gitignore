@@ -39,3 +39,4 @@ captures_*/
 # ...except the rendered report block diagrams -- REPORT.md embeds these PNGs
 # directly, and the Pandoc PDF pipeline needs them (see report/diagrams/README.md).
 !report/diagrams/*.png
+*/managed_components/*
