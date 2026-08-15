@@ -40,7 +40,10 @@
     {"name": "mic_raw",     "id": 5, "kind": "TIME_SERIES"},
     {"name": "accel_x", "id": 6, "kind": "SPECTRUM"},
     {"name": "accel_y", "id": 7, "kind": "SPECTRUM"},
-    {"name": "accel_z", "id": 8, "kind": "SPECTRUM"}
+    {"name": "accel_z", "id": 8, "kind": "SPECTRUM"},
+    {"name": "accel_x_envelope", "id": 9, "kind": "SPECTRUM"},
+    {"name": "accel_y_envelope", "id": 10, "kind": "SPECTRUM"},
+    {"name": "accel_z_envelope", "id": 11, "kind": "SPECTRUM"}
   ],
   "perf_channel_id": 255,
   "scalars": {
