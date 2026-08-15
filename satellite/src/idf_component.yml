@@ -1,0 +1,6 @@
+## IDF Component Manager manifest for the main component.
+## PlatformIO 6.x + ESP-IDF 5.x picks this up automatically on build.
+dependencies:
+  idf: ">=5.0.0"
+  espressif/esp-dsp: ">=1.3.0"
+  espressif/led_strip: ">=2.5.0"

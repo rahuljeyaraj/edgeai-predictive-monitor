@@ -1,0 +1,106 @@
+menu "EPM Drivers"
+
+    config EPM_ACCEL_USE_STUB
+        bool "Use synthetic accelerometer stub (no KX134 hardware)"
+        default n
+        help
+            Selects components/epm_drivers/accel_stub.c as the hal_accel.h
+            implementation instead of the real accel_kx134_spi.c driver.
+            The real driver is hardware-confirmed (WHO_AM_I, at-rest
+            g-values, zero dropped FIFO frames over a sustained run --
+            docs/decisions/ADR-017) and validated running concurrently
+            with real MQTT publishing with zero crashes (ADR-024). Default
+            is now n; set y for development/CI without KX134 hardware
+            wired up.
+
+    config EPM_DISPLAY_USE_LEDC
+        bool "Use plain-LEDC RGB LED (no WS2812/NeoPixel hardware)"
+        default n
+        help
+            Selects components/epm_drivers/display_ledc.c as the hal_display.h
+            implementation instead of the default WS2812 NeoPixel driver
+            (display_neopixel.c). Kept as a Kconfig fallback for boards
+            without an addressable RGB LED wired up -- see
+            docs/decisions/ADR-016.
+
+    config EPM_STATUS_LED_SELFTEST
+        bool "TEMPORARY/TEST-ONLY: fire a manufactured STATUS_LED at boot"
+        default n
+        help
+            Phase 7c hardware-validation aid, not for normal builds. Makes
+            src/threads/net_task.c invoke its own just-registered cmd
+            handler once at boot with a manufactured STATUS_LED payload,
+            so the decode-dispatch-LED-update path can be confirmed on
+            real hardware without a working MQTT broker connection
+            (ADR-011's known TCP-handshake stall against the only
+            reachable stand-in broker blocks real command delivery).
+            Leave n for normal builds -- see docs/decisions/ADR-025.
+
+    config EPM_MQTT_RECONNECT_STRESS_TEST
+        bool "TEMPORARY/TEST-ONLY: repeatedly call link_mqtt_start() at boot"
+        default n
+        help
+            Accelerated leak-per-call test for link_mqtt_start()'s
+            retry-path fix (commit dab1064: destroying the stale s_client
+            handle before re-init). Normal operation only calls
+            link_mqtt_start() once at boot -- net_task.c's own retry loop
+            only repeats if that first call fails outright, and every
+            mid-session drop afterward is handled entirely inside
+            esp-mqtt's own internal reconnect state machine, which never
+            calls link_mqtt_start() again. That means ordinary running
+            time, however long, can't exercise this function's leak-fix
+            path more than once per boot. This makes
+            src/threads/net_task.c call it 50 times back to back 30s after
+            boot, logging free internal heap before/after each call, so a
+            per-call leak - if any - shows up as a monotonic decline.
+            Leave n for normal builds.
+
+    config EPM_LOW_HEAP_BOOT_STALL_TEST
+        bool "TEMPORARY/TEST-ONLY: reserve heap at boot to force the ADR-024 MQTT-init guard"
+        default n
+        help
+            Deterministic repro/verify aid for the low-heap MQTT-init
+            stall documented as a watchdog blind spot in
+            docs/decisions/ADR-036-mqtt-reconnect-watchdog.md's dated
+            addendum. The original finding hit this precondition (free
+            heap below the 32768-byte ADR-024 margin by the time
+            link_mqtt_start() first runs) via an extended real WiFi
+            boot-retry loop timed against a router power-cycle -- hard to
+            reproduce on demand. This instead reserves enough
+            internal-DRAM heap right before that first call to land below
+            the same margin directly, on a normal WiFi connection. Arms
+            exactly once via an RTC_NOINIT_ATTR magic-value marker, so a
+            fixed board recovers once (via ADR-036's esp_restart()) and
+            stays recovered instead of re-arming the same low-heap
+            condition and loop-restarting forever. RTC memory is NOT
+            cleared by an OpenOCD/esp-builtin reflash or by esp_restart()
+            -- only an actual power-loss (VDD_RTC dropping, e.g. unplug/
+            replug USB) clears it, so re-arming this test for a fresh run
+            after a reflash needs a real power cycle, not just a re-flash.
+            Leave n for normal builds.
+
+    config EPM_PROVISIONING_STARVATION_TEST
+        bool "TEMPORARY/TEST-ONLY: force a bad saved SSID to reach PROVISIONING on demand"
+        default n
+        help
+            Deterministic repro/verify aid for the captive-portal HTTP
+            server starvation documented in
+            docs/performance/SATELLITE_STRESS_STABILITY_TEST.md's "New
+            finding: captive-portal HTTP server starves under extended STA
+            retry churn". The original finding needed the board to sit in
+            PROVISIONING against an unreachable saved SSID for tens of
+            minutes -- normally only reached by an unlucky real-world
+            credential/AP failure, not reproducible on demand. This
+            substitutes an in-RAM bogus SSID/password for the loaded
+            credentials at the point src/threads/wifi_task.c's
+            wifi_rf_init() would otherwise hand them to
+            esp_wifi_set_config(WIFI_IF_STA, ...), so the very first join
+            attempt fails and the existing wifi_provision_task.c state
+            machine carries the board into PROVISIONING on its own,
+            exactly as it would for a genuinely bad AP. Never touches NVS
+            or the real saved credentials -- net_credentials_save() only
+            runs on a successful join, which this prevents by
+            construction, so a reboot without this flag set reconnects
+            normally. Leave n for normal builds.
+
+endmenu
