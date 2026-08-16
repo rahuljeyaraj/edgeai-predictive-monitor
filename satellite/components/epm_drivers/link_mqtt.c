@@ -11,6 +11,7 @@
 #include "freertos/semphr.h"
 #include "mqtt_client.h"
 
+#include "drivers/net_credentials.h"
 #include "drivers/node_id.h"
 #include "frame_codec/wire_protocol.h"
 #include "hal/hal_transport.h"
@@ -265,9 +266,26 @@ int link_mqtt_start(void)
 		s_client = NULL;
 	}
 
+	/* Use the provisioned broker host/port from NVS (captive portal's "MQTT
+	 * Broker Host/Port" fields, saved via net_credentials_save()) if
+	 * present; fall back to the compile-time EPM_MQTT_BROKER_HOST/PORT dev-
+	 * bench defaults on a genuinely unprovisioned board, same pattern
+	 * wifi_task.c's wifi_rf_init() already uses for WIFI_SSID/WIFI_PASS.
+	 * esp_mqtt_client_init() strdup()s the hostname internally
+	 * (esp_mqtt_set_if_config() in mqtt_client.c), so a stack-local `creds`
+	 * is safe here - no dangling pointer once this function returns. */
+	const char *broker_host = EPM_MQTT_BROKER_HOST;
+	uint16_t broker_port = EPM_MQTT_BROKER_PORT;
+	struct net_credentials creds;
+
+	if (net_credentials_load(&creds) == 0 && creds.mqtt_host[0] != '\0') {
+		broker_host = creds.mqtt_host;
+		broker_port = creds.mqtt_port;
+	}
+
 	esp_mqtt_client_config_t cfg = {
-		.broker.address.hostname = EPM_MQTT_BROKER_HOST,
-		.broker.address.port = EPM_MQTT_BROKER_PORT,
+		.broker.address.hostname = broker_host,
+		.broker.address.port = broker_port,
 		.broker.address.transport = MQTT_TRANSPORT_OVER_TCP,
 		.credentials.client_id = s_node_id,
 		.network.reconnect_timeout_ms = 2000,
@@ -297,8 +315,8 @@ int link_mqtt_start(void)
 		return -EIO;
 	}
 
-	ESP_LOGI(TAG, "node_id=%s broker=%s:%d data_topic=%s", s_node_id, EPM_MQTT_BROKER_HOST,
-		 EPM_MQTT_BROKER_PORT, s_data_topic);
+	ESP_LOGI(TAG, "node_id=%s broker=%s:%d data_topic=%s", s_node_id, broker_host, broker_port,
+		 s_data_topic);
 
 	return 0;
 }
