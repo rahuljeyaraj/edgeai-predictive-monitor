@@ -93,7 +93,8 @@ static const led_pattern_t k_pattern[RGB_STATE_MAX] = {
     [RGB_TCP_CONN]    = { 0x0000FF, MODE_STROBE,  300  },
     [RGB_MQTT_STALL]  = { 0xBB00FF, MODE_BREATHE, 900  },
     [RGB_CALIBRATING] = { 0x22D3EE, MODE_CONST,   0    },
-    [RGB_LEARNING]    = { 0x22D3EE, MODE_CONST,   0    },
+    [RGB_LEARNING]    = { 0x22D3EE, MODE_CONST,   0    },  /* unused: reserved for a
+        future two-phase commissioning sequence, not a bug -- see comment above. */
     [RGB_OK]          = { 0x00FF00, MODE_CONST,   0    },
     [RGB_WARN]        = { 0xF59E0B, MODE_BREATHE, 1500 },
     [RGB_FAULT]       = { 0xFF0000, MODE_STROBE,  200  },

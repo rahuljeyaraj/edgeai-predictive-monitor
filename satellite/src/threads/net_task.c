@@ -403,6 +403,22 @@ static void net_task_fn(void *arg)
 		rc = link_mqtt_start();
 	}
 
+	/* Nothing else writes the LED between here and dsp_task.c's one-shot
+	 * rgb_led_set_state(RGB_OK) at HST warm-up (~250 mic frames, observed
+	 * ~60-70s after boot per net_task_selftest_task()'s comment above) —
+	 * without this, the LED just sits on wifi_task.c's RGB_TCP_CONN for
+	 * that whole gap. This has to be the write site rather than dsp_task.c
+	 * itself: dsp_task_start() runs (main.c) before net_task_start(), so a
+	 * CALIBRATING write placed at dsp_task_fn's warm-up-counting start
+	 * loses ADR-025's last-write-wins race against wifi_task.c's later
+	 * RGB_WIFI_CONN/RGB_TCP_CONN writes and is silently clobbered before
+	 * ever being seen — confirmed on hardware (2026-08-16): a
+	 * dsp_task.c-sited version never showed cyan at all. This site is
+	 * causally after both of those (wifi_wait_connected() above already
+	 * blocked on WiFi, and link_mqtt_start() just succeeded), so it can't
+	 * lose that race. */
+	rgb_led_set_state(RGB_CALIBRATING);
+
 	/* Registered after link_mqtt_start() succeeds (not before): it calls
 	 * transport_init() internally, which unconditionally resets the cmd
 	 * handler to NULL, so registering any earlier — including between
