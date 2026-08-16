@@ -28,10 +28,7 @@ CHANNEL_ID_BY_NAME = {
     "mic_raw": 5,
     "accel_x": 6,
     "accel_y": 7,
-    "accel_z": 8,
-    "accel_x_envelope": 9,
-    "accel_y_envelope": 10,
-    "accel_z_envelope": 11
+    "accel_z": 8
 }
 
 CHANNEL_NAME_BY_ID = {
@@ -43,10 +40,7 @@ CHANNEL_NAME_BY_ID = {
     "5": "mic_raw",
     "6": "accel_x",
     "7": "accel_y",
-    "8": "accel_z",
-    "9": "accel_x_envelope",
-    "10": "accel_y_envelope",
-    "11": "accel_z_envelope"
+    "8": "accel_z"
 }
 # JSON object keys are strings; re-key to int for wire (u8) lookups.
 CHANNEL_NAME_BY_ID = {int(k): v for k, v in CHANNEL_NAME_BY_ID.items()}
@@ -60,10 +54,7 @@ CHANNEL_KIND_BY_ID = {
     "5": "TIME_SERIES",
     "6": "SPECTRUM",
     "7": "SPECTRUM",
-    "8": "SPECTRUM",
-    "9": "SPECTRUM",
-    "10": "SPECTRUM",
-    "11": "SPECTRUM"
+    "8": "SPECTRUM"
 }
 CHANNEL_KIND_BY_ID = {int(k): v for k, v in CHANNEL_KIND_BY_ID.items()}
 
