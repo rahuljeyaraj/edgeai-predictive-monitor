@@ -67,6 +67,21 @@ def bbox_of_paths(items):
     return minx, miny, maxx, maxy
 
 
+def center_line(items, target_center_x):
+    """Recenter one line's glyphs horizontally on target_center_x, and
+    return the recentered items (used to stack lines of different widths
+    -- e.g. "EdgeAI" vs "PREDICTIVE MONITOR" -- on one shared axis instead
+    of a shared left edge)."""
+    minx, _, maxx, _ = bbox_of_paths(items)
+    shift = target_center_x - (minx + maxx) / 2
+    out = []
+    for d, transform in items:
+        m = re.match(r"translate\(([-\d.]+),([-\d.]+)\) scale\(([-\d.]+),([-\d.]+)\)", transform)
+        tx, ty, sx, sy = (float(v) for v in m.groups())
+        out.append((d, f"translate({tx + shift:.3f},{ty:.3f}) scale({sx:.6f},{sy:.6f})"))
+    return out
+
+
 def build_svg(pad=2.0, target_width_mm=None, compact=False):
     main_items = []
     items, cursor = layout_line(BOLD, "Edge", 30, 0.3, 0, 34)
@@ -86,6 +101,14 @@ def build_svg(pad=2.0, target_width_mm=None, compact=False):
         # Baseline moved from 52->54 to keep clear of the main line's
         # descenders ("g") at the bigger size.
         sub_items, _ = layout_line(BOLD, "PREDICTIVE MONITOR", 16, 1.0, 1, 54)
+        # The dashboard flushes both lines to a shared left edge, which
+        # suits a corner nav-bar logo. For a standalone nameplate the two
+        # lines are centered on a shared vertical axis instead, since
+        # "PREDICTIVE MONITOR" is wider than "EdgeAI" and left-flushing
+        # them leaves a lopsided right margin.
+        main_minx, _, main_maxx, _ = bbox_of_paths(main_items)
+        axis = (main_minx + main_maxx) / 2
+        sub_items = center_line(sub_items, axis)
         all_items = main_items + sub_items
     minx, miny, maxx, maxy = bbox_of_paths(all_items)
     minx -= pad; miny -= pad; maxx += pad; maxy += pad
