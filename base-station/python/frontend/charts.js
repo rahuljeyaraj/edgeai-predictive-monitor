@@ -357,7 +357,7 @@ const Charts = (() => {
         if (perfHandler) perfHandler(msg);
       } else if (msg.type === "telegram_subscribers") {
         if (alertsHandler) alertsHandler(msg);
-      } else if (msg.type === "ei_progress") {
+      } else if (msg.type === "ei_progress" || msg.type === "device_types_renamed") {
         if (classifierHandler) classifierHandler(msg);
       }
     };

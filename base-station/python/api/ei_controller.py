@@ -150,6 +150,41 @@ class EIController:
                                   project_name=project_name)
         return {"linked": True, "project_id": project_id, "project_name": project_name}
 
+    def known_device_types(self) -> List[str]:
+        """Every device_type this controller has anything on disk for --
+        linked project, fitted scaling baseline, or fetched model -- even
+        one no node currently carries. Used by api/app.py's
+        /device_types/rename to reject renaming onto a name that's already
+        in use for something (a merge, which isn't supported), beyond just
+        checking what's live on a node today."""
+        types = set(ei_projects.load_projects(self._projects_path).keys())
+        types |= set(ei_scaling.load_scaling(self._scaling_path).keys())
+        if os.path.isdir(self._models_dir):
+            for filename in os.listdir(self._models_dir):
+                if filename.endswith(".tflite"):
+                    types.add(filename[:-len(".tflite")])
+        return sorted(types)
+
+    def rename_device_type(self, old_device_type: str, new_device_type: str) -> bool:
+        """Moves everything this controller owns for old_device_type onto
+        new_device_type -- linked project, fitted scaling baseline, and any
+        fetched model files -- so an asset-class rename (api/app.py's
+        /device_types/rename) doesn't strand any of them under a name
+        that's about to stop existing. Returns whether there was anything
+        to move."""
+        moved = ei_projects.rename_project(self._projects_path, old_device_type, new_device_type)
+        if ei_scaling.rename_scaling(self._scaling_path, old_device_type, new_device_type):
+            moved = True
+        old_model = self._model_path(old_device_type)
+        old_labels = self._labels_path(old_device_type)
+        if os.path.isfile(old_model):
+            os.replace(old_model, self._model_path(new_device_type))
+            moved = True
+        if os.path.isfile(old_labels):
+            os.replace(old_labels, self._labels_path(new_device_type))
+            moved = True
+        return moved
+
     def unlink(self, device_type: str) -> dict:
         """Drops device_type's saved project mapping without calling EI's
         API -- there's nothing left to delete there once the project was

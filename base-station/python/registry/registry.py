@@ -533,6 +533,29 @@ class Registry:
             self._save()
             return entry
 
+    def rename_device_type(self, old_device_type: str, new_device_type: str) -> List[str]:
+        """Cascades an asset-class rename to every node currently on
+        old_device_type (api/app.py's /device_types/rename) -- capture.py
+        freezes device_type onto a saved recording at save time and never
+        revisits it, so without this a rename here just orphans every past
+        recording (the bug this exists to fix). Returns the changed
+        node_ids so the caller can broadcast each one's new entry.
+
+        Callers do NOT own the choice of pointing this at a device_type
+        that's already in use for something else (an EI project, orphaned
+        captures) -- that's a merge, not a rename, and app.py's route
+        rejects it before calling this."""
+        changed: List[str] = []
+        for node_id in list(self._entries.keys()):
+            with self._lock_for(node_id):
+                entry = self._entries.get(node_id)
+                if entry is not None and entry.device_type == old_device_type:
+                    entry.device_type = new_device_type
+                    changed.append(node_id)
+        if changed:
+            self._save()
+        return changed
+
     def set_trip_motor(self, node_id: str, motor_idx: Optional[int],
                         confirmed_at: Optional[float] = None) -> RegistryEntry:
         """Arms (or disarms) this asset's machinery-protection trip output by

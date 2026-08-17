@@ -10,7 +10,7 @@ from typing import Callable, Dict, List, Optional, Tuple
 from registry import NodeNotFoundError, Registry
 from gate import MotorStateGate
 from capture import (CaptureError, CaptureSession, list_labels, list_captures,
-                      rename_capture, delete_capture)
+                      rename_capture, delete_capture, rename_device_type)
 
 
 class CaptureController:
@@ -123,3 +123,6 @@ class CaptureController:
 
     def delete_capture(self, capture_id: str) -> None:
         delete_capture(self._captures_dir, capture_id)
+
+    def rename_device_type(self, old_device_type: str, new_device_type: str) -> int:
+        return rename_device_type(self._captures_dir, old_device_type, new_device_type)

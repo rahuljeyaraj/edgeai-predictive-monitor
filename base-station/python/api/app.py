@@ -96,6 +96,11 @@ class DeviceTypeBody(BaseModel):
     device_type: Optional[str] = None
 
 
+class DeviceTypeRenameBody(BaseModel):
+    old_device_type: str
+    new_device_type: str
+
+
 class TripMotorBody(BaseModel):
     # None = clear the trip output back to unarmed, the default for every
     # asset -- same "blank means unset" contract as DeviceTypeBody above.
@@ -1062,6 +1067,47 @@ def create_app(registry: Registry, history_store: HistoryStore,
         types = {entry.device_type for entry in app.state.registry.list().values()
                  if entry.device_type}
         return {"device_types": sorted(types)}
+
+    @app.post("/device_types/rename")
+    def rename_device_type_route(body: DeviceTypeRenameBody):
+        # Whole-asset-class rename (Classifier tab's "Rename" action, both
+        # live and "Not in fleet anymore" cards) -- cascades to every node
+        # currently on old_device_type, every saved recording tagged with
+        # it, and (if configured) its EI project/scaling baseline/fetched
+        # model, so a rename never orphans past recordings the way changing
+        # a single node's device_type used to (classifier.js's
+        # deviceTypesInView() docstring).
+        old = body.old_device_type.strip()
+        new = body.new_device_type.strip()
+        if not old or not new:
+            raise HTTPException(status_code=400,
+                                 detail="old_device_type and new_device_type are required")
+        if old == new:
+            return {"nodes_renamed": 0, "captures_renamed": 0}
+        # Renaming onto a name already in use for something else is a
+        # merge, not a rename -- rejected rather than silently combining
+        # two classes' recordings/EI projects together.
+        existing = {entry.device_type for entry in app.state.registry.list().values()
+                    if entry.device_type}
+        existing |= {c.get("device_type") for c in app.state.capture.list_captures()
+                     if c.get("device_type")}
+        if app.state.ei is not None:
+            existing |= set(app.state.ei.known_device_types())
+        if new in existing:
+            raise HTTPException(
+                status_code=409,
+                detail=f"asset class {new!r} already exists -- merging classes isn't supported yet")
+        changed_node_ids = app.state.registry.rename_device_type(old, new)
+        captures_renamed = app.state.capture.rename_device_type(old, new)
+        if app.state.ei is not None:
+            app.state.ei.rename_device_type(old, new)
+        for node_id in changed_node_ids:
+            entry = app.state.registry.get(node_id)
+            broadcast_threadsafe(app, {"type": "registry", "node_id": node_id, "entry": entry.to_dict()})
+        broadcast_threadsafe(app, {
+            "type": "device_types_renamed", "old_device_type": old, "new_device_type": new,
+        })
+        return {"nodes_renamed": len(changed_node_ids), "captures_renamed": captures_renamed}
 
     # Edge Impulse (docs/EDGE_IMPULSE_DASHBOARD_WORKFLOW_PLAN.md S4/S8).
     # Unlike Telegram (env-var-configured, legitimately absent on some

@@ -1833,6 +1833,14 @@ a.btn-label {
   color: #f8fafc;
 }
 
+/* Pushes the Rename button to the far end of whichever .classifier-ei__row
+   it's in (the live card's title row, or the orphaned card's pill row)
+   without needing a layout change to every other row that shares the same
+   flex-start row class. */
+.classifier-card__rename {
+  margin-left: auto;
+}
+
 .classifier-ei__pill {
   font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
   font-size: 13px;

@@ -260,6 +260,8 @@ const Classifier = (() => {
         <span class="classifier-card__kicker">Asset Class</span>
         <span class="classifier-card__name">${escapeHtmlLocal(deviceType)}</span>
       </div>
+      <button type="button" class="btn-text classifier-card__rename" data-action="rename_class"
+              data-type="${escapeAttr(deviceType)}">Rename</button>
     </div>`;
   }
 
@@ -324,6 +326,9 @@ const Classifier = (() => {
       <div class="classifier-ei__row">
         <span class="classifier-ei__type">${escapeHtmlLocal(deviceType)}</span>
         <span class="classifier-ei__pill classifier-ei__pill--orphaned">Not in fleet anymore</span>
+        <button type="button" class="btn-text classifier-card__rename" data-action="rename_class"
+                data-type="${escapeAttr(deviceType)}"
+                title="Move ${count} recording(s) to a live or new asset class">Rename</button>
         <button type="button" class="btn-icon btn-icon--danger" data-action="ei_delete_orphaned"
                 data-type="${escapeAttr(deviceType)}"
                 title="Delete ${count} recording(s) saved under this class"
@@ -423,6 +428,25 @@ const Classifier = (() => {
     if (!label || !label.trim()) return;
     try {
       await postJson("/captures/rename_bulk", { ids, label: label.trim() });
+    } catch (err) {
+      alert(`Rename failed: ${err.message}`);
+    }
+    await refresh();
+  }
+
+  // Renames a whole asset class -- on a live card, fixes a typo (or
+  // deliberately re-groups a class) without orphaning its past
+  // recordings the way retyping a node's device_type on the Fleet tab
+  // used to; on an orphaned card, this IS the recovery path: point the
+  // old name at a live class (or just its own corrected spelling) and
+  // its recordings reappear under that card. api/app.py's route cascades
+  // to the registry, every matching capture, and (if linked) the EI
+  // project/scaling baseline/fetched model.
+  async function renameClass(deviceType) {
+    const next = window.prompt(`Rename asset class "${deviceType}" to:`, deviceType);
+    if (!next || !next.trim() || next.trim() === deviceType) return;
+    try {
+      await postJson("/device_types/rename", { old_device_type: deviceType, new_device_type: next.trim() });
     } catch (err) {
       alert(`Rename failed: ${err.message}`);
     }
@@ -556,6 +580,14 @@ const Classifier = (() => {
   // the in-flight job so the button re-enables; "error" also keeps the
   // message visible under the card until the next job for that type.
   function handleMessage(msg) {
+    // Another client renamed a class (or this one just did, but the
+    // broadcast round-trips back too) -- just re-pull everything rather
+    // than trying to patch every bit of state device_type keys into.
+    if (msg.type === "device_types_renamed") {
+      refresh();
+      return;
+    }
+
     const deviceType = msg.device_type;
 
     if (msg.action === "upload") {
@@ -631,6 +663,8 @@ const Classifier = (() => {
       if (unlinkBtn) { unlinkType(unlinkBtn.dataset.type); return; }
       const deleteOrphanBtn = e.target.closest('[data-action="ei_delete_orphaned"]');
       if (deleteOrphanBtn) { deleteOrphanedType(deleteOrphanBtn.dataset.type); return; }
+      const renameBtn = e.target.closest('[data-action="rename_class"]');
+      if (renameBtn) { renameClass(renameBtn.dataset.type); return; }
       const uploadBtn = e.target.closest('[data-action="ei_upload"]');
       if (uploadBtn) { uploadSelected(uploadBtn.dataset.type); return; }
       const fetchBtn = e.target.closest('[data-action="ei_fetch_model"]');

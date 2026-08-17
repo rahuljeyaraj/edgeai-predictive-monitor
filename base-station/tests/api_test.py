@@ -258,6 +258,83 @@ def test_device_type_updates_registry_and_broadcasts(tmp_dir):
         api.stop()
 
 
+def test_device_type_rename_cascades_and_broadcasts(tmp_dir):
+    # The bug this route exists to fix: renaming an asset class used to only
+    # ever go through /nodes/<id>/device_type, which reassigns one node and
+    # leaves every past recording (captures freeze device_type at save time)
+    # and the linked EI project stranded under the old name -- classifier.js's
+    # "Not in fleet anymore" box. /device_types/rename cascades all three.
+    api = ApiUnderTest(tmp_dir)
+    try:
+        status, body = api.request("POST", f"/nodes/{NODE_ID}/device_type",
+                                    {"device_type": "motor001"})
+        assert status == 200, (status, body)
+
+        status, body = api.request("POST", f"/nodes/{NODE_ID}/capture/start", {"target_frames": 3})
+        assert status == 200, (status, body)
+        for i in range(3):
+            api.capture.feed_frame(frame(NODE_ID, timestamp=float(i)))
+        status, body = api.request("POST", f"/nodes/{NODE_ID}/capture/save", {"label": "bearing"})
+        assert status == 200 and body["saved"] is True, (status, body)
+
+        status, body = api.request("POST", "/classifier/ei/link",
+                                    {"device_type": "motor001", "username": "me@example.com",
+                                     "password": "hunter2"})
+        assert status == 200, (status, body)
+
+        with api.client.websocket_connect("/ws") as ws:
+            status, body = api.request("POST", "/device_types/rename",
+                                        {"old_device_type": "motor001", "new_device_type": "conveyor001"})
+            assert status == 200, (status, body)
+            assert body == {"nodes_renamed": 1, "captures_renamed": 1}, body
+
+            got_registry = got_renamed = False
+            while not (got_registry and got_renamed):
+                message = ws.receive_json()
+                if message["type"] == "registry" and message["node_id"] == NODE_ID:
+                    assert message["entry"]["device_type"] == "conveyor001", message
+                    got_registry = True
+                elif message["type"] == "device_types_renamed":
+                    assert message == {"type": "device_types_renamed", "old_device_type": "motor001",
+                                        "new_device_type": "conveyor001"}, message
+                    got_renamed = True
+
+        status, body = api.request("GET", "/device_types")
+        assert body["device_types"] == ["conveyor001"], body
+
+        status, body = api.request("GET", "/captures")
+        assert [c["device_type"] for c in body["captures"]] == ["conveyor001"], body
+
+        status, body = api.request("GET", "/classifier/ei/status")
+        assert body["device_types"] == {"conveyor001": True}, body
+        print("POST /device_types/rename cascades to the registry, saved captures, and "
+              "the linked EI project, broadcasting both a registry update and its own "
+              "event: PASS")
+    finally:
+        api.stop()
+
+
+def test_device_type_rename_rejects_collision_with_existing_class(tmp_dir):
+    api = ApiUnderTest(tmp_dir)
+    try:
+        api.registry.add("node-2", sensor_config=frozenset({SensorChannel.MIC}))
+        status, body = api.request("POST", f"/nodes/{NODE_ID}/device_type", {"device_type": "motor001"})
+        assert status == 200, (status, body)
+        status, body = api.request("POST", "/nodes/node-2/device_type", {"device_type": "pump002"})
+        assert status == 200, (status, body)
+
+        status, body = api.request("POST", "/device_types/rename",
+                                    {"old_device_type": "motor001", "new_device_type": "pump002"})
+        assert status == 409, (status, body)
+
+        status, body = api.request("GET", "/device_types")
+        assert set(body["device_types"]) == {"motor001", "pump002"}, body
+        print("POST /device_types/rename rejects renaming onto a name already in use "
+              "(a merge, not a rename): PASS")
+    finally:
+        api.stop()
+
+
 def test_pause_updates_registry_status(tmp_dir):
     api = ApiUnderTest(tmp_dir)
     try:
@@ -1096,6 +1173,8 @@ def main():
     test_get_node_404_for_unknown(tempfile.mkdtemp(dir=tmp_dir))
     test_rename_updates_registry_and_broadcasts(tempfile.mkdtemp(dir=tmp_dir))
     test_device_type_updates_registry_and_broadcasts(tempfile.mkdtemp(dir=tmp_dir))
+    test_device_type_rename_cascades_and_broadcasts(tempfile.mkdtemp(dir=tmp_dir))
+    test_device_type_rename_rejects_collision_with_existing_class(tempfile.mkdtemp(dir=tmp_dir))
     test_pause_updates_registry_status(tempfile.mkdtemp(dir=tmp_dir))
     test_pause_uncommissioned_node_is_409(tempfile.mkdtemp(dir=tmp_dir))
     test_resume_updates_registry_status(tempfile.mkdtemp(dir=tmp_dir))
