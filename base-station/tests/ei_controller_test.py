@@ -23,7 +23,7 @@ import ei_client
 from ei_client import EIClientError, EITotpRequiredError
 from ei_controller import EIController, EIControllerError
 from ei_projects import get_project
-from ei_scaling import get_scaling
+from ei_scaling import get_scaling, save_scaling
 from capture import CaptureSession
 from gate import MotorStateGate
 from registry import Registry, SensorChannel
@@ -739,6 +739,67 @@ def test_fetch_model_rejects_device_type_with_no_local_recordings():
           "(can't determine class labels): PASS")
 
 
+def test_rename_device_type_moves_project_scaling_and_model():
+    # Asset-class rename (api/app.py's /device_types/rename) -- everything
+    # EIController owns for old_device_type must land under new_device_type
+    # so a renamed class keeps its Studio link, its fitted normalization
+    # baseline, and its already-fetched model instead of stranding them
+    # under a name nothing points to anymore.
+    registry, projects_path, captures_dir, models_dir, scaling_path = new_env()
+    registry.add(NODE_A, sensor_config=frozenset({SensorChannel.MIC}))
+    registry.set_device_type(NODE_A, "motor001")
+    save_capture(registry, captures_dir, NODE_A, "bearing")
+    save_capture(registry, captures_dir, NODE_A, "healthy")
+    client = FakeEiClient()
+    controller = EIController(registry, projects_path, captures_dir, models_dir, scaling_path, client=client)
+    controller.link("motor001", "me@example.com", "hunter2")
+    controller.fetch_model("motor001")
+    save_scaling(scaling_path, "motor001", spectral_dim=DIM, mu=(1.0,), sigma=(0.5,))
+
+    moved = controller.rename_device_type("motor001", "conveyor001")
+
+    assert moved is True
+    assert get_project(projects_path, "motor001") is None
+    assert get_project(projects_path, "conveyor001") is not None
+    assert get_scaling(scaling_path, "motor001") is None
+    assert get_scaling(scaling_path, "conveyor001") == {
+        "spectral_dim": DIM, "mu": [1.0], "sigma": [0.5]}
+    assert not os.path.isfile(os.path.join(models_dir, "motor001.tflite"))
+    assert os.path.isfile(os.path.join(models_dir, "conveyor001.tflite"))
+    assert controller.labels_for("motor001") is None
+    assert controller.labels_for("conveyor001") == ["bearing", "healthy"]
+    print("rename_device_type() moves the linked project, scaling baseline, "
+          "and fetched model onto the new name: PASS")
+
+
+def test_rename_device_type_nothing_to_move_returns_false():
+    registry, projects_path, captures_dir, models_dir, scaling_path = new_env()
+    controller = EIController(registry, projects_path, captures_dir, models_dir, scaling_path,
+                               client=FakeEiClient())
+    assert controller.rename_device_type("ghost_type", "conveyor001") is False
+    print("rename_device_type() with nothing on disk for old_device_type returns False: PASS")
+
+
+def test_known_device_types_includes_project_scaling_and_model_only_entries():
+    # /device_types/rename's collision check needs to see a device_type
+    # even if no node currently carries it -- e.g. its only node was
+    # reassigned/decommissioned but the Studio project is still linked.
+    registry, projects_path, captures_dir, models_dir, scaling_path = new_env()
+    registry.add(NODE_A, sensor_config=frozenset({SensorChannel.MIC}))
+    registry.set_device_type(NODE_A, "motor001")
+    save_capture(registry, captures_dir, NODE_A, "bearing")
+    client = FakeEiClient()
+    controller = EIController(registry, projects_path, captures_dir, models_dir, scaling_path, client=client)
+    controller.link("motor001", "me@example.com", "hunter2")
+    controller.fetch_model("motor001")
+    save_scaling(scaling_path, "scaling_only_type", spectral_dim=DIM, mu=(1.0,), sigma=(0.5,))
+
+    known = controller.known_device_types()
+    assert known == ["motor001", "scaling_only_type"], known
+    print("known_device_types() reports every device_type with a project, "
+          "scaling baseline, or fetched model, live node or not: PASS")
+
+
 def main():
     test_link_creates_project_on_first_call()
     test_link_passes_real_axis_names_to_create_impulse()
@@ -766,6 +827,9 @@ def main():
     test_fetch_model_rejects_device_type_with_no_local_recordings()
     test_model_status_reports_none_before_any_fetch()
     test_labels_for_reports_none_before_any_fetch()
+    test_rename_device_type_moves_project_scaling_and_model()
+    test_rename_device_type_nothing_to_move_returns_false()
+    test_known_device_types_includes_project_scaling_and_model_only_entries()
     print("RESULT: PASS - EIController links/uploads/trains/fetches correctly "
           "against a faked ei_client, with no real network")
 

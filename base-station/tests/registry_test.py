@@ -260,9 +260,48 @@ def test_legacy_entry_without_new_fields_still_loads():
     print("a registry written before these fields existed still loads: PASS")
 
 
+def test_rename_device_type_cascades_to_every_matching_node():
+    # api/app.py's /device_types/rename route relies on this to retag every
+    # node currently on old_device_type without touching a node on a
+    # different type or with none set at all.
+    tmp_dir = tempfile.mkdtemp(prefix="registry_test_")
+    path = os.path.join(tmp_dir, "registry.json")
+    reg = Registry(path)
+    reg.add("node-1", sensor_config=frozenset({SensorChannel.MIC}))
+    reg.add("node-2", sensor_config=frozenset({SensorChannel.MIC}))
+    reg.add("node-3", sensor_config=frozenset({SensorChannel.MIC}))
+    reg.set_device_type("node-1", "motor")
+    reg.set_device_type("node-2", "motor")
+    reg.set_device_type("node-3", "pump")
+
+    changed = reg.rename_device_type("motor", "conveyor_motor")
+    assert set(changed) == {"node-1", "node-2"}, changed
+    assert reg.get("node-1").device_type == "conveyor_motor"
+    assert reg.get("node-2").device_type == "conveyor_motor"
+    assert reg.get("node-3").device_type == "pump", "wrong-type node must not change"
+
+    reopened = Registry(path)
+    assert reopened.get("node-1").device_type == "conveyor_motor", \
+        "rename must persist across a reload"
+    print("rename_device_type cascades to every matching node and persists: PASS")
+
+
+def test_rename_device_type_no_match_is_a_noop():
+    tmp_dir = tempfile.mkdtemp(prefix="registry_test_")
+    path = os.path.join(tmp_dir, "registry.json")
+    reg = Registry(path)
+    reg.add("node-1", sensor_config=frozenset({SensorChannel.MIC}))
+    reg.set_device_type("node-1", "pump")
+    assert reg.rename_device_type("motor", "conveyor_motor") == []
+    assert reg.get("node-1").device_type == "pump"
+    print("rename_device_type with no matching node is a no-op: PASS")
+
+
 if __name__ == "__main__":
     try:
         main()
+        test_rename_device_type_cascades_to_every_matching_node()
+        test_rename_device_type_no_match_is_a_noop()
         test_trip_motor_defaults_unset_and_round_trips()
         test_one_motor_cannot_be_claimed_by_two_assets()
         test_zero_and_negative_motor_indexes_rejected()

@@ -15,7 +15,7 @@ import stat
 import sys
 import tempfile
 
-from ei_projects import get_project, load_projects, remove_project, save_project
+from ei_projects import get_project, load_projects, remove_project, rename_project, save_project
 
 
 def test_missing_file_returns_empty_dict():
@@ -107,6 +107,26 @@ def test_save_without_project_name_omits_the_field():
         assert "project_name" not in get_project(path, "motor001")
 
 
+def test_rename_project_moves_entry_to_new_key():
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        path = os.path.join(tmp_dir, "ei_projects.json")
+        save_project(path, "motor001", project_id=42, api_key="ei_abc")
+        save_project(path, "pump002", project_id=43, api_key="ei_def")
+
+        assert rename_project(path, "motor001", "conveyor001") is True
+        assert get_project(path, "motor001") is None
+        assert get_project(path, "conveyor001") == {"project_id": 42, "api_key": "ei_abc"}
+        assert get_project(path, "pump002") == {"project_id": 43, "api_key": "ei_def"}
+
+
+def test_rename_project_missing_old_device_type_returns_false():
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        path = os.path.join(tmp_dir, "ei_projects.json")
+        save_project(path, "motor001", project_id=42, api_key="ei_abc")
+        assert rename_project(path, "pump002", "conveyor001") is False
+        assert get_project(path, "motor001") is not None
+
+
 def main():
     test_missing_file_returns_empty_dict()
     test_save_then_load_round_trips()
@@ -118,6 +138,8 @@ def main():
     test_remove_project_missing_device_type_returns_false()
     test_save_with_project_name_round_trips()
     test_save_without_project_name_omits_the_field()
+    test_rename_project_moves_entry_to_new_key()
+    test_rename_project_missing_old_device_type_returns_false()
     print("RESULT: PASS - ei_projects round-trips device_type -> project "
           "mappings and writes the file owner-only")
 

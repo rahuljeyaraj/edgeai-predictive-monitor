@@ -50,3 +50,20 @@ def save_scaling(path: str, device_type: str, spectral_dim: int,
     with open(tmp_path, "w") as f:
         json.dump(scaling, f)
     os.replace(tmp_path, path)
+
+
+def rename_scaling(path: str, old_device_type: str, new_device_type: str) -> bool:
+    """Moves old_device_type's fitted baseline (if any) onto
+    new_device_type's key -- the scaling half of an asset-class rename
+    (api/app.py's /device_types/rename, sibling to ei_projects.py's
+    rename_project()). Returns whether there was anything to move."""
+    scaling = load_scaling(path)
+    if old_device_type not in scaling:
+        return False
+    scaling[new_device_type] = scaling.pop(old_device_type)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp_path = f"{path}.tmp"
+    with open(tmp_path, "w") as f:
+        json.dump(scaling, f)
+    os.replace(tmp_path, path)
+    return True

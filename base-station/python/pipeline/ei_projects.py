@@ -48,6 +48,28 @@ def save_project(path: str, device_type: str, project_id: int, api_key: str,
     os.replace(tmp_path, path)
 
 
+def rename_project(path: str, old_device_type: str, new_device_type: str) -> bool:
+    """Moves old_device_type's linked-project entry (if any) onto
+    new_device_type's key -- the EI-project half of an asset-class rename
+    (api/app.py's /device_types/rename, alongside ei_scaling.py's
+    rename_scaling() and EIController.rename_device_type()'s fetched-model
+    file move). Returns whether there was anything to move. Caller is
+    responsible for checking new_device_type doesn't already have an entry
+    first (a rename onto an in-use name is a merge, which isn't supported
+    here) -- this overwrites it silently if it does."""
+    projects = load_projects(path)
+    if old_device_type not in projects:
+        return False
+    projects[new_device_type] = projects.pop(old_device_type)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp_path = f"{path}.tmp"
+    with open(tmp_path, "w") as f:
+        json.dump(projects, f)
+    os.chmod(tmp_path, 0o600)
+    os.replace(tmp_path, path)
+    return True
+
+
 def remove_project(path: str, device_type: str) -> bool:
     """Drops device_type's saved mapping (e.g. its Studio project was
     deleted by hand and there's nothing left locally worth keeping).

@@ -204,6 +204,40 @@ def rename_capture(captures_dir: str, capture_id: str, new_label: str) -> str:
     return f"{safe_label}/{filename}"
 
 
+def rename_device_type(captures_dir: str, old_device_type: str, new_device_type: str) -> int:
+    """Retags every saved capture whose device_type is old_device_type --
+    the cascade half of an asset-class rename (api/app.py's
+    /device_types/rename), so a renamed class doesn't strand its past
+    recordings under the name that no longer exists (the "Not in fleet
+    anymore" box, classifier.js's deviceTypesInView()). Unlike
+    rename_capture(), this never touches the label directory --
+    device_type isn't part of the on-disk path -- so it's a pure in-place
+    field rewrite. Returns how many capture files were retagged."""
+    if not os.path.isdir(captures_dir):
+        return 0
+    count = 0
+    for label in os.listdir(captures_dir):
+        label_dir = os.path.join(captures_dir, label)
+        if not os.path.isdir(label_dir):
+            continue
+        for filename in os.listdir(label_dir):
+            if not filename.endswith(".json"):
+                continue
+            path = os.path.join(label_dir, filename)
+            try:
+                with open(path) as f:
+                    payload = json.load(f)
+            except (OSError, json.JSONDecodeError):
+                continue
+            if payload.get("device_type") != old_device_type:
+                continue
+            payload["device_type"] = new_device_type
+            with open(path, "w") as f:
+                json.dump(payload, f)
+            count += 1
+    return count
+
+
 class CaptureSession:
     """One capture session per node, reused across repeated
     start/stop/save cycles over that node's lifetime."""

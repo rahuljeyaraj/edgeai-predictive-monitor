@@ -21,7 +21,7 @@ from sensor_frame import FrameSource, SensorFrame
 from registry import Registry, SensorChannel, NodeStatus
 from gate import MotorStateGate
 from capture import (CaptureError, CaptureSession, normalize_label, list_labels,
-                      list_captures, rename_capture, delete_capture)
+                      list_captures, rename_capture, delete_capture, rename_device_type)
 
 NODE_ID = "node-1"
 DIM = 128  # SensorChannel.MIC's spectral bin count (registry._DIM_BY_CHANNEL)
@@ -355,6 +355,35 @@ def test_capture_id_path_traversal_rejected(registry, captures_dir):
     print("delete_capture()/rename_capture() reject ids that escape captures_dir: PASS")
 
 
+def test_rename_device_type_retags_matching_captures_only(registry, captures_dir):
+    # Cascade half of api/app.py's /device_types/rename -- device_type isn't
+    # part of the on-disk path (label is), so this only ever rewrites the
+    # field in place, never moves a file between label directories.
+    registry.set_device_type(NODE_ID, "motor")
+    session = new_session(registry, captures_dir)
+    session.start()
+    session.feed_frame(RUNNING)
+    session.stop()
+    motor_path = session.save("rename_dt_motor")
+
+    registry.set_device_type(NODE_ID, "pump")
+    session2 = new_session(registry, captures_dir)
+    session2.start()
+    session2.feed_frame(RUNNING)
+    session2.stop()
+    pump_path = session2.save("rename_dt_pump")
+    registry.set_device_type(NODE_ID, None)  # leave shared fixture as found
+
+    count = rename_device_type(captures_dir, "motor", "conveyor_motor")
+    assert count == 1, count
+
+    with open(motor_path) as f:
+        assert json.load(f)["device_type"] == "conveyor_motor"
+    with open(pump_path) as f:
+        assert json.load(f)["device_type"] == "pump", "wrong-type capture must not change"
+    print("rename_device_type() retags only captures on old_device_type, in place: PASS")
+
+
 def main():
     test_normalize_label()
 
@@ -381,6 +410,7 @@ def main():
     test_rename_capture_moves_label_bucket(registry, captures_dir)
     test_delete_capture_removes_file(registry, captures_dir)
     test_capture_id_path_traversal_rejected(registry, captures_dir)
+    test_rename_device_type_retags_matching_captures_only(registry, captures_dir)
 
     print("RESULT: PASS - capture collects gated running data, saves labeled batches, "
           "is reusable across cycles, and never touches NodeStatus")
