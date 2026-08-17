@@ -51,8 +51,8 @@ from spi_reader import SpiConsumer
 from registry import NodeNotFoundError, Registry
 from status_color import color_for
 from wire_protocol import LED_MODE_TO_INT
-from gate import (DEFAULT_RUNNING_FRACTION, DEFAULT_STOPPED_MARGIN, MotorStateGate,
-                   StoppedBaseline)
+from gate import (DEFAULT_RUNNING_FRACTION, DEFAULT_RUNNING_HYSTERESIS,
+                   DEFAULT_STOPPED_MARGIN, MotorStateGate, StoppedBaseline)
 from classifier import ClassifierRegistry
 from manager import PipelineManager
 from store import HistoryStore
@@ -82,14 +82,22 @@ DEFAULT_DATA_DIR = os.path.join(os.path.dirname(_PYTHON_DIR), ".cache", "data")
 
 
 def build_gate_factory(registry: Registry, threshold: float, debounce_frames: int,
-                        running_fraction: float, stopped_margin: float):
+                        running_fraction: float, stopped_margin: float,
+                        running_hysteresis: float = 1.0):
     """Builds per-node running/stopped gates that scale their threshold from
     that node's own measurements rather than an absolute number
     (pipeline/gate.py's module docstring explains why an absolute one can't
     work): its stopped baseline where it has one, else its commissioned
     running energy. Takes node_id rather than being zero-arg so the returned
     gate can look both up fresh on every frame -- gates outlive both a
-    re-commissioning and a baseline capture."""
+    re-commissioning and a baseline capture.
+
+    running_hysteresis defaults to 1.0 (a no-op) because this factory also
+    builds protection's trip-detection gate (pipeline/manager.py), which
+    must keep noticing a real stop promptly -- see gate.py's
+    DEFAULT_RUNNING_HYSTERESIS docstring. Callers building a gate purely
+    for commissioning/capture collection pass DEFAULT_RUNNING_HYSTERESIS
+    (or --gate-running-hysteresis) explicitly instead."""
     def factory(node_id: str) -> MotorStateGate:
         def entry_or_none():
             try:
@@ -124,7 +132,8 @@ def build_gate_factory(registry: Registry, threshold: float, debounce_frames: in
                                energy_ref_provider=energy_ref,
                                running_fraction=running_fraction,
                                stopped_provider=stopped_ref,
-                               stopped_margin=stopped_margin)
+                               stopped_margin=stopped_margin,
+                               running_hysteresis=running_hysteresis)
     return factory
 
 
@@ -384,6 +393,15 @@ def main():
                               "measures, not against a fraction of its motion, which is "
                               "what makes the two states actually separable (see "
                               "pipeline/gate.py).")
+    parser.add_argument("--gate-running-hysteresis", type=float,
+                         default=DEFAULT_RUNNING_HYSTERESIS,
+                         help="Once a node reads running, how far its energy has to fall "
+                              "below the running threshold (as a fraction of it) before "
+                              "it reads stopped again. Guards against a stopped baseline "
+                              "that picked up cross-talk on a shared rig: without this, "
+                              "real running energy that sits close to the threshold "
+                              "flickers the gate and silently drops frames from whatever "
+                              "is collecting (see pipeline/gate.py).")
     parser.add_argument("--gate-debounce-frames", type=int, default=3)
     parser.add_argument("--status-debounce-frames", type=int, default=3)
     parser.add_argument("--min-commission-frames", type=int, default=50)
@@ -454,6 +472,18 @@ def main():
                                        args.gate_debounce_frames,
                                        args.gate_running_fraction,
                                        args.gate_stopped_margin)
+    # Same tuning, but with --gate-running-hysteresis applied -- see
+    # build_gate_factory's docstring for why that can't just be the
+    # default on gate_factory above: protection's trip gate (passed to
+    # PipelineManager below) is built from gate_factory too, and must not
+    # get any slower at noticing a real stop. Wired only to the two
+    # collection controllers below, where "just started recording, give
+    # it a chance to notice the machine spun up" isn't a safety concern.
+    collection_gate_factory = build_gate_factory(registry, args.gate_threshold,
+                                                  args.gate_debounce_frames,
+                                                  args.gate_running_fraction,
+                                                  args.gate_stopped_margin,
+                                                  args.gate_running_hysteresis)
     # Constructed before the manager (which needs its on_motor_state hook) and
     # before any MQTT publisher exists -- set_publish_trip() fills that in
     # later if --mqtt-host is set. Deliberately always constructed: deciding
@@ -478,9 +508,9 @@ def main():
     # UNIFIED_COMMISSIONING_PLAN.md S2.3) -- same directory the Record drawer
     # writes to, since they're the same kind of artifact.
     commissioning = CommissioningController(
-        registry, models_dir, gate_factory, min_frames=args.min_commission_frames,
+        registry, models_dir, collection_gate_factory, min_frames=args.min_commission_frames,
         captures_dir=captures_dir)
-    capture = CaptureController(registry, captures_dir, gate_factory)
+    capture = CaptureController(registry, captures_dir, collection_gate_factory)
     stopped_baseline = StoppedBaselineController(registry)
     # The guided flow itself owns no collection of its own -- it sequences
     # the three controllers above plus protection (see setup_controller.py).

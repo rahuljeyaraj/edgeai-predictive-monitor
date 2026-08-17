@@ -119,6 +119,35 @@ DEFAULT_RUNNING_FRACTION = 0.15
 # via main.py's --gate-stopped-margin.
 DEFAULT_STOPPED_MARGIN = 1.75
 
+# Once RUNNING is confirmed, how far energy has to fall below the
+# RUNNING threshold (as a fraction of it) before the gate reads STOPPED
+# again. Real running-energy on a shared rig isn't flat -- a stopped
+# baseline that picked up some cross-talk from a neighbouring motor
+# (module docstring's 1.18x-worst-case-margin problem) leaves the plain
+# threshold close enough to real running energy that debounce_frames of
+# quiet-looking frames happen naturally while the motor keeps turning,
+# which reads as STOPPED and silently drops those frames from whatever is
+# collecting (commissioning.py/capture.py feed_frame() both only keep
+# RUNNING-confirmed frames) -- live-measured on node e36428 at 2.8 raw
+# frames/sec but only ~1/sec landing in the commissioning count, a ~65%
+# loss with no error or visible symptom besides "recording is slow"
+# while the spectrum view (which shows every frame, gated or not) looks
+# fine.
+#
+# NOT used as MotorStateGate's own default (that stays 1.0, a no-op --
+# see its __init__) because a gate isn't only used for collection: the
+# same gate_factory also builds protection's trip-detection gate
+# (pipeline/manager.py), where the whole point is noticing a real stop
+# promptly. Loosening exit-from-RUNNING there would delay detecting a
+# motor that has genuinely stopped -- exactly what
+# gate_test.py's test_crosstalk_below_the_fraction_still_reads_stopped
+# guards against. main.py instead builds a second gate_factory with this
+# value, wired only to CommissioningController/CaptureController, so an
+# operator's deliberate "Start recording" gets the leniency and
+# protection's trip gate does not. Tunable via main.py's
+# --gate-running-hysteresis.
+DEFAULT_RUNNING_HYSTERESIS = 0.5
+
 
 @dataclass(frozen=True)
 class StoppedBaseline:
@@ -216,7 +245,8 @@ class MotorStateGate:
                  energy_ref_provider: Optional[Callable[[], Optional[float]]] = None,
                  running_fraction: float = DEFAULT_RUNNING_FRACTION,
                  stopped_provider: Optional[Callable[[], Optional[StoppedBaseline]]] = None,
-                 stopped_margin: float = DEFAULT_STOPPED_MARGIN):
+                 stopped_margin: float = DEFAULT_STOPPED_MARGIN,
+                 running_hysteresis: float = 1.0):
         """energy_ref_provider: zero-arg callable returning this node's
         current `RegistryEntry.running_energy_ref`, or None if it has never
         been commissioned since that field existed. Read fresh on every
@@ -239,6 +269,13 @@ class MotorStateGate:
 
         threshold: the absolute fallback, used only when neither reference
         is available (see the module docstring).
+
+        running_hysteresis: see DEFAULT_RUNNING_HYSTERESIS's docstring for
+        what this trades off. Defaults to 1.0, a no-op (exit-from-RUNNING
+        uses the same threshold as entering it, today's behaviour) --
+        callers that want the collection-friendly leniency pass
+        DEFAULT_RUNNING_HYSTERESIS explicitly. Applied only while
+        confirmed RUNNING, never while STOPPED.
         """
         if debounce_frames < 1:
             raise ValueError("debounce_frames must be >= 1")
@@ -246,8 +283,11 @@ class MotorStateGate:
             raise ValueError("running_fraction must be between 0 and 1 exclusive")
         if stopped_margin <= 1.0:
             raise ValueError("stopped_margin must be greater than 1")
+        if not 0.0 < running_hysteresis <= 1.0:
+            raise ValueError("running_hysteresis must be between 0 (exclusive) and 1 (inclusive)")
         self._threshold = threshold
         self._debounce_frames = debounce_frames
+        self._running_hysteresis = running_hysteresis
         self._state = initial_state
         self._candidate_state: Optional[MotorState] = None
         self._candidate_count = 0
@@ -310,7 +350,13 @@ class MotorStateGate:
         energy, threshold = self._measure(frame)
         self._last_energy = energy
         self._last_threshold = threshold
-        raw_state = (MotorState.RUNNING if energy >= threshold
+        # Hysteresis (DEFAULT_RUNNING_HYSTERESIS's docstring): while
+        # confirmed RUNNING, only a drop below a fraction of `threshold`
+        # counts as a STOPPED reading -- crossing `threshold` itself only
+        # matters for the STOPPED -> RUNNING direction.
+        exit_threshold = (threshold * self._running_hysteresis
+                           if self._state == MotorState.RUNNING else threshold)
+        raw_state = (MotorState.RUNNING if energy >= exit_threshold
                      else MotorState.STOPPED)
 
         if raw_state == self._state:
