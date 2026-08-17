@@ -56,9 +56,11 @@
  * onboarding hit (only possible here because AP+STA run concurrently). */
 #define PROVISIONING_AP_TEARDOWN_GRACE_MS 4000
 
-/* PubSubClient::publish() copies the *entire* payload byte-by-byte into
- * this->buffer before writing it to the socket (PubSubClient.cpp), so this
- * must be >= the largest telemetry frame threads/fuser_task.cpp can produce
+/* PubSubClient::publish() packs the MQTT PUBLISH header + topic string +
+ * the *entire* payload byte-by-byte into this->buffer before writing it to
+ * the socket (PubSubClient.cpp: MQTT_MAX_HEADER_SIZE + 2 + strlen(topic) +
+ * plength must all fit), so this must be >= that whole packet, not just the
+ * largest telemetry frame threads/fuser_task.cpp can produce
  * (frame_codec/spectrum_codec.h's section-list frame: num_sections byte +
  * one SPECTRUM section per channel (mic, accel_x, accel_y, accel_z, each
  * pooled to MODEL_SPECTRUM_BINS bins) + one SCALAR_SET section of up to 24
@@ -67,9 +69,15 @@
  * (app_config.h), an order of magnitude smaller than the JSON envelope an
  * early revision of this firmware used to send (~31.8KB at a comparable bin
  * count). setBufferSize() takes a uint16_t (max 65535) - this expression
- * stays comfortably under that even at much larger bin counts than today's. */
+ * stays comfortably under that even at much larger bin counts than today's.
+ * Missing the header+topic margin here silently broke every publish() the
+ * moment a real frame hit the payload-only bound exactly (mic+accel, this
+ * node's first multi-sensor stage) - publish() returns false with no
+ * further diagnostic, so this must stay in sync with data_topic's max
+ * length (sizeof(data_topic) below) or the same silent failure recurs. */
 #define MQTT_BUFFER_SIZE                                                                         \
-	(1 + 4 * (SPECTRUM_SECTION_OVERHEAD + MODEL_SPECTRUM_BINS * sizeof(float)) +              \
+	(MQTT_MAX_HEADER_SIZE + 2 + sizeof(data_topic) +                                          \
+	 1 + 4 * (SPECTRUM_SECTION_OVERHEAD + MODEL_SPECTRUM_BINS * sizeof(float)) +              \
 	 SCALAR_SECTION_OVERHEAD + 24 * SCALAR_ENTRY_SIZE)
 
 /* Provisioning/connection color language - deliberately reuses the base

@@ -149,6 +149,14 @@ int hal_accel_init(void)
 	pinMode(PIN_KX134_CS, OUTPUT);
 	kx134_cs_deselect();
 
+	/* Attach the hardware SPI peripheral to D8/D9/D10 (board_pins.h) via
+	 * the GPIO matrix - without this the SPI bus is never actually
+	 * brought up, so beginTransaction()/transfer() below silently no-op
+	 * instead of driving the pins. SS left unset (-1): CS is software-
+	 * controlled (kx134_cs_select/deselect), not SPI.begin()'s hardware
+	 * SS. */
+	SPI.begin(PIN_KX134_SCK, PIN_KX134_MISO, PIN_KX134_MOSI, -1);
+
 	kx134_data_ready_sem = xSemaphoreCreateBinary();
 	if (kx134_data_ready_sem == NULL) {
 		return -ENOMEM;

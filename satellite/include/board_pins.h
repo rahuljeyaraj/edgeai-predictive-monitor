@@ -47,6 +47,9 @@
  * way mcu/'s heartbeat LED is independent of that board's own ring.
  */
 
+#define PIN_KX134_SCK  D8
+#define PIN_KX134_MISO D9
+#define PIN_KX134_MOSI D10
 #define PIN_KX134_CS   D6
 #define PIN_KX134_INT1 D7
 
