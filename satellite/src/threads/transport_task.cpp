@@ -3,6 +3,7 @@
 
 #include <PubSubClient.h>
 #include <WiFi.h>
+#include <esp_wifi.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
 #include <freertos/task.h>
@@ -213,6 +214,12 @@ static void connect_mqtt(void)
  * provisioning portal to fall back on instead of just hanging. */
 static bool attempt_sta_join(const char *ssid, const char *password)
 {
+	/* Default regulatory domain excludes channel 13; routers outside the US
+	 * (ours included) commonly put their 2.4GHz AP there, which silently
+	 * stalls WiFi.begin() forever with no disconnect event. */
+	wifi_country_t country = { .cc = "JP", .schan = 1, .nchan = 14,
+				    .policy = WIFI_COUNTRY_POLICY_MANUAL };
+	esp_wifi_set_country(&country);
 	Serial.printf("[transport] attempting WiFi join to \"%s\"...\n", ssid);
 	WiFi.begin(ssid, password);
 
