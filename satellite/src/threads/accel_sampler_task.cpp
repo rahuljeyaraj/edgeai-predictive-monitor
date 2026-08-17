@@ -101,7 +101,16 @@ static void accel_sampler_task_entry(void *arg)
 
 	while (1) {
 		if (consecutive_failures >= ACCEL_SAMPLER_MAX_RECOVERY_ATTEMPTS) {
+			/* Back off, then give it another run at the recovery attempts
+			 * instead of parking here forever - a transient stretch of SPI/
+			 * FIFO timeouts (e.g. WiFi-induced scheduling jitter) must not
+			 * permanently strand the accel channel while mic keeps
+			 * publishing, which is what happened before this reset: once
+			 * this branch was entered, hal_accel_read_block() was never
+			 * called again, so accel_spectrum_queue held one stale sample
+			 * forever with no further log output to explain why. */
 			vTaskDelay(pdMS_TO_TICKS(1000));
+			consecutive_failures = 0;
 			continue;
 		}
 
