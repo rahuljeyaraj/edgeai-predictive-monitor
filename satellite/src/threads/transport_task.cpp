@@ -89,26 +89,24 @@
 	 1 + 4 * (SPECTRUM_SECTION_OVERHEAD + MODEL_SPECTRUM_BINS * sizeof(float)) +              \
 	 SCALAR_SECTION_OVERHEAD + 24 * SCALAR_ENTRY_SIZE)
 
-/* Provisioning/connection color language - deliberately reuses the base
- * station's own registry/status_color.py tuples wherever the semantics
- * already match (same color vocabulary a technician has already learned
- * from the dashboard), with one new hue (magenta) for the one concept that
- * has no existing equivalent: this node's own local AP/provisioning mode. */
-#define RGB_PROVISIONING     0xff00ffu /* magenta - new concept, no dashboard equivalent */
-#define RGB_STA_TESTING      0xff00ffu /* same hue; faster BREATHE = "actively working" */
-#define RGB_JOIN_FAILED      0xf59e0bu /* reuses status_color.py's WARNING tuple exactly */
-#define RGB_CONNECTED        0x22d3eeu /* reuses status_color.py's NEW tuple */
-#define RGB_RECOVERING       0x4d4d4du /* reuses status_color.py's OFFLINE tuple */
-/* WiFi joined fine but the MQTT broker itself can't be reached (wrong
- * host/IP, broker down, firewall) - previously invisible on the ring,
- * indistinguishable from a fully healthy RGB_CONNECTED. Reuses
- * status_color.py's tuned WS2812 FAULT red (0xff0000, not the screen
- * #ef4444) rather than inventing a new hue - this can never collide with a
- * real dashboard-pushed FAULT command in practice, since the dashboard has
- * no channel to send one for as long as this exact state is showing. BREATHE
- * (not FAULT's alarm STROBE) since this is an ongoing retry, not something
- * needing immediate action. */
-#define RGB_MQTT_UNREACHABLE 0xff0000u
+/* Provisioning/connection color language (revised 2026-08-17). Two hues,
+ * neither borrowed from registry/status_color.py's NodeStatus palette
+ * anymore - that palette is now also the dashboard's exact colors, so
+ * reusing any of its hues here (as this used to do for JOIN_FAILED/
+ * CONNECTED/RECOVERING) would put three unrelated meanings on one color
+ * with only a blink pattern telling them apart.
+ *
+ * Magenta = "setup/provisioning" family. Blue = "connectivity trouble"
+ * family (const = the specific, immediately-fixable case of MQTT being
+ * unreachable while WiFi is fine; breathe = the vaguer, self-healing case
+ * of WiFi itself having dropped). CONNECTED with MQTT up gets no color of
+ * its own at all - the base station is reachable and will push the real
+ * NodeStatus color moments later, so this ring just keeps showing whatever
+ * it last showed until that arrives. */
+#define RGB_PROVISIONING 0xff00ffu /* magenta, CONST - waiting for setup */
+#define RGB_STA_TESTING   0xff00ffu /* same hue, BREATHE = "actively testing" */
+#define RGB_MQTT_DOWN     0x0000ffu /* blue, CONST - wifi fine, broker unreachable */
+#define RGB_RECOVERING    0x0000ffu /* blue, BREATHE - wifi dropped, retrying */
 
 static WiFiClient wifi_client;
 static PubSubClient mqtt_client(wifi_client);
@@ -141,8 +139,8 @@ enum transport_state {
 	TRANSPORT_STATE_FORCED_PROVISIONING,
 };
 
-/* Tracks which of RGB_CONNECTED/RGB_MQTT_UNREACHABLE the ring is currently
- * showing while in TRANSPORT_STATE_CONNECTED, so hal_display_rgb_set() is
+/* Tracks whether the ring is currently showing RGB_MQTT_DOWN while in
+ * TRANSPORT_STATE_CONNECTED, so hal_display_rgb_set() is
  * only called on an actual transition (every ~10ms loop tick otherwise,
  * which would keep resetting the BREATHE phase and never let it actually
  * breathe). UNKNOWN forces a fresh check the moment CONNECTED is (re-)entered. */
@@ -370,7 +368,7 @@ static void transport_task_entry(void *arg)
 	} else {
 		WiFi.mode(WIFI_AP_STA);
 		hal_provisioning_start(ap_ssid, MQTT_BROKER_HOST);
-		hal_display_rgb_set(RGB_PROVISIONING, RGB_DISPLAY_BREATHE, 1500);
+		hal_display_rgb_set(RGB_PROVISIONING, RGB_DISPLAY_CONST, 0);
 	}
 
 	uint32_t recovery_deadline = 0;
@@ -382,7 +380,7 @@ static void transport_task_entry(void *arg)
 			hal_provisioning_stop(); /* no-op if not already active */
 			WiFi.mode(WIFI_AP_STA);
 			hal_provisioning_start(ap_ssid, creds.mqtt_broker_host);
-			hal_display_rgb_set(RGB_PROVISIONING, RGB_DISPLAY_BREATHE, 1500);
+			hal_display_rgb_set(RGB_PROVISIONING, RGB_DISPLAY_CONST, 0);
 			mqtt_led = MQTT_LED_UNKNOWN;
 			state = TRANSPORT_STATE_FORCED_PROVISIONING;
 		}
@@ -394,7 +392,7 @@ static void transport_task_entry(void *arg)
 			} else {
 				WiFi.mode(WIFI_AP_STA);
 				hal_provisioning_start(ap_ssid, creds.mqtt_broker_host);
-				hal_display_rgb_set(RGB_PROVISIONING, RGB_DISPLAY_BREATHE, 1500);
+				hal_display_rgb_set(RGB_PROVISIONING, RGB_DISPLAY_CONST, 0);
 				state = TRANSPORT_STATE_PROVISIONING;
 			}
 			break;
@@ -407,7 +405,7 @@ static void transport_task_entry(void *arg)
 
 			if (hal_provisioning_take_submission(&submitted)) {
 				creds = submitted;
-				hal_display_rgb_set(RGB_STA_TESTING, RGB_DISPLAY_BREATHE, 400);
+				hal_display_rgb_set(RGB_STA_TESTING, RGB_DISPLAY_BREATHE, 1000);
 				state = TRANSPORT_STATE_STA_TESTING;
 			}
 			break;
@@ -417,7 +415,10 @@ static void transport_task_entry(void *arg)
 			if (attempt_sta_join(creds.wifi_ssid, creds.wifi_password)) {
 				hal_credentials_save(&creds);
 				hal_provisioning_report_result(true, NULL);
-				hal_display_rgb_set(RGB_CONNECTED, RGB_DISPLAY_CONST, 0);
+				/* No dedicated "connected" color - the base station will
+				 * push the real NodeStatus color within moments of the
+				 * CONNECTED case below reaching MQTT, so the ring just
+				 * keeps showing this STA_TESTING breathe until then. */
 				vTaskDelay(pdMS_TO_TICKS(PROVISIONING_AP_TEARDOWN_GRACE_MS));
 				hal_provisioning_stop();
 				WiFi.mode(WIFI_STA);
@@ -426,7 +427,10 @@ static void transport_task_entry(void *arg)
 			} else {
 				hal_provisioning_report_result(
 					false, "Couldn't join that network - check the password and try again.");
-				hal_display_rgb_set(RGB_JOIN_FAILED, RGB_DISPLAY_BREATHE, 700);
+				/* No separate "join failed" color - the setup page already
+				 * shows the error text above; the ring just goes back to
+				 * PROVISIONING's plain magenta. */
+				hal_display_rgb_set(RGB_PROVISIONING, RGB_DISPLAY_CONST, 0);
 				state = TRANSPORT_STATE_PROVISIONING;
 			}
 			break;
@@ -435,7 +439,7 @@ static void transport_task_entry(void *arg)
 			if (WiFi.status() != WL_CONNECTED) {
 				Serial.println("[transport] WiFi dropped, attempting silent recovery...");
 				recovery_deadline = millis() + RECOVERY_WINDOW_MS;
-				hal_display_rgb_set(RGB_RECOVERING, RGB_DISPLAY_CONST, 0);
+				hal_display_rgb_set(RGB_RECOVERING, RGB_DISPLAY_BREATHE, 1000);
 				mqtt_led = MQTT_LED_UNKNOWN;
 				state = TRANSPORT_STATE_RECOVERING;
 				break;
@@ -443,7 +447,7 @@ static void transport_task_entry(void *arg)
 
 			if (!mqtt_client.connected()) {
 				if (mqtt_led != MQTT_LED_DOWN) {
-					hal_display_rgb_set(RGB_MQTT_UNREACHABLE, RGB_DISPLAY_BREATHE, 1000);
+					hal_display_rgb_set(RGB_MQTT_DOWN, RGB_DISPLAY_CONST, 0);
 					mqtt_led = MQTT_LED_DOWN;
 				}
 				connect_mqtt();
@@ -453,10 +457,9 @@ static void transport_task_entry(void *arg)
 				}
 			}
 
-			if (mqtt_led != MQTT_LED_UP) {
-				hal_display_rgb_set(RGB_CONNECTED, RGB_DISPLAY_CONST, 0);
-				mqtt_led = MQTT_LED_UP;
-			}
+			/* No dedicated "connected" color here either - MQTT is up, so
+			 * the base station's own STATUS_LED push is seconds away. */
+			mqtt_led = MQTT_LED_UP;
 
 			xSemaphoreTake(mqtt_mutex, portMAX_DELAY);
 			mqtt_client.loop();
@@ -474,7 +477,7 @@ static void transport_task_entry(void *arg)
 				Serial.println("[transport] recovery window expired, reopening provisioning AP");
 				WiFi.mode(WIFI_AP_STA);
 				hal_provisioning_start(ap_ssid, creds.mqtt_broker_host);
-				hal_display_rgb_set(RGB_PROVISIONING, RGB_DISPLAY_BREATHE, 1500);
+				hal_display_rgb_set(RGB_PROVISIONING, RGB_DISPLAY_CONST, 0);
 				state = TRANSPORT_STATE_PROVISIONING;
 				break;
 			}
@@ -501,7 +504,6 @@ static void transport_task_entry(void *arg)
 		} else if (state == TRANSPORT_STATE_PROVISIONING && WiFi.status() == WL_CONNECTED) {
 			Serial.println("[transport] WiFi self-healed while provisioning AP was up");
 			hal_provisioning_report_result(true, NULL);
-			hal_display_rgb_set(RGB_CONNECTED, RGB_DISPLAY_CONST, 0);
 			vTaskDelay(pdMS_TO_TICKS(PROVISIONING_AP_TEARDOWN_GRACE_MS));
 			hal_provisioning_stop();
 			WiFi.mode(WIFI_STA);

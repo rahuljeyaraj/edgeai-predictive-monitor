@@ -158,35 +158,28 @@ body {
 
 :root {
   --color-all: #e2e8f0;
-  --color-healthy: #10b981;
-  --color-warning: #f59e0b;
-  --color-fault: #ef4444;
-  --color-new: #22d3ee;
-  --color-paused: #717171;
-  --color-offline: #4d4d4d;
-  /* Machinery protection (docs/MOTOR_STOP_PLAN.md). Tripped is a deeper,
-     darker red than --color-fault: same family, because it IS the fault's
-     consequence, but distinguishable side by side so a fleet list with both
-     doesn't read as one undifferentiated block of red. Idle is magenta -- a
-     machine an operator switched off is a normal condition, not a degraded
-     one, so it must not borrow the greys that mean "no data from this node",
-     and it must not sit in the blue/cyan family either: --color-new is cyan
-     and the two tiles are often side by side, where a blue idle read as a
-     second shade of "new" on the real board.
+  /* 2026-08-17: this whole block is now kept identical to
+     registry/status_color.py's LED values (user's call: "the dashboard and
+     led need same colour"), not screen-tuned separately -- an operator who
+     has learned the ring's colors should read the same colors on these
+     tiles. Change one, change both.
 
-     --color-idle is the ONE value in this block deliberately kept identical
-     to registry/status_color.py's LED value (2026-08-02, user's call: "the
-     dashboard and led need same colour"), so a magenta ring and a magenta
-     tile read as one status. Every other status is screen-tuned here and
-     hardware-tuned there (healthy #10b981 vs #00ff00, fault #ef4444 vs
-     #ff0000) because desaturated colors render wrong on an uncorrected
-     WS2812 -- see that file's module docstring. The match runs in this
-     direction on purpose: full-strength #ff00ff is the value the ring can
-     actually show, while the screen-friendlier fuchsia #d946ef this was for
-     one commit washes out on the LED. If either value ever changes, change
-     both. */
+     PAUSED and TRIPPED reuse WARNING's and FAULT's hue respectively on the
+     LED, disambiguated there by blink pattern (const vs strobe, strobe vs
+     breathe). A static tile has no blink to fall back on, so they stay a
+     distinguishable *shade* of that same hue here instead of the identical
+     hex -- deeper/darker, same family, still readable side by side in a
+     fleet list. --color-offline has no LED equivalent at all (a genuinely
+     offline node has no channel to receive an LED command), so it keeps its
+     own grey purely for on-screen legibility. */
+  --color-healthy: #00ff00;
+  --color-warning: #f59e0b;
+  --color-fault: #ff0000;
+  --color-new: #00ffff;
+  --color-paused: #92400e;
+  --color-offline: #4d4d4d;
   --color-tripped: #b91c1c;
-  --color-idle: #ff00ff;
+  --color-idle: #ffffff;
 }
 
 .tile--all { --accent: var(--color-all); }

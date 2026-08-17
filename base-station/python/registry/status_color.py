@@ -4,18 +4,34 @@ node's status changes (see Registry.on_status_change) -- over MQTT to a
 satellite node, or over the local Bridge RPC link for this board's own ring
 (main.py's wire_local_status_led).
 
-rgb values are hand-tuned for raw WS2812 rendering, NOT copied from the
-dashboard frontend's palette (mpu/frontend/style.css's
---color-new/healthy/warning/fault) as they used to be -- confirmed on real
-hardware 2026-07-16 that a screen-friendly, desaturated color (Tailwind
-emerald-500 #10b981, R16/G185/B129; red-500 #ef4444, R239/G68/B68) reads
-wrong on an uncorrected WS2812: any non-trivial secondary channel shows up
-disproportionately strongly on these LEDs, so emerald green (B=129, ~51% of
-G) rendered visibly bluish and red-500 (G=B=68, ~28% of R) rendered as light
-pink. Near-primary values with negligible secondary channels avoid that.
-mode/period_ms reuse the exact const/breathe/strobe vocabulary and periods
-already established for the UART-side MCU display
-(mpu/tests/display_rgb_test.py's BREATHE 1500ms / STROBE 200ms steps).
+rgb values are pure/near-primary (single or dual full-strength channels)
+where that actually reads true on an uncorrected WS2812: confirmed on real
+hardware 2026-07-16 that any non-trivial secondary channel shows up
+disproportionately strongly on these LEDs (a desaturated Tailwind
+emerald-500 rendered bluish, a desaturated red-500 rendered pink).
+
+WARNING/PAUSED are the one deliberate exception to "pure hue": full-strength
+yellow (#ffff00, R=G=255) was tried 2026-08-17 and reported on real hardware
+as reading light green, not yellow -- this ring's green channel is
+perceptually/physically brighter than its red at equal PWM duty, so an
+equal-intensity R/G mix skews green despite being "near-primary" by the
+letter of the rule above. Amber (#f59e0b, G at ~65% of R) is the
+hardware-confirmed correction for this specific hue, not a regression back
+to the old screen-tuned palette.
+
+2026-08-17: these are also now the dashboard frontend's palette
+(style.css's --color-new/healthy/warning/fault/idle) -- deliberately kept
+identical on both sides (user's call) rather than screen-tuned separately,
+so an operator who has learned the ring's colors reads the same colors on
+the dashboard tiles. Change one, change both. Two states that reuse another
+status's hue (PAUSED reuses WARNING's amber, TRIPPED reuses FAULT's red --
+disambiguated by mode/period on the ring) get a *distinguishable shade* of
+that hue on the dashboard instead of the identical hex, since a static tile
+has no blink to fall back on.
+
+mode/period_ms use the const/breathe/strobe vocabulary and periods the
+MCU display firmware and MQTT payload (wire_protocol.LED_MODE_TO_INT) both
+understand.
 """
 from typing import NamedTuple
 
@@ -28,53 +44,48 @@ class LedCommand(NamedTuple):
     period_ms: int
 
 
-_CYAN_NEW = LedCommand(rgb="#22d3ee", mode="const", period_ms=0)
+_CYAN_NEW = LedCommand(rgb="#00ffff", mode="const", period_ms=0)
 _GREEN_HEALTHY = LedCommand(rgb="#00ff00", mode="const", period_ms=0)
-_YELLOW_WARNING_BREATHE = LedCommand(rgb="#f59e0b", mode="breathe", period_ms=1500)
+_AMBER_WARNING = LedCommand(rgb="#f59e0b", mode="strobe", period_ms=1000)
 _RED_FAULT_STROBE = LedCommand(rgb="#ff0000", mode="strobe", period_ms=200)
-_GREY_PAUSED = LedCommand(rgb="#717171", mode="const", period_ms=0)
-_GREY_OFFLINE = LedCommand(rgb="#4d4d4d", mode="const", period_ms=0)
+# PAUSED reuses WARNING's amber -- "operator switched it off" is a normal,
+# not-urgent condition, so it stays solid (const) where WARNING strobes.
+_AMBER_PAUSED = LedCommand(rgb="#f59e0b", mode="const", period_ms=0)
+# OFFLINE is dead code in practice (registry.py's own docstring: it's a
+# frontend-computed staleness label; a node that's actually offline has no
+# channel to receive this command anyway), so its command is simply "off"
+# rather than spending one of the 8 hardware-safe hues on an unreachable
+# state.
+_OFF_OFFLINE = LedCommand(rgb="#000000", mode="const", period_ms=0)
 # Machinery-protection states (docs/MOTOR_STOP_PLAN.md).
 #
-# IDLE is magenta -- not a grey, because "switched off by an operator" is a
-# normal condition while the greys above both mean "you are not getting data
-# from this node", and not blue either: it was pure blue #0000ff until
-# 2026-08-02, when it was reported on real hardware as indistinguishable from
-# _CYAN_NEW's blue-dominant cast. Magenta is still a full-strength two-channel
-# mix (R=B=255, G=0) so it obeys this file's near-primary rule.
-#
-# IDLE is also the one status whose value is *shared* with the dashboard:
-# style.css's --color-idle is this exact #ff00ff, so a magenta ring and a
-# magenta tile read as one status (user's call, 2026-08-02). The match went
-# that direction, rather than this file adopting the screen's fuchsia
-# #d946ef, precisely because of the module docstring above -- #d946ef's G=70
-# is the weak-secondary case that washes out on these LEDs. Every other
-# status stays independently tuned. Change one of the two, change both.
-_MAGENTA_IDLE = LedCommand(rgb="#ff00ff", mode="const", period_ms=0)
-# TRIPPED reuses FAULT's red and differs only in strobe period: 200ms reads
-# as an urgent alarm, 1000ms as a deliberate, latched "I already acted".
-# Deliberately NOT a new mode -- const/breathe/strobe is the whole vocabulary
-# both the MQTT payload (wire_protocol.LED_MODE_TO_INT) and the MCU display
-# firmware understand, so a slow blink has to be a slow strobe or it would
-# mean re-flashing every node.
-_RED_TRIPPED_SLOW = LedCommand(rgb="#ff0000", mode="strobe", period_ms=1000)
+# IDLE is white -- not a grey (the greys used to mean "no data from this
+# node" before OFFLINE/PAUSED moved off grey too), and not magenta anymore
+# either: magenta was reassigned 2026-08-17 to the satellite's own
+# provisioning/connectivity ring language (transport_task.cpp), and reusing
+# it here would have made three unrelated states share one hue with only a
+# blink pattern telling them apart.
+_WHITE_IDLE = LedCommand(rgb="#ffffff", mode="const", period_ms=0)
+# TRIPPED reuses FAULT's red but as a BREATHE, not a second strobe speed:
+# 200ms strobe reads as an urgent alarm, a slow breathe reads as a
+# deliberate, latched "I already acted" -- distinguishable by pattern SHAPE
+# now, not just by timing two strobes apart.
+_RED_TRIPPED_BREATHE = LedCommand(rgb="#ff0000", mode="breathe", period_ms=1000)
 
 # Every NodeStatus a node can actually be pushed while still reachable over
 # MQTT to receive it. OFFLINE is included defensively even though nothing
-# server-side ever sets it today (registry.py's own docstring: it's a
-# frontend-computed staleness label) -- a node that's actually offline can't
-# receive this command anyway, so it's harmless dead code if never hit.
+# server-side ever sets it today -- see _OFF_OFFLINE above.
 _LED_BY_STATUS = {
     NodeStatus.UNCOMMISSIONED: _CYAN_NEW,
     NodeStatus.COMMISSIONING_COLLECTING: _CYAN_NEW,
     NodeStatus.COMMISSIONING_TRAINING: _CYAN_NEW,
     NodeStatus.HEALTHY: _GREEN_HEALTHY,
-    NodeStatus.WARNING: _YELLOW_WARNING_BREATHE,
+    NodeStatus.WARNING: _AMBER_WARNING,
     NodeStatus.FAULT: _RED_FAULT_STROBE,
-    NodeStatus.PAUSED: _GREY_PAUSED,
-    NodeStatus.OFFLINE: _GREY_OFFLINE,
-    NodeStatus.IDLE: _MAGENTA_IDLE,
-    NodeStatus.TRIPPED: _RED_TRIPPED_SLOW,
+    NodeStatus.PAUSED: _AMBER_PAUSED,
+    NodeStatus.OFFLINE: _OFF_OFFLINE,
+    NodeStatus.IDLE: _WHITE_IDLE,
+    NodeStatus.TRIPPED: _RED_TRIPPED_BREATHE,
 }
 
 

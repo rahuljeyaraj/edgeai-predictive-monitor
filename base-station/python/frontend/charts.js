@@ -89,7 +89,7 @@ const Charts = (() => {
   // Reuses the exact status palette already defined in style.css (:root)
   // rather than inventing a new one -- the redesign spec (S2) reserves
   // green/amber/red for this one meaning across the whole dashboard.
-  const STATUS_COLOR = { healthy: "#10b981", warning: "#f59e0b", fault: "#ef4444" };
+  const STATUS_COLOR = { healthy: "#00ff00", warning: "#f59e0b", fault: "#ff0000" };
   const ANOMALY_LINE_COLOR = "#94a3b8"; // matches style.css's muted label gray
 
   // Sequential single-hue blue ramp (dataviz skill reference palette),

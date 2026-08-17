@@ -178,7 +178,7 @@ NOMINAL_ACCEL_FFT_SIZE = 1024
 NOMINAL_MIC_FS_HZ = 48000.0
 NOMINAL_MIC_FFT_SIZE = 2048
 
-_DEFAULT_LED = {"rgb": "#4d4d4d", "mode": "const", "period_ms": 0}
+_DEFAULT_LED = {"rgb": "#000000", "mode": "const", "period_ms": 0}
 
 
 # ---------------------------------------------------------------------
