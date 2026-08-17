@@ -33,7 +33,7 @@
 void setup(void)
 {
 	Serial.begin(115200);
-	delay(1000); /* let the native-USB CDC console attach before the first log line */
+	delay(3000); /* let the native-USB CDC console attach before the first log line */
 
 	Serial.println("edgeai-predictive-monitor satellite node booting...");
 
@@ -71,4 +71,6 @@ void loop(void)
 {
 	digitalWrite(LED_BUILTIN, !digitalRead(LED_BUILTIN));
 	delay(HEARTBEAT_PERIOD_MS);
+	Serial.println("Heartbeat");
 }
+

@@ -67,14 +67,14 @@ Pin map for the XIAO ESP32-S3. Full rationale is in
 
 | Peripheral | Signal | XIAO pin | Notes |
 |---|---|---|---|
-| **KX134 accel** | SCK  | **D8** | hardware SPI (fixed) |
-| | MISO | **D9** | hardware SPI (fixed) |
-| | MOSI | **D10** | hardware SPI (fixed) |
-| | CS   | **D3** | software chip-select |
-| | INT1 | **D2** | buffer-full interrupt |
-| **INMP441 mic** | WS / LRCLK | **D0** | |
-| | BCLK | **D1** | |
-| | SD (data) | **D4** | |
+| **KX134 accel** | SCL  | **D8** | hardware SPI SCK (fixed); board silkscreen label, chip runs in SPI mode |
+| | ADR  | **D9** | hardware SPI MISO (fixed); board silkscreen label |
+| | SDA  | **D10** | hardware SPI MOSI (fixed); board silkscreen label |
+| | CS   | **D6** | software chip-select |
+| | INT1 | **D7** | buffer-full interrupt |
+| **INMP441 mic** | SCK (BCLK) | **D1** | |
+| | WS (LRCLK) | **D2** | |
+| | SD (data) | **D3** | |
 | | **L/R** | **GND** | **must tie to GND** → left channel (firmware reads left only) |
 | **WS2812 ring** | DIN | **D5** | 8 pixels |
 
@@ -437,7 +437,7 @@ Troubleshooting:
 
 | Symptom | Cause / fix |
 |---|---|
-| Boot halts, last line `mic_sampler_task_start failed` / `[mic_i2s] ... failed` | I2S init failed. Recheck WS=D0, BCLK=D1, SD=D4, and 3V3/GND. |
+| Boot halts, last line `mic_sampler_task_start failed` / `[mic_i2s] ... failed` | I2S init failed. Recheck SCK(BCLK)=D1, WS=D2, SD=D3, and 3V3/GND. |
 | Node appears but spectrum is flat/dead | Mic wired but silent — confirm **L/R tied to GND**. Without it the left slot is never clocked. |
 | Node never appears on dashboard | No data frames — recheck Stage 2 (MQTT). Confirm frames in `mosquitto_sub`. |
 
@@ -483,8 +483,8 @@ Troubleshooting:
 
 | Symptom | Cause / fix |
 |---|---|
-| Boot halts, `[kx134] WHO_AM_I mismatch: got 0xNN, expected 0x46` | The board can't talk to the KX134 over SPI. Check CS=D3, INT1=D2, and SCK/MISO/MOSI=D8/D9/D10, plus 3V3/GND. A wrong `got` value = wiring; `got 0x00`/`0xff` usually = no connection at all. |
-| `[kx134] no accel frame after 1000ms` repeating | SPI reads OK but no data-ready interrupt — check **INT1 → D2**. |
+| Boot halts, `[kx134] WHO_AM_I mismatch: got 0xNN, expected 0x46` | The board can't talk to the KX134 over SPI. Check CS=D6, INT1=D7, and SCL/ADR/SDA=D8/D9/D10, plus 3V3/GND. A wrong `got` value = wiring; `got 0x00`/`0xff` usually = no connection at all. |
+| `[kx134] no accel frame after 1000ms` repeating | SPI reads OK but no data-ready interrupt — check **INT1 → D7**. |
 | Node stuck / dashboard not updating after adding accel | You skipped the registry reset above. |
 
 ---

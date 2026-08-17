@@ -50,8 +50,8 @@
  * sensor's task entirely (the task still exists but its own _start()
  * returns immediately without touching the HAL) - fuser_task.cpp reads
  * the same constants to decide which channels to publish. */
-#define MIC_SENSOR_ENABLED   1
-#define ACCEL_SENSOR_ENABLED 1
+#define MIC_SENSOR_ENABLED   0
+#define ACCEL_SENSOR_ENABLED 0
 
 /* FFT bin counts (unique bins, excl. 0Hz) - the native FFT resolution used
  * for both the on-device spectrum and the scalar tile's time-domain window

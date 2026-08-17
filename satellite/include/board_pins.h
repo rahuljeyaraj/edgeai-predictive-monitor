@@ -15,36 +15,30 @@
  *
  * Only 11 GPIOs (D0-D10) are broken out on this board, so every pin below
  * is deliberately chosen to avoid the hardware SPI bus's fixed pins
- * (D8/D9/D10 = SCK/MISO/MOSI, set by the variant, not reassignable
- * without bit-banging SPI instead):
+ * (D8/D9/D10, set by the variant, not reassignable without bit-banging
+ * SPI instead). The KX134 breakout labels those three pins SCL/ADR/SDA
+ * (it's a dual-protocol part; those are its I2C-mode pin names, silkscreened
+ * on the board), but this node drives it in SPI mode - see kx134.cpp - so
+ * electrically they're SCK/MISO/MOSI. Named per the board silkscreen below,
+ * not the electrical role, matching the wiring guide's pin table:
  *
- *   D8  (GPIO7)  SPI SCK   - KX134 (hardware default, shared bus)
- *   D9  (GPIO8)  SPI MISO  - KX134 (hardware default, shared bus)
- *   D10 (GPIO9)  SPI MOSI  - KX134 (hardware default, shared bus)
- *   D3  (GPIO4)  KX134 CS    - software chip-select, mirrors mcu/'s
+ *   D8  (GPIO7)  KX134 SCL  (= SPI SCK)  - hardware default, shared bus
+ *   D9  (GPIO8)  KX134 ADR  (= SPI MISO) - hardware default, shared bus
+ *   D10 (GPIO9)  KX134 SDA  (= SPI MOSI) - hardware default, shared bus
+ *   D6  (GPIO43) KX134 CS    - software chip-select, mirrors mcu/'s
  *                              spi2 cs-gpios pattern (boards/
  *                              arduino_uno_q.overlay)
- *   D2  (GPIO3)  KX134 INT1  - Buffer Full Interrupt, mirrors mcu/'s
+ *   D7  (GPIO44) KX134 INT1  - Buffer Full Interrupt, mirrors mcu/'s
  *                              kx134@0 int-gpios (D9/PB8 there)
- *   D0  (GPIO1)  I2S WS/LRCLK  - INMP441 mic, mirrors mcu/'s SAI1_A
- *                                 frame-clock role
- *   D1  (GPIO2)  I2S BCLK      - INMP441 mic, mirrors mcu/'s SAI1_A
- *                                 bit-clock role
- *   D4  (GPIO5)  I2S SD (data in) - INMP441 mic. Reuses the pin the
- *                                    variant labels SDA/A4 - onboard
- *                                    hardware I2C isn't used by this
- *                                    node, so the pin is free for plain
- *                                    GPIO/I2S duty here.
+ *   D1  (GPIO2)  MIC SCK (I2S BCLK)   - INMP441 mic, mirrors mcu/'s SAI1_A
+ *                                        bit-clock role
+ *   D2  (GPIO3)  MIC WS (I2S LRCLK)   - INMP441 mic, mirrors mcu/'s SAI1_A
+ *                                        frame-clock role
+ *   D3  (GPIO4)  MIC SD (I2S data in) - INMP441 mic
  *   D5  (GPIO6)  WS2812 DIN    - status ring, mirrors mcu/'s led_ring
- *                                 node (D4/PA12 there). Reuses the
- *                                 variant's SCL/A5 pin for the same
- *                                 "I2C unused, free for other duty"
- *                                 reason as D4 above.
+ *                                 node (D4/PA12 there).
  *
- * D6/D7 (GPIO43/44, the variant's UART0 TX/RX) are left unused - not
- * needed since this node has no UART link to any other device (WiFi/MQTT
- * replaces mcu/'s LPUART1 entirely; USB CDC handles the debug log/
- * Serial console instead of a second UART).
+ * D0/D4 are left unused by this pin map.
  *
  * LED_BUILTIN (GPIO21, from pins_arduino.h - not one of the D0-D10 pins)
  * is the onboard single-color status LED, used as the heartbeat indicator
@@ -53,12 +47,12 @@
  * way mcu/'s heartbeat LED is independent of that board's own ring.
  */
 
-#define PIN_KX134_CS   D3
-#define PIN_KX134_INT1 D2
+#define PIN_KX134_CS   D6
+#define PIN_KX134_INT1 D7
 
-#define PIN_MIC_I2S_WS   D0
+#define PIN_MIC_I2S_WS   D2
 #define PIN_MIC_I2S_BCLK D1
-#define PIN_MIC_I2S_SD   D4
+#define PIN_MIC_I2S_SD   D3
 
 #define PIN_WS2812_DIN D5
 
