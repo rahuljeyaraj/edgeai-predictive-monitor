@@ -67,6 +67,12 @@ const Setup = (() => {
     // node_id -> the last confirm result, shown on the step until the next
     // test replaces it.
     confirmResult: {},
+    // node_id -> message from the last failed stopped-baseline save (a 409,
+    // e.g. "too unsteady to gate on"). stopped_baseline.py stays outside
+    // SetupController's state.error on purpose (see the no-merge note up
+    // top), so without this the step swallowed the reason and the Save
+    // button looked unresponsive.
+    baselineError: {},
     // node_id -> {epoch, total_epochs} from "training_progress".
     training: {},
     busy: false,
@@ -300,11 +306,13 @@ const Setup = (() => {
     // operator standing at a switched-off machine watching a frozen 0/30
     // while the backend had already collected hundreds.
     const progress = entry.stopped_baseline_progress || step.progress;
+    const error = state.baselineError[nodeId];
     let controls;
     if (progress) {
       const enough = progress.collected >= progress.min_frames;
       controls = `
         <p class="setup-step__live">Measuring — ${progress.collected} of ${progress.min_frames} readings.${enough ? " Enough to save." : ""}</p>
+        ${error ? `<p class="setup-step__warn">${escapeHtml(error)}</p>` : ""}
         <div class="setup-step__actions">
           <button type="button" class="btn-label btn-label--save" data-action="setup_baseline_save" ${enough ? "" : "disabled"}>Save</button>
           <button type="button" class="btn-label" data-action="setup_baseline_cancel">Cancel</button>
@@ -632,6 +640,7 @@ const Setup = (() => {
       return true;
     }
     if (action === "setup_baseline_start") {
+      delete state.baselineError[nodeId];
       run(nodeId, async () => {
         await post(nodeId, `/nodes/${nodeId}/stopped_baseline/start`);
         await refresh(nodeId);
@@ -640,14 +649,24 @@ const Setup = (() => {
     }
     if (action === "setup_baseline_save") {
       run(nodeId, async () => {
-        const data = await post(nodeId, `/nodes/${nodeId}/stopped_baseline/stop`);
-        const frames = (data.stopped_baseline_result || {}).frames;
-        bridge.toast(`Stopped baseline measured from ${frames} frames`);
+        try {
+          const data = await post(nodeId, `/nodes/${nodeId}/stopped_baseline/stop`);
+          delete state.baselineError[nodeId];
+          const frames = (data.stopped_baseline_result || {}).frames;
+          bridge.toast(`Stopped baseline measured from ${frames} frames`);
+        } catch (err) {
+          // The capture stays live (see stopped_baseline/stop's docstring),
+          // so tell the operator why and leave Save up for a retry --
+          // post() tags this __inline, and without surfacing it here run()
+          // would just refresh silently and Save would look dead.
+          state.baselineError[nodeId] = err.message;
+        }
         await refresh(nodeId);
       });
       return true;
     }
     if (action === "setup_baseline_cancel") {
+      delete state.baselineError[nodeId];
       run(nodeId, async () => {
         await post(nodeId, `/nodes/${nodeId}/stopped_baseline/cancel`);
         await refresh(nodeId);
