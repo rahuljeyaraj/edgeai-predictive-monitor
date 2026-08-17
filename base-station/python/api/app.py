@@ -895,6 +895,21 @@ def create_app(registry: Registry, history_store: HistoryStore,
             raise HTTPException(status_code=409, detail=str(e))
         return _setup_response(node_id, snapshot)
 
+    @app.post("/nodes/{node_id}/setup/condition/stop")
+    def stop_setup_condition(node_id: str):
+        """Ends the condition currently collecting without starting the next
+        one, so the machine's load can be changed with nothing being
+        recorded (S2.3). 409 (step still open for a retry) when the condition
+        hasn't got enough frames yet -- a half condition may not be banked."""
+        controller = _require_setup()
+        try:
+            snapshot = controller.stop_condition(node_id)
+        except NodeNotFoundError:
+            raise HTTPException(status_code=404, detail=f"unknown node_id {node_id!r}")
+        except SetupError as e:
+            raise HTTPException(status_code=409, detail=str(e))
+        return _setup_response(node_id, snapshot)
+
     @app.get("/trip_outputs")
     def get_trip_outputs():
         """What the rig says it has, plus who already claims each output

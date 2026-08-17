@@ -130,6 +130,15 @@ class CommissioningSession:
         self._current_name: str = DEFAULT_CONDITION
         self._collected: List[Tuple[float, ...]] = []
         self._energies: List[float] = []
+        # True between stop_condition() and the next start_condition(): the
+        # session is still open and still watching the gate, but frames land
+        # nowhere. That gap is the whole point -- an operator changing the
+        # machine from no load to full load has to walk to it, change the
+        # load and walk back, and every frame measured while they do belongs
+        # to neither condition. Without it start_condition() closed the old
+        # condition and opened the new one in the same instant, so the load
+        # change itself was recorded as normal running.
+        self._paused: bool = False
         # Frozen copy of self._conditions, taken by stop_collecting().
         self._frozen: List[Tuple[str, List[Tuple[float, ...]], List[float]]] = []
         # Where each collected vector's scalar tail starts -- constant for
@@ -154,9 +163,21 @@ class CommissioningSession:
     @property
     def condition_counts(self) -> List[Tuple[str, int]]:
         """(name, frames) per condition in collection order, current one
-        last -- the per-condition live counters setup's step 4 shows."""
-        return ([(name, len(vectors)) for name, vectors, _ in self._conditions]
-                + [(self._current_name, len(self._collected))])
+        last -- the per-condition live counters setup's step 3 shows. While
+        paused there is no current one: self._current_name still holds the
+        condition stop_condition() just closed, and appending it again would
+        show the operator a second copy of it sitting at 0 frames."""
+        counts = [(name, len(vectors)) for name, vectors, _ in self._conditions]
+        if not self._paused:
+            counts.append((self._current_name, len(self._collected)))
+        return counts
+
+    @property
+    def paused(self) -> bool:
+        """True while nothing is being collected because stop_condition()
+        closed the last one -- what the step's controls read to know whether
+        to offer "Stop collecting" or the next condition's name field."""
+        return self._paused
 
     def start(self) -> None:
         # Registry.start_commissioning() is the sole guard here: it already
@@ -170,6 +191,7 @@ class CommissioningSession:
         self._collected = []
         self._energies = []
         self._spectral_dim = None
+        self._paused = False
 
     def start_condition(self, name: str) -> None:
         """Closes the condition currently collecting and opens a named new
@@ -192,6 +214,21 @@ class CommissioningSession:
         if self._collected:
             self._close_condition()
         self._current_name = name
+        self._paused = False
+
+    def stop_condition(self) -> None:
+        """Closes the condition currently collecting and stops collecting
+        altogether until the next start_condition() -- the pause an operator
+        needs to change the machine's load between conditions (S2.3).
+
+        Idempotent while already paused. Raises (leaving the condition open,
+        same retry shape as stop_collecting()) if it hasn't got min_frames
+        yet: the "no half conditions in the training batch" rule lives in
+        _close_condition() and is the same rule here."""
+        if self._paused:
+            return
+        self._close_condition()
+        self._paused = True
 
     def _close_condition(self) -> None:
         if len(self._collected) < self._min_frames:
@@ -216,7 +253,12 @@ class CommissioningSession:
         if entry.status != NodeStatus.COMMISSIONING_COLLECTING:
             raise CommissioningError(f"commissioning not started for {self._node_id!r}")
 
-        if self._gate.update(frame) != MotorState.RUNNING:
+        # The gate is updated even while paused, deliberately: it needs an
+        # unbroken frame history to hold its confirmed running state, so
+        # resuming after a load change doesn't have to re-earn debounce_frames
+        # of agreement before the next condition collects anything.
+        running = self._gate.update(frame) == MotorState.RUNNING
+        if self._paused or not running:
             return
 
         vector, spectral_dim = build_feature_vector(frame, entry.sensor_config, entry.input_dim)
@@ -241,7 +283,9 @@ class CommissioningSession:
         # one before training -- but a condition that was already closed is
         # enough on its own, which is what lets them stop mid-way through
         # adding an optional extra condition and still train on the ones
-        # already banked.
+        # already banked. A paused session is exactly that case: nothing is
+        # collecting, self._collected is empty, and the banked conditions
+        # stand.
         if self._collected or not self._conditions:
             self._close_condition()
 

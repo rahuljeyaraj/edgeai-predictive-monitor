@@ -105,11 +105,19 @@ that is just the same step re-entered by itself.
 | # | Step | Machine | Required | Produces |
 |---|---|---|---|---|
 | 1 | **Name & class** | — | **yes** | `device_name`, `device_type` |
-| 2 | **Off** | **OFF** | **yes** | `stopped_spectrum_ref`, `stopped_energy_ref` |
-| 3 | **Running conditions** | **ON** | **yes** (≥1 condition) | training batch, `running_energy_ref`, `healthy` recordings (§2.3) |
+| 2 | **Machine off** | **OFF** | **yes** | `stopped_spectrum_ref`, `stopped_energy_ref` |
+| 3 | **Machine running** | **ON** | **yes** (≥1 condition) | training batch, `running_energy_ref`, `healthy` recordings (§2.3) |
 | 4 | **Train** | either | **yes** | `<models_dir>/<node_id>.pt`, `scalar_mu/sigma`, `warning/fault_threshold` |
-| 5 | **Trip output** | ON → stopped by us | no | `trip_motor_idx`, *confirmed* (§3) |
+| 5 | **Stop output** | ON → stopped by us | no | `trip_motor_idx`, *tested* (§3) |
 | 6 | **Done** | — | — | Summary; asset goes live |
+
+**Step names, revised 2026-08-17.** Steps 2 and 3 were "Off" and "Running
+conditions", which didn't read as two halves of one measurement; they are now
+named as a pair after the state the machine must be in. Step 5 was "Trip
+output" — "trip" is our word for it, not the word on the machine, and the step's
+actual subject is *which output stops this machine*. The step **ids** are
+unchanged (`stopped`, `conditions`, `trip_output`), so nothing in the API or
+the registry moved.
 
 **Trip output was step 2 until 2026-08-02, and moving it to 5 is a
 correction** — see [TRIP_OUTPUT_OPEN_ISSUES.md §1](TRIP_OUTPUT_OPEN_ISSUES.md).
@@ -173,6 +181,15 @@ Step 4 collects **one or more named running conditions**, not one batch.
   step behaves exactly as commissioning does today.
 - Each condition collects ≥50 gated-RUNNING frames, with its own live counter.
 - The step is not complete until at least one condition has enough frames.
+- **Collection stops between conditions** (added 2026-08-17): *Stop* closes the
+  condition being recorded and collects nothing until the next one is named.
+  Naming the next condition used to be the only way to end the current one, so
+  the walk to the machine and the load change itself were recorded as part of
+  one condition or the other. `CommissioningSession.stop_condition()` /
+  `POST /nodes/<id>/setup/condition/stop`. The gate keeps being fed while
+  paused, so resuming doesn't have to re-earn `debounce_frames` of agreement.
+  A condition still can't be banked below `min_frames`, by *Stop* any more than
+  by naming the next one — one rule, in `_close_condition()`.
 
 **Why this matters more than it looks.** The autoencoder learns "what healthy
 looks like" from whatever it was shown. Shown only no-load, a full-load run is
@@ -357,14 +374,29 @@ asset, two modes.
 - Vertical step list. Current step expanded; completed steps collapse to a
   check plus a one-line result ("Off — measured, 34 frames").
 - All instructions live here, because this is the only surface the operator is
-  actually reading while standing at the machine. Terse and imperative:
-  - Step 2 (Off): *"Switch the machine off. Confirm it has stopped moving,
-    then Start."*
-  - Step 5 (Trip output): *"Leave the machine running. We'll stop it to
-    confirm the wiring."* — it says *leave*, not *start*, because step 3 has
-    just had the operator running the machine.
-- The Off step's wording carries the whole "software cannot verify the machine
-  is off" problem, exactly as the module docstring demands.
+  actually reading while standing at the machine. **Two parts per step: what to
+  do, then why it matters** (the second quieter, `setup-step__why`) — rewritten
+  2026-08-17 for a technician at the machine rather than for whoever built
+  this:
+  - Step 2 (Machine off): *"Switch the machine off. Wait until it has fully
+    stopped moving, then press Start."* + *"This measures the machine at rest,
+    so the system can tell 'stopped' from 'running'."*
+  - Step 5 (Stop output): *"Which output stops this machine? Leave the machine
+    running and press Test."* + *"Test sends a stop command. If the machine
+    stops, the test passes."* — it says *leave*, not *start*, because step 3
+    has just had the operator running the machine.
+  - Step 4 (Train) names what is running, shows a percentage that moves, and
+    says *"Training complete"* in words. A bar sitting at 100% with no words
+    read as the freeze it isn't. Its why line: *"Training keeps running, and
+    the machine keeps working."*
+  - **Revised again 2026-08-17 (same day): trimmed further.** The
+    software-cannot-verify-off point and the never-starts-a-machine point are
+    still true (§3's safety invariant, this step's own docstring) — they're
+    just no longer spelled out in the drawer copy. Read them in this doc or in
+    the code instead.
+- The Machine off step's wording carries the whole "software cannot verify the
+  machine is off" problem, exactly as the module docstring demands — as the
+  operator's own check, not as a lecture about what the model would learn.
 - Errors surface inline on their step — *"too unsteady, something was still
   moving"* — with the step still open for a retry. Both sessions already
   support retry-in-place; nothing new is needed.

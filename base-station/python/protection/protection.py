@@ -268,7 +268,7 @@ class ProtectionController:
             logger.info("protection: trip output %d confirmed against %s",
                          confirm_test.motor_idx, node_id)
             confirm_test.finish(
-                True, f"output {confirm_test.motor_idx} stopped this machine")
+                True, f"Test passed — output {confirm_test.motor_idx} stops this machine.")
 
         # Whether that reads as TRIPPED or IDLE depends entirely on
         # whether we asked for it.
@@ -316,8 +316,8 @@ class ProtectionController:
         that is already stopped would "confirm" any output at all."""
         if self._publish_trip is None:
             raise ProtectionError(
-                "no trip path from this base station (MQTT is not configured), so a "
-                "trip output cannot be tested")
+                "this base station has no way to send a stop (MQTT is not "
+                "configured), so an output cannot be tested")
         if self._motor_state_query is None:
             raise ProtectionError("no live running/stopped state for this node")
         running = self._motor_state_query(node_id)
@@ -328,13 +328,14 @@ class ProtectionController:
             # running, with no way to make the test pass. Says what is
             # actually missing instead.
             raise ProtectionError(
-                "this asset has no model yet, so nothing here can tell running from "
-                "stopped -- finish setup through Train first, then test the trip output")
+                "this machine has no model yet, so nothing here can tell running "
+                "from stopped -- finish the Train step first, then test the stop "
+                "output")
         if running is not True:
             raise ProtectionError(
-                "start the machine and wait for it to read as running before testing "
-                "the trip output -- a machine that is already stopped would appear to "
-                "confirm whichever output we tried")
+                "this machine reads as stopped. Start it, wait until it reads as "
+                "running, then test -- a stopped machine would pass the test on "
+                "any output")
 
         with self._lock:
             if node_id in self._confirm_tests:
@@ -357,7 +358,7 @@ class ProtectionController:
                               node_id)
             resolved = self._take_confirm_test(node_id)
             if resolved is not None:
-                resolved.finish(False, "the stop could not be published to the rig")
+                resolved.finish(False, "Test failed — the stop could not be sent out.")
             return
         test.timer.start()
         # The gate may already read stopped by the time we get here only if
@@ -392,10 +393,15 @@ class ProtectionController:
             return
         logger.warning("protection: trip output %d did NOT stop %s within %.0fs",
                         test.motor_idx, node_id, self._mapping_confirm_window_s)
+        # One plain sentence, because it is read at the machine: the machine
+        # did not stop, so this output does not stop it. The two causes
+        # (wrong output, or the stop never arriving) need the same next
+        # action from the operator -- check the wiring, try another output --
+        # so naming both only made the result harder to read.
         test.finish(
             False,
-            f"the machine kept running, so output {test.motor_idx} isn't the one that "
-            "stops it (or the trip never reached the rig)")
+            f"Test failed — output {test.motor_idx} did not stop this machine. "
+            "Check its wiring, or try another output.")
 
     def hold(self, node_id: str) -> bool:
         """Operator override: cancel a pending trip. Returns whether there was

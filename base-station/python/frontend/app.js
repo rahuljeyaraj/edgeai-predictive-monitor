@@ -216,7 +216,7 @@ function tripBannerLine(entry) {
   if (entry.status === "fault" && !p.armed) {
     // S10 Q4: a faulted asset with nothing wired to stop it still belongs
     // here -- quieter, and with no Hold, because there's nothing to hold.
-    return { kind: "unarmed", text: `${name} — faulty, no trip output wired`, dismissible: true };
+    return { kind: "unarmed", text: `${name} — faulty, no stop output wired`, dismissible: true };
   }
   return null;
 }
@@ -304,21 +304,23 @@ function protectionSectionHtml(entry) {
       ? new Date(entry.trip_motor_confirmed_at * 1000)
           .toLocaleDateString(undefined, { day: "2-digit", month: "short" })
       : null;
-    // "Unconfirmed" is stated, never hidden: a mapping nobody has proven is
+    // "Untested" is stated, never hidden: an output nobody has proven is
     // exactly what the old dropdown produced silently, and the whole point
-    // of the confirm test is that the difference is now visible.
-    tripText = `Output ${entry.trip_motor_idx} · ${when ? `confirmed ${when}` : "unconfirmed"}`
+    // of the stop test is that the difference is now visible. Both labels
+    // here match the wizard's own step names (setup.js's STEP_TITLES), so
+    // the same fact isn't called two different things in two places.
+    tripText = `Output ${entry.trip_motor_idx} · ${when ? `tested ${when}` : "untested"}`
       + ` · ${p.armed ? "armed" : "not armed"}`;
   }
 
   return `<div class="protection" data-role="protection">
     <div class="protection__title">Protection</div>
     <div class="protection__row">
-      <span class="protection__label">Trip output</span>
+      <span class="protection__label">Stop output</span>
       <span class="protection__state${entry.trip_motor_idx ? "" : " protection__state--missing"}">${escapeHtml(tripText)}</span>
     </div>
     <div class="protection__row">
-      <span class="protection__label">Stopped baseline</span>
+      <span class="protection__label">Machine-off reading</span>
       <span class="protection__state${measured ? "" : " protection__state--missing"}">${measured ? "Measured" : "Not measured"}</span>
     </div>
     <button type="button" class="protection__change" data-action="setup_open" data-step="trip_output">Change in setup</button>
@@ -358,7 +360,7 @@ function rowControls(entry) {
     setupTooltip = "Continue setting this asset up";
   } else if (!commissioned) {
     setupLabel = "Set up";
-    setupTooltip = "Name it, map its trip output, and train its model";
+    setupTooltip = "Name it, train its model, and test the output that stops it";
   }
 
   const pauseResumeEnabled = status === "healthy" || status === "warning"
@@ -582,18 +584,42 @@ function renderRecordDrawer() {
   }
   // Don't wipe an in-progress edit out from under the operator on a
   // background poll/WS tick -- same guard editingNodeId uses for the row
-  // list's own rebuild (app.js's long-standing pattern), and the reason
-  // setup.js keeps its typed fields in a draft rather than reading them
-  // back off the DOM.
-  if (recordDrawer.contains(document.activeElement)
-      && document.activeElement.tagName === "INPUT") {
-    return;
-  }
+  // list's own rebuild (app.js's long-standing pattern). Record mode reads
+  // its typed values straight off the DOM, so for it that means skipping
+  // the redraw entirely.
+  //
+  // Setup mode must NOT skip, and that is the fix for the wizard freezing
+  // between steps. Enter-to-submit (the keydown handler below) leaves focus
+  // in the field it was typed in, so every redraw that should have followed
+  // -- the busy dimming, the new step, the poll, the WS "setup" push -- hit
+  // this guard and returned. The drawer sat on the step the operator had
+  // just completed, sometimes still dimmed and inert (`.setup-body.is-busy`
+  // is pointer-events:none), until something happened to blur that field.
+  // It is safe to redraw setup because setup.js keeps every typed value in
+  // its own draft rather than in the DOM; focus and caret are restored
+  // below so a redraw mid-typing stays invisible.
+  const focusedInput = recordDrawer.contains(document.activeElement)
+      && document.activeElement.tagName === "INPUT" ? document.activeElement : null;
+  if (focusedInput && drawerMode !== "setup") return;
+  const focusRole = focusedInput ? focusedInput.dataset.role : null;
+  const caret = focusedInput ? [focusedInput.selectionStart, focusedInput.selectionEnd] : null;
   recordDrawer.hidden = false;
   recordDrawerBackdrop.hidden = false;
   recordDrawer.innerHTML = drawerMode === "setup"
     ? drawerHeaderHtml(Setup.headerTitle(entry)) + Setup.bodyHtml(entry)
     : recordDrawerBodyHtml(entry);
+  if (focusRole) {
+    // Absent after a step change (the field belonged to the previous step),
+    // which is exactly when focus should NOT be restored.
+    const again = recordDrawer.querySelector(`[data-role="${focusRole}"]`);
+    if (again) {
+      again.focus();
+      // type="number" has no selection to restore and throws if asked.
+      if (caret[0] !== null) {
+        try { again.setSelectionRange(caret[0], caret[1]); } catch (e) { /* not a text input */ }
+      }
+    }
+  }
 }
 
 // "Set up" / "Setup — step N of 6" (the tile), "Change in setup" (the

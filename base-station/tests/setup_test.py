@@ -207,7 +207,10 @@ def test_confirm_failure_reports_the_wrong_output(h: Harness):
     h.protection.confirm_trip_output(NODE_ID, 3, lambda ok, msg: results.append((ok, msg)))
     time.sleep(0.7)  # comfortably past mapping_confirm_window_s
     assert results and results[0][0] is False, results
-    assert "isn't the one" in results[0][1], results[0][1]
+    # Read at the machine, so it names the failure and the output, and asks
+    # for the one thing the operator can act on.
+    assert "did not stop this machine" in results[0][1], results[0][1]
+    assert "output 3" in results[0][1], results[0][1]
     assert h.registry.get(NODE_ID).trip_motor_confirmed_at is None, \
         "a failed test must not record a confirmation"
     print("a trip output that doesn't stop the machine reports back as wrong: PASS")
@@ -279,6 +282,54 @@ def test_two_operating_conditions(h: Harness):
     print("step 3 collects several named conditions with their own counters: PASS")
 
 
+def test_collection_stops_between_conditions(h: Harness):
+    """The gap an operator needs to change the machine's load. Without it,
+    naming the next condition was the only way to end the current one, so the
+    walk to the machine and the load change itself were recorded as part of
+    one condition or the other."""
+    step = next(s for s in h.setup.snapshot(NODE_ID)["steps"] if s["id"] == STEP_CONDITIONS)
+    assert step["collecting"] and not step["paused"], step
+    banked = [dict(c) for c in step["conditions"]]
+
+    h.setup.stop_condition(NODE_ID)
+    step = next(s for s in h.setup.snapshot(NODE_ID)["steps"] if s["id"] == STEP_CONDITIONS)
+    assert step["paused"] and not step["collecting"], step
+    # No phantom third row: the condition just closed must not also appear as
+    # a current one sitting at 0 frames.
+    assert [dict(c) for c in step["conditions"]] == banked, step
+
+    # Frames arriving while the operator is at the machine land nowhere.
+    h.feed(LOUD_BINS, 5)
+    step = next(s for s in h.setup.snapshot(NODE_ID)["steps"] if s["id"] == STEP_CONDITIONS)
+    assert [dict(c) for c in step["conditions"]] == banked, \
+        "frames collected while paused were credited to a condition"
+
+    # Stopping again is idempotent rather than an error, so a double press
+    # can't strand the step.
+    h.setup.stop_condition(NODE_ID)
+
+    # Naming the next condition resumes collection into it.
+    h.setup.add_condition(NODE_ID, "Half load")
+    h.feed(LOUD_BINS, 3)
+    step = next(s for s in h.setup.snapshot(NODE_ID)["steps"] if s["id"] == STEP_CONDITIONS)
+    assert step["collecting"] and not step["paused"], step
+    assert step["conditions"][-1] == {"name": "half_load", "frames": 3}, step
+
+    # A condition that hasn't got min_frames can't be banked by Stop either --
+    # the same rule that guards naming the next one, in the same place.
+    try:
+        h.setup.stop_condition(NODE_ID)
+    except SetupError:
+        pass
+    else:
+        raise AssertionError("Stop banked a half-collected condition")
+    h.feed(LOUD_BINS, MIN_FRAMES)
+    h.setup.stop_condition(NODE_ID)
+    step = next(s for s in h.setup.snapshot(NODE_ID)["steps"] if s["id"] == STEP_CONDITIONS)
+    assert [c["name"] for c in step["conditions"]] == ["no_load", "full_load", "half_load"], step
+    print("step 3 stops collecting between conditions so the load can be changed: PASS")
+
+
 def test_training_pools_conditions_and_takes_the_quietest_energy(h: Harness):
     h.setup.advance(NODE_ID)  # freezes the batch; api/app.py starts training here
     assert h.setup.snapshot(NODE_ID)["step"] == STEP_TRAIN
@@ -288,7 +339,8 @@ def test_training_pools_conditions_and_takes_the_quietest_energy(h: Harness):
     entry = h.registry.get(NODE_ID)
     assert entry.status == NodeStatus.HEALTHY, entry.status
     assert os.path.exists(entry.model_path), entry.model_path
-    assert entry.operating_conditions == ["no_load", "full_load"], entry.operating_conditions
+    assert entry.operating_conditions == ["no_load", "full_load", "half_load"], \
+        entry.operating_conditions
 
     # The gate's running threshold is a fraction of this reference, and it
     # must still call the QUIETEST legitimate running state "running" -- so
@@ -317,11 +369,11 @@ def _median_energy(h: Harness, bins) -> float:
 
 def test_each_condition_is_saved_as_a_healthy_recording(h: Harness):
     captures = list_captures(h.captures_dir)
-    assert len(captures) == 2, captures
-    # One label, two conditions -- separate labels would hand Edge Impulse
-    # two classes that both mean "fine".
+    assert len(captures) == 3, captures
+    # One label, three conditions -- separate labels would hand Edge Impulse
+    # three classes that all mean "fine".
     assert {c["label"] for c in captures} == {"healthy"}, captures
-    assert {c["condition"] for c in captures} == {"no_load", "full_load"}, captures
+    assert {c["condition"] for c in captures} == {"no_load", "full_load", "half_load"}, captures
     assert all(c["device_type"] == "pump" for c in captures), captures
     assert all(c["frame_count"] >= MIN_FRAMES for c in captures), captures
     print("each condition is also kept as a `healthy` recording, tagged by condition: PASS")
@@ -431,6 +483,7 @@ def main():
     # trip-output step now comes after training, not before the baseline.
     test_stopped_baseline_step(h)
     test_two_operating_conditions(h)
+    test_collection_stops_between_conditions(h)
     test_training_pools_conditions_and_takes_the_quietest_energy(h)
     test_trip_output_step(h)
     test_each_condition_is_saved_as_a_healthy_recording(h)

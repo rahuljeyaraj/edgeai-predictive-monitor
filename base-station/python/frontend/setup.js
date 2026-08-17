@@ -5,11 +5,15 @@
  * element; this owns what setup mode puts inside it).
  *
  * All the instructions live here, because this is the only surface the
- * operator is actually reading while standing at the machine. Terse and
- * imperative: "Switch the machine off. Confirm it has stopped moving, then
- * Start." The Off step's wording in particular carries the whole "software
- * cannot verify the machine is off" problem, exactly as
- * pipeline/stopped_baseline.py's module docstring demands.
+ * operator is actually reading while standing at the machine. Written for a
+ * technician at the machine, in two parts per step: what to do, then why it
+ * matters (`setup-step__why`, quieter). Plain words over ours -- "the
+ * output that stops this machine", not "trip output mapping" -- and no
+ * sentence that only makes sense to whoever built this. The Machine off
+ * step's wording carries the "software cannot verify the machine is off"
+ * problem, exactly as pipeline/stopped_baseline.py's module docstring
+ * demands, but it states it as the operator's own check rather than as a
+ * lecture about what the model would learn.
  *
  * The drawer is a top-level element outside #fleet-list, so the 5s poll can
  * never wipe an in-progress edit -- that existing property is exactly what a
@@ -25,11 +29,19 @@
  */
 
 const Setup = (() => {
+  // Step 2 and 3 are named as a pair -- "Machine off" / "Machine running" --
+  // because the only thing the operator has to get right about either is
+  // which state the machine must be in while it runs. The old "Off" /
+  // "Running conditions" didn't read as two halves of one measurement.
+  //
+  // "Stop output" replaces "Trip output": that step picks the output wired to
+  // stop this machine and proves it, and "trip" is our word for it, not the
+  // word on the machine.
   const STEP_TITLES = {
     name: "Name & class",
-    trip_output: "Trip output",
-    stopped: "Off",
-    conditions: "Running conditions",
+    trip_output: "Stop output",
+    stopped: "Machine off",
+    conditions: "Machine running",
     train: "Train",
     done: "Done",
   };
@@ -46,7 +58,7 @@ const Setup = (() => {
     // fallback below, not an error.
     tripOutputs: [],
     // Live drafts for the two typed fields in step 1, and the condition
-    // name in step 4 -- kept out of the DOM so a WS/poll re-render
+    // name in step 3 -- kept out of the DOM so a WS/poll re-render
     // mid-type redraws the same text instead of blanking the field.
     drafts: {},
     // node_id -> {motor_idx} while a confirm-by-stopping test is in flight.
@@ -198,8 +210,10 @@ const Setup = (() => {
     ).join("");
 
     return `
-      <p class="setup-step__hint">Both are required. The name is what alerts and the
-        trip banner print; the class is what recordings are grouped by.</p>
+      <p class="setup-step__hint">Name this machine and say what kind of machine it is.
+        Both are required.</p>
+      <p class="setup-step__why">The name is what alerts and the alarm banner show. The
+        class groups this machine's recordings with others of the same kind.</p>
       <label class="setup-field">
         <span>Name</span>
         <input type="text" data-role="setup-name" autocomplete="off"
@@ -228,16 +242,16 @@ const Setup = (() => {
       // as a working test.
       const d = draft(nodeId);
       outputsHtml = `
-        <p class="setup-step__hint">No rig has announced its outputs, so there's nothing
-          to test against. Enter the output number if you know it — it'll be recorded as
-          unconfirmed.</p>
+        <p class="setup-step__hint">No outputs have been reported, so there is nothing to
+          test against. If you know the output number, enter it — it will be saved
+          untested.</p>
         <label class="setup-field">
           <span>Output number</span>
           <input type="number" min="1" step="1" data-role="setup-manual-output"
                  value="${escapeHtml(d.manualOutput !== undefined ? d.manualOutput : (entry.trip_motor_idx || ""))}" />
         </label>
         <div class="setup-step__actions">
-          <button type="button" class="btn-label" data-action="setup_manual_output">Save unconfirmed</button>
+          <button type="button" class="btn-label" data-action="setup_manual_output">Save untested</button>
         </div>`;
     } else {
       outputsHtml = `<div class="setup-outputs">${state.tripOutputs.map((o) => {
@@ -251,26 +265,28 @@ const Setup = (() => {
             ${isCurrent && entry.trip_motor_confirmed_at ? "Re-test" : "Test"}</button>
           <button type="button" class="btn-label setup-output__manual" data-action="setup_manual_output"
                   data-idx="${o.idx}" ${claimed || confirming ? "disabled" : ""}
-                  title="Record this output without testing it">Use without testing</button>
+                  title="Save this output without testing it">Save untested</button>
         </div>`;
       }).join("")}</div>`;
     }
 
     const liveHtml = confirming
-      ? `<p class="setup-step__live">Stopping output ${confirming.motor_idx} — watch the machine…</p>`
+      ? `<p class="setup-step__live">Stop sent to output ${confirming.motor_idx} — watch the machine…</p>`
       : result
         ? `<p class="setup-step__${result.confirmed ? "ok" : "warn"}">${escapeHtml(result.message)}</p>`
         : "";
 
     return `
-      <p class="setup-step__hint">Leave the machine running. We'll stop it to confirm the
-        wiring — that's the only command this system ever sends, and only you restart it.</p>
+      <p class="setup-step__hint">Which output stops this machine? Leave the machine
+        running and press Test.</p>
+      <p class="setup-step__why">Test sends a stop command. If the machine stops, the test
+        passes.</p>
       ${outputsHtml}
       ${liveHtml}
       <div class="setup-step__actions">
         <button type="button" class="btn-label btn-label--ready" data-action="setup_advance"
                 ${entry.trip_motor_idx ? "" : "disabled"}>Continue</button>
-        <button type="button" class="btn-label" data-action="setup_skip">No trip output — skip</button>
+        <button type="button" class="btn-label" data-action="setup_skip">Nothing wired — skip</button>
       </div>`;
   }
 
@@ -288,7 +304,7 @@ const Setup = (() => {
     if (progress) {
       const enough = progress.collected >= progress.min_frames;
       controls = `
-        <p class="setup-step__live">Measuring ${progress.collected}/${progress.min_frames} frames…</p>
+        <p class="setup-step__live">Measuring — ${progress.collected} of ${progress.min_frames} readings.${enough ? " Enough to save." : ""}</p>
         <div class="setup-step__actions">
           <button type="button" class="btn-label btn-label--save" data-action="setup_baseline_save" ${enough ? "" : "disabled"}>Save</button>
           <button type="button" class="btn-label" data-action="setup_baseline_cancel">Cancel</button>
@@ -301,60 +317,108 @@ const Setup = (() => {
         </div>`;
     }
     return `
-      <p class="setup-step__hint">Switch the machine off. Confirm it has stopped moving,
-        then Start. Nothing here can check that for you — a measurement taken while the
-        machine runs teaches the system that its own vibration is silence.</p>
-      ${step.measured ? `<p class="setup-step__ok">Already measured.</p>` : ""}
+      <p class="setup-step__hint">Switch the machine off. Wait until it has fully stopped
+        moving, then press Start.</p>
+      <p class="setup-step__why">This measures the machine at rest, so the system can tell
+        "stopped" from "running".</p>
+      ${step.measured ? `<p class="setup-step__ok">Measured.</p>` : ""}
       ${controls}`;
   }
 
+  // The step has two shapes, and which one shows is the whole point of the
+  // "stop between conditions" control: while a condition is COLLECTING the
+  // operator gets a live count and one Stop; while nothing is collecting
+  // (before the first condition, and after each Stop) they get the name field
+  // for the next one. Previously naming the next condition was the only way
+  // to end the current one, so the walk to the machine and the load change
+  // itself landed in one condition or the other.
   function conditionsStepHtml(nodeId, entry, step) {
     const d = draft(nodeId);
     const conditions = step.conditions || [];
-    const current = conditions.length ? conditions[conditions.length - 1] : null;
+    const collecting = !!step.collecting;
+    const current = collecting && conditions.length ? conditions[conditions.length - 1] : null;
     const enough = conditions.some((c) => c.frames >= step.min_frames);
     const nameValue = d.condition !== undefined
       ? d.condition
-      : (conditions.length ? "" : "Running");
+      : (conditions.length ? "" : "Normal running");
 
     const listHtml = conditions.length
       ? `<div class="setup-conditions">${conditions.map((c, i) => {
           const done = c.frames >= step.min_frames;
-          const isCurrent = i === conditions.length - 1;
+          const isCurrent = collecting && i === conditions.length - 1;
           return `<div class="setup-condition${isCurrent ? " is-current" : ""}">
             <span class="setup-condition__name">${escapeHtml(titleCase(c.name))}</span>
-            <span class="setup-condition__count${done ? " is-done" : ""}">${c.frames}/${step.min_frames}</span>
+            <span class="setup-condition__count${done ? " is-done" : ""}">${c.frames} of ${step.min_frames}</span>
           </div>`;
         }).join("")}</div>`
       : "";
 
+    // Only ever one primary action, and Enter picks the first enabled button
+    // in this list (see app.js's drawer keydown handler), so Stop/Start
+    // collecting has to come before Train.
+    // The count lives in the list row above and is not repeated here: this
+    // line carries the one thing the row can't say, which is whether the
+    // operator may move on yet.
+    const controls = current
+      ? `<p class="setup-step__${current.frames >= step.min_frames ? "ok" : "live"}">${current.frames >= step.min_frames
+             ? `Enough recorded for “${escapeHtml(titleCase(current.name))}”. Press Stop before you change the load.`
+             : `Recording “${escapeHtml(titleCase(current.name))}”…`}</p>
+         <div class="setup-step__actions">
+           <button type="button" class="btn-label btn-label--save" data-action="setup_stop_condition"
+                   ${current.frames >= step.min_frames ? "" : "disabled"}>Stop</button>
+           <button type="button" class="btn-label btn-label--ready" data-action="setup_advance"
+                   ${enough ? "" : "disabled"}>Train</button>
+         </div>`
+      : `<label class="setup-field">
+           <span>${conditions.length ? "Next condition" : "First condition"}</span>
+           <input type="text" data-role="setup-condition" autocomplete="off"
+                  placeholder="e.g. full load" value="${escapeHtml(nameValue)}" />
+         </label>
+         <div class="setup-step__actions">
+           <button type="button" class="btn-label" data-action="setup_add_condition">Start recording</button>
+           <button type="button" class="btn-label btn-label--ready" data-action="setup_advance"
+                   ${enough ? "" : "disabled"}>Train</button>
+         </div>`;
+
     return `
-      <p class="setup-step__hint">Start the machine and let it run. Add a condition for each
-        way this machine normally runs — no load, full load — so a change of duty doesn't
-        later read as a fault.</p>
+      <p class="setup-step__hint">Start the machine. Record each way it normally runs — no
+        load, half load, full load — one at a time. Set the load, press Start recording,
+        then press Stop before you change it.</p>
+      <p class="setup-step__why">The system learns "normal" only from what you record here.
+        Cover the machine's full working range, or a normal change of load can later be
+        reported as a fault.</p>
       ${listHtml}
-      <label class="setup-field">
-        <span>${current ? "Add another condition" : "Condition"}</span>
-        <input type="text" data-role="setup-condition" autocomplete="off"
-               placeholder="e.g. full load" value="${escapeHtml(nameValue)}" />
-      </label>
-      <div class="setup-step__actions">
-        <button type="button" class="btn-label" data-action="setup_add_condition">${current ? "Add condition" : "Start collecting"}</button>
-        <button type="button" class="btn-label btn-label--ready" data-action="setup_advance" ${enough ? "" : "disabled"}>Train</button>
-      </div>`;
+      ${controls}`;
   }
 
+  // The one step that takes minutes, so it is the one that must never look
+  // stuck: it names what is running, shows a percentage that moves, and says
+  // outright that the page can be left. "Training complete" is stated in
+  // words rather than left as a bar sitting at 100% -- the flow moves to the
+  // next step on its own when the model lands, and 100% with no words looked
+  // like the freeze it isn't. A model already on disk (a re-run of setup that
+  // passes back through this step) says so instead of showing a dead 0%.
   function trainStepHtml(nodeId, entry, step) {
     if (step.error) {
-      return `<p class="setup-step__warn">Training failed: ${escapeHtml(step.error)}</p>`;
+      return `<p class="setup-step__warn">Training failed: ${escapeHtml(step.error)}</p>
+        <p class="setup-step__why">Nothing was overwritten. Go back to Machine running and
+          record again, or close setup and retry later.</p>`;
     }
     const tp = state.training[nodeId];
-    const percent = tp ? Math.round((100 * tp.epoch) / tp.total_epochs) : 0;
+    // Floored at 1% once the first epoch has been reported: epoch 1 of 300
+    // rounds to 0, and "Training -- 0%" under an empty bar is the exact
+    // "nothing is happening" read this step has to avoid.
+    const percent = tp ? Math.max(1, Math.round((100 * tp.epoch) / tp.total_epochs)) : 0;
+    const complete = percent >= 100;
+    const liveText = !tp
+      ? (step.model_path ? "Model already trained." : "Starting…")
+      : (complete ? "Training complete." : `Training — ${percent}%`);
     return `
-      <p class="setup-step__hint">Fitting this asset's own model from everything you just
-        collected. You can leave this page — it finishes on its own.</p>
+      <p class="setup-step__hint">Building this machine's model from the readings you just
+        recorded. This takes a few minutes.</p>
+      <p class="setup-step__why">Training keeps running, and the machine keeps working.</p>
       <div class="setup-progress"><div class="setup-progress__fill" style="width:${percent}%"></div></div>
-      <p class="setup-step__live">${percent}%</p>`;
+      <p class="setup-step__${complete || (!tp && step.model_path) ? "ok" : "live"}">${liveText}</p>`;
   }
 
   function doneStepHtml(nodeId, entry, snapshot) {
@@ -363,13 +427,13 @@ const Setup = (() => {
     const names = (conditions.trained_conditions || []).map(titleCase).join(", ");
     const tripText = trip.skipped || !entry.trip_motor_idx
       ? "None"
-      : `Output ${entry.trip_motor_idx}${entry.trip_motor_confirmed_at ? " (confirmed)" : " (unconfirmed)"}`;
+      : `Output ${entry.trip_motor_idx}${entry.trip_motor_confirmed_at ? " (tested)" : " (untested)"}`;
     return `
       <p class="setup-step__ok">${escapeHtml(entry.device_name)} is live and being monitored.</p>
       <dl class="setup-summary">
         <div><dt>Class</dt><dd>${escapeHtml(entry.device_type || "—")}</dd></div>
-        <div><dt>Trip output</dt><dd>${escapeHtml(tripText)}</dd></div>
-        <div><dt>Conditions</dt><dd>${escapeHtml(names || "—")}</dd></div>
+        <div><dt>Stop output</dt><dd>${escapeHtml(tripText)}</dd></div>
+        <div><dt>Recorded</dt><dd>${escapeHtml(names || "—")}</dd></div>
       </dl>
       <div class="setup-step__actions">
         <button type="button" class="btn-label btn-label--ready" data-action="setup_finish">Close</button>
@@ -384,7 +448,7 @@ const Setup = (() => {
         if (step.skipped) return "None";
         if (!entry.trip_motor_idx) return "";
         return `Output ${entry.trip_motor_idx}`
-          + (entry.trip_motor_confirmed_at ? " · confirmed" : " · unconfirmed");
+          + (entry.trip_motor_confirmed_at ? " · tested" : " · untested");
       case "stopped":
         return step.measured ? "Measured" : "";
       case "conditions": {
@@ -563,7 +627,7 @@ const Setup = (() => {
       run(nodeId, async () => {
         await post(nodeId, `/nodes/${nodeId}/trip_motor`, { motor_idx: motorIdx });
         await refresh(nodeId);
-        bridge.toast(`Output ${motorIdx} recorded as unconfirmed`);
+        bridge.toast(`Output ${motorIdx} saved untested`);
       });
       return true;
     }
@@ -597,6 +661,15 @@ const Setup = (() => {
       run(nodeId, async () => {
         await post(nodeId, `/nodes/${nodeId}/setup/condition`, { name });
         delete d.condition;
+      });
+      return true;
+    }
+    if (action === "setup_stop_condition") {
+      // Ends this condition without starting the next one, so the load can be
+      // changed with nothing being recorded. A 409 (too few readings) comes
+      // back inline on the step, which is why it goes through post().
+      run(nodeId, async () => {
+        await post(nodeId, `/nodes/${nodeId}/setup/condition/stop`);
       });
       return true;
     }

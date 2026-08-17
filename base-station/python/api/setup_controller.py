@@ -7,8 +7,12 @@ without a stopped baseline the gate can barely tell running from stopped, so
 a commissioning batch collected before one was calibrated against a weak
 gate.
 
-    1 Name & class -> 2 Off -> 3 Running conditions -> 4 Train
-      -> 5 Trip output -> 6 Done
+    1 Name & class -> 2 Machine off -> 3 Machine running -> 4 Train
+      -> 5 Stop output -> 6 Done
+
+Step ids stay `stopped`/`conditions`/`trip_output` -- the names above are the
+operator-facing titles (frontend/setup.js's STEP_TITLES), revised 2026-08-17;
+the ids are the API and are deliberately unchanged.
 
 Sequences the existing sessions; does not merge the modules (S2.1).
 StoppedBaselineSession and CommissioningSession stay independent and
@@ -186,8 +190,13 @@ class SetupController:
                                   if progress else None)}
         if step == STEP_CONDITIONS:
             counts = self._commissioning.condition_counts(node_id)
+            paused = self._commissioning.paused(node_id)
             return {"min_frames": self._commissioning.min_frames,
-                    "collecting": counts is not None,
+                    # "collecting" means frames are landing somewhere right
+                    # now, which a paused session is not -- the step's
+                    # controls switch on exactly that distinction.
+                    "collecting": counts is not None and not paused,
+                    "paused": bool(paused),
                     "conditions": ([{"name": name, "frames": frames}
                                      for name, frames in counts] if counts else []),
                     # What a previous run trained across, so a re-run shows
@@ -357,8 +366,9 @@ class SetupController:
 
     def add_condition(self, node_id: str, name: str) -> dict:
         """Starts collecting a named operating condition (S2.3), beginning
-        the commissioning session on the first call. Closing the previous
-        condition is part of opening the next one -- see
+        the commissioning session on the first call, and resuming collection
+        if stop_condition() paused it. Closing a previous condition that is
+        still open is part of opening the next one -- see
         CommissioningSession.start_condition."""
         state = self._require(node_id)
         if state.step != STEP_CONDITIONS:
@@ -367,6 +377,24 @@ class SetupController:
             if self._commissioning.condition_counts(node_id) is None:
                 self._commissioning.start(node_id)
             self._commissioning.start_condition(node_id, name)
+        except (CommissioningError, InvalidTransitionError) as e:
+            state.error = str(e)
+            self._notify(node_id)
+            raise SetupError(str(e)) from e
+        state.error = None
+        self._notify(node_id)
+        return self.snapshot(node_id)
+
+    def stop_condition(self, node_id: str) -> dict:
+        """Ends the condition currently collecting without starting another
+        (S2.3), so the operator can change the machine's load before naming
+        the next one. Nothing is collected in between -- see
+        CommissioningSession.stop_condition."""
+        state = self._require(node_id)
+        if state.step != STEP_CONDITIONS:
+            raise SetupError("conditions can only be collected during that step")
+        try:
+            self._commissioning.stop_condition(node_id)
         except (CommissioningError, InvalidTransitionError) as e:
             state.error = str(e)
             self._notify(node_id)

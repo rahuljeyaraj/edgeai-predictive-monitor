@@ -58,6 +58,25 @@ class CommissioningController:
             raise CommissioningError(f"no active commissioning session for {node_id!r}")
         session.start_condition(name)
 
+    def stop_condition(self, node_id: str) -> None:
+        """Closes the condition currently collecting and collects nothing
+        further until the next start_condition() -- the gap an operator needs
+        to change the machine's load between conditions. Same
+        leave-the-session-in-place-on-error contract as start_condition()."""
+        session = self._sessions.get(node_id)
+        if session is None:
+            raise CommissioningError(f"no active commissioning session for {node_id!r}")
+        session.stop_condition()
+
+    def paused(self, node_id: str) -> Optional[bool]:
+        """Whether a node's session is between conditions, or None if it has
+        no session at all -- the same "absent means nothing to show" contract
+        condition_counts() below uses."""
+        session = self._sessions.get(node_id)
+        if session is None:
+            return None
+        return session.paused
+
     def condition_counts(self, node_id: str) -> Optional[List[Tuple[str, int]]]:
         """Per-condition (name, frames) for a node's active session, or None
         if it has none -- setup's step 4 shows one live counter per

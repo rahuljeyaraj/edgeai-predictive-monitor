@@ -281,7 +281,18 @@ class _NodeStateMachine(StateMachine):
         | _.HEALTHY.to(_.COMMISSIONING_COLLECTING)
         | _.WARNING.to(_.COMMISSIONING_COLLECTING)
         | _.FAULT.to(_.COMMISSIONING_COLLECTING)
+        | _.IDLE.to(_.COMMISSIONING_COLLECTING)
     )
+    # IDLE -> COMMISSIONING_COLLECTING is what guided setup actually walks
+    # into: its Machine off step leaves the machine switched off, so the gate
+    # has written IDLE by the time the operator reaches Machine running.
+    # Without this edge, pressing Start collecting before the gate had
+    # confirmed the restarted machine failed with "status is 'idle', must be
+    # uncommissioned, healthy, warning, or fault" -- a state-machine
+    # complaint about the normal order of the wizard's own steps. Nothing is
+    # collected off a stopped machine anyway: CommissioningSession.feed_frame
+    # keeps only gate-confirmed RUNNING frames, so an early start just sits
+    # at 0 frames until the machine spins up.
     # HEALTHY/WARNING/FAULT -> COMMISSIONING_COLLECTING: re-commissioning
     # overwrites the existing model rather than versioning it
     # (commissioning.py's own resolution of open question #6). PAUSED ->

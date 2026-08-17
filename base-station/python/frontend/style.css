@@ -2217,6 +2217,19 @@ a.btn-label {
   color: #cbd5e1;
 }
 
+/* The "why" half of a step's instructions. Same size (this is read at arm's
+   length, standing at a machine) but quieter, so the line that says what to
+   DO stays the one the eye lands on first. */
+.setup-step__why {
+  /* Pulled up against the "do" line above it: the two are one block of
+     instructions, not two unrelated notes. */
+  margin: -6px 0 0;
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+  color: #94a3b8;
+}
+
 .setup-step__live {
   margin: 0;
   font-size: 14px;
