@@ -80,7 +80,12 @@ def build_svg(pad=2.0, target_width_mm=None, compact=False):
         # in README.md).
         all_items = main_items
     else:
-        sub_items, _ = layout_line(REG, "PREDICTIVE MONITOR", 11, 1.5, 1, 52)
+        # Bold + larger + tighter letter-spacing than the dashboard's
+        # subtitle (which was sized for a screen, not an engraving bit):
+        # thicker strokes and taller caps survive a 0.4mm nozzle groove.
+        # Baseline moved from 52->54 to keep clear of the main line's
+        # descenders ("g") at the bigger size.
+        sub_items, _ = layout_line(BOLD, "PREDICTIVE MONITOR", 16, 1.0, 1, 54)
         all_items = main_items + sub_items
     minx, miny, maxx, maxy = bbox_of_paths(all_items)
     minx -= pad; miny -= pad; maxx += pad; maxy += pad
@@ -121,8 +126,8 @@ if __name__ == "__main__":
     # Base station enclosure is the larger of the two shells; satellite is
     # the small sensor node -- scale the same artwork down for it rather
     # than re-laying it out, so both stay vertex-identical.
-    with open(f"{out_dir}/edgeai-logo-emboss-base-station-50mm.svg", "w") as f:
-        f.write(build_svg(target_width_mm=50))
+    with open(f"{out_dir}/edgeai-logo-emboss-base-station-60mm.svg", "w") as f:
+        f.write(build_svg(target_width_mm=60))
 
     with open(f"{out_dir}/edgeai-logo-emboss-satellite-32mm.svg", "w") as f:
         f.write(build_svg(target_width_mm=32, compact=True))

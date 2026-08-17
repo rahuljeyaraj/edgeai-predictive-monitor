@@ -11,7 +11,7 @@ extrude solid shapes, not text.
 
 | File | Use | Notes |
 |---|---|---|
-| `edgeai-logo-emboss-base-station-50mm.svg` | Base station shell | Full "EdgeAI / PREDICTIVE MONITOR" lockup, 50mm wide |
+| `edgeai-logo-emboss-base-station-60mm.svg` | Base station shell | Full "EdgeAI / PREDICTIVE MONITOR" lockup, 60mm wide |
 | `edgeai-logo-emboss-satellite-32mm.svg` | Satellite shell | "EdgeAI" only, 32mm wide — the subtitle text was dropped here because it engraves too small to read (see below) |
 | `edgeai-logo-emboss-master.svg` | Source / rescaling | Full lockup at natural design scale (1 unit = 1mm) |
 
@@ -19,24 +19,27 @@ All three are vector — open any of them in your slicer/CAD tool and scale
 to whatever actually fits your shell face; the mm sizes above are just
 starting points, not a size you're locked into.
 
+The "PREDICTIVE MONITOR" subtitle is set in **bold**, not the dashboard's
+regular weight, and larger relative to "EdgeAI" than the on-screen version
+— the dashboard sizing was tuned for a screen, not a 0.4mm engraving
+groove, and thin regular-weight strokes at that scale don't hold.
+
 ## Why the satellite mark drops the subtitle
 
-At 32mm total width, "PREDICTIVE MONITOR" prints at ~1.8mm cap height —
-below the ~3mm cap height needed for a 0.4mm-nozzle FDM print to hold
-individual letterforms (`M`/`O`/`N` strokes merge into blobs below that).
-The base station's 50mm version keeps the subtitle at ~2.8mm, which is
-workable but still tight — a finer nozzle (0.2mm) or a slightly wider
-panel will emboss more cleanly.
+At 32mm total width even the bold subtitle would print under 3mm cap
+height — too small for a 0.4mm-nozzle FDM print to hold individual
+letterforms (`M`/`O`/`N` strokes merge into blobs below that). The base
+station's 60mm version keeps the subtitle at ~4mm cap height, comfortably
+legible.
 
 ## Using with a slicer (PrusaSlicer / OrcaSlicer / Bambu Studio)
 
 1. Load your shell STL, then use the slicer's "Emboss"/SVG tool and import
    the relevant file above.
-2. **Engrave (recessed), not raised — depth 0.3–0.4mm.** At these sizes
-   (subtitle caps ~1.8–2.8mm) a raised stroke is thin enough to snap off
-   in handling, and recessed text needs no support/overhang. Optionally
-   paint-fill the recess afterward (rub paint or a marker in, wipe the
-   surface clean) for contrast.
+2. **Engrave (recessed), not raised — depth 0.3–0.4mm.** A raised stroke
+   this thin can snap off in handling, and recessed text needs no
+   support/overhang. Optionally paint-fill the recess afterward (rub
+   paint or a marker in, wipe the surface clean) for contrast.
 3. Position on the face, reduce size only if needed — don't scale below
    the mm width used to generate the file or the strokes will thin
    further.
