@@ -142,6 +142,49 @@ rm -f '${REMOTE_TMP_TARBALL}'"
     echo "Container is up."
 }
 
+# Starts whatever app code is already on the device -- no local build, no
+# push, no extract. Just stop (if running) + start the existing REMOTE_DIR.
+# Use this when nothing has changed since the last real deploy_app() run and
+# you just want the container back up (e.g. after a reboot or a manual stop).
+start_existing_app() {
+    step "Checking adb device connection"
+    if ! wait_for_device 15; then
+        echo "Board not visible to adb after waiting. Run 'adb devices' to check." >&2
+        exit 1
+    fi
+
+    step "Stopping existing app (if running) -- best effort"
+    adb_retry 20 shell "arduino-app-cli app stop ${REMOTE_DIR}" || true
+
+    step "Starting existing app on-device (no push -- using code already there)"
+    local kickoff_cmd="rm -f '${BUILD_LOG}'; nohup arduino-app-cli app start '${REMOTE_DIR}' > '${BUILD_LOG}' 2>&1 < /dev/null & disown; echo KICKED_OFF"
+    if ! adb_retry 20 shell "${kickoff_cmd}"; then
+        echo "Could not even kick off the start -- link too unstable right now. Retry once it settles (watch dmesg)." >&2
+        exit 1
+    fi
+
+    step "Waiting for start to finish (usually faster than a full deploy; polling, tolerant of link drops)"
+    local build_done=0
+    local i
+    for i in $(seq 1 200); do   # ~200 * 5s = ~16.5 min ceiling
+        local state
+        state="$(timeout 15 adb shell "docker inspect -f '{{.State.Running}}' ${CONTAINER} 2>/dev/null" 2>/dev/null | tr -d '\r\n')"
+        if [ "${state}" = "true" ]; then
+            build_done=1
+            break
+        fi
+        sleep 5
+    done
+
+    if [ "${build_done}" -ne 1 ]; then
+        echo "Container never came up within the wait window. Tail of the on-device build log:" >&2
+        adb_retry 15 shell "tail -n 40 '${BUILD_LOG}'" || true
+        echo "If REMOTE_DIR has no app pushed yet, this will always fail -- run without --existing first." >&2
+        exit 1
+    fi
+    echo "Container is up."
+}
+
 # Finds the app's uv-managed venv python3 path inside the container.
 # Echoes the path on success, exits the script on failure.
 find_venv_python() {

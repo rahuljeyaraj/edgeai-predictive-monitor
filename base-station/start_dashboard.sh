@@ -26,7 +26,9 @@
 #      browser click.
 #
 # Usage:
-#   ./start_dashboard.sh
+#   ./start_dashboard.sh             -- full push + build/flash + start
+#   ./start_dashboard.sh --existing  -- skip push/build, just (re)start the
+#                                        app code already on the device
 
 set -uo pipefail
 
@@ -34,10 +36,28 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_deploy_common.sh"
 
 PORT=8080
 BASE_STATION_NODE_ID="base_station"
+USE_EXISTING=0
 
-set_raw_capture_mode 0
+for arg in "$@"; do
+    case "${arg}" in
+        --existing|-e)
+            USE_EXISTING=1
+            ;;
+        *)
+            echo "Unknown argument: ${arg}" >&2
+            echo "Usage: $0 [--existing]" >&2
+            exit 1
+            ;;
+    esac
+done
+
 require_port "${PORT}"
-deploy_app
+if [ "${USE_EXISTING}" -eq 1 ]; then
+    start_existing_app
+else
+    set_raw_capture_mode 0
+    deploy_app
+fi
 
 step "Finding board's LAN IP"
 LAN_IP="$(find_lan_ip)"
