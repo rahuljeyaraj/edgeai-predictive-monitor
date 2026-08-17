@@ -317,7 +317,32 @@ static bool attempt_sta_join(const char *ssid, const char *password)
 		vTaskDelay(pdMS_TO_TICKS(100));
 	}
 
-	Serial.printf("[transport] WiFi joined, IP=%s\n", WiFi.localIP().toString().c_str());
+	/* Arduino-ESP32 leaves STA mode in WIFI_PS_MIN_MODEM power save, which
+	 * parks the radio between the AP's DTIM beacons. For a node that mostly
+	 * idles that is the right default; for this one it is not - it publishes
+	 * a ~2.7KB frame every FUSER_EPOCH_MS (app_config.h) over TCP, and TCP
+	 * needs the *return* path to be prompt, not just the transmit path.
+	 * Sleeping between beacons adds hundreds of ms to every ACK, which the
+	 * broker's congestion control reads as a genuinely long, highly variable
+	 * RTT: the window collapses, the RTO backs off into whole seconds, and
+	 * the achievable rate lands far below what the link could carry. Measured
+	 * here as ~0.3-0.8 published frames/s against a 5/s target, with the
+	 * broker-side socket sitting at cwnd:2 and rto:8.7s.
+	 *
+	 * Set after every successful join rather than once at init: WiFi.begin()
+	 * re-applies the mode's default power save, so a reconnect (or the
+	 * STA_TESTING path below) would silently restore it. */
+	WiFi.setSleep(false);
+	/* Nagle would hold the tail segment of each frame waiting for either the
+	 * previous segment's ACK or more payload - and there is no more payload
+	 * until the next epoch, so it waits for the ACK every single time. That
+	 * is a per-frame stall on exactly the path above, and telemetry frames
+	 * are already whole-message writes, which is the case Nagle exists to
+	 * coalesce and cannot improve. */
+	wifi_client.setNoDelay(true);
+
+	Serial.printf("[transport] WiFi joined, IP=%s, power save off\n",
+		      WiFi.localIP().toString().c_str());
 	return true;
 }
 

@@ -308,6 +308,39 @@ def _default_mqtt_host() -> str | None:
     return None
 
 
+# Significant digits kept for every float that goes out over the dashboard
+# WebSocket. Every one of these values arrives as an f32 off the wire
+# (common/telemetry_frame.py's struct.unpack_from("<...f")), which carries
+# ~7.2 significant decimal digits -- but struct widens it to a Python float
+# (f64) on the way in, so json.dumps() then writes out the *f64* repr of a
+# number that only ever had f32 information in it: 37008.37109375 (14 chars)
+# for what is really 37008.4. At 4 channels x 128 bins + 24 scalars per frame
+# that padding alone was the larger half of the message.
+#
+# 6 digits sits just under f32's real precision, so this discards no
+# information the sensor ever measured, and it is display-only regardless:
+# the model/gate/commissioning path reads SensorFrame.bins directly
+# (on_frame routes the untouched frame before broadcasting), so nothing
+# downstream of inference ever sees a rounded value.
+_DISPLAY_SIG_DIGITS = 6
+
+
+def _round_display(value: float) -> float:
+    """One float, trimmed to _DISPLAY_SIG_DIGITS significant digits.
+
+    Significant digits rather than a fixed number of decimal places: these
+    are spectrum magnitudes, and their scale spans several orders of
+    magnitude both across channels (a satellite mic bin reads ~2e6 where an
+    accel bin reads ~1e-3) and within one channel's own noise floor. A fixed
+    round(v, 3) would erase a quiet channel entirely while barely shortening
+    a loud one."""
+    return float(f"{value:.{_DISPLAY_SIG_DIGITS}g}")
+
+
+def _round_bins(bins) -> list:
+    return [float(f"{value:.{_DISPLAY_SIG_DIGITS}g}") for value in bins]
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__,
                                       formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -469,15 +502,21 @@ def main():
             "timestamp": frame.timestamp,
             # "channels" stays exactly frame.bins -- model-relevant channels
             # (mic/accel_x/accel_y/accel_z), each fanning out one waterfall
-            # row + one spectrum trace in charts.js's handleSpectrum. The
-            # fused/combined `accel` channel is display-only now (superseded
-            # by the per-axis model channels) -- it rides under
-            # "axis_channels" below, which today's frontend deliberately
-            # doesn't consume (nothing renders the old single combined-axis
-            # spectrum anymore).
-            "channels": {channel: list(bins) for channel, bins in frame.bins.items()},
-            "axis_channels": {channel: list(bins) for channel, bins in
-                              frame.display_bins.items()},
+            # row + one spectrum trace in charts.js's handleSpectrum.
+            #
+            # frame.display_bins (the fused/combined `accel` channel,
+            # superseded by the per-axis model channels) used to ride along
+            # here as "axis_channels". Nothing has consumed it since the
+            # per-axis migration -- charts.js explicitly drops it -- and on a
+            # base_station frame it was 8.4KB of a 17.5KB message, i.e. 48% of
+            # this node's entire dashboard bandwidth serialized, pushed and
+            # JSON.parse()d every frame purely to be thrown away. Dropped
+            # outright rather than left as a dead field: it competes for the
+            # same WiFi airtime the MQTT satellite ingest needs, and for the
+            # same browser main-thread budget the Plotly redraws need. If a
+            # combined-axis view is ever wanted again, re-add it behind an
+            # explicit opt-in rather than unconditionally.
+            "channels": {channel: _round_bins(bins) for channel, bins in frame.bins.items()},
             # (fs, fft_size) per spectrum channel -- charts.js turns a bin
             # index into an actual frequency (k * fs / fft_size) with this
             # instead of plotting a raw, sample-rate-independent bin number.
@@ -487,7 +526,8 @@ def main():
             # (features.py's scalar tail) AND the source for charts.js's
             # scalar trend grid, which buffers each one's history client-side
             # -- nothing about them is persisted server-side.
-            "scalars": frame.scalars,
+            "scalars": {name: _round_display(value) if isinstance(value, float) else value
+                        for name, value in frame.scalars.items()},
         })
 
     spi_consumer = SpiConsumer(on_frame=on_frame)

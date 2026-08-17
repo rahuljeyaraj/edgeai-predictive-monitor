@@ -1072,6 +1072,57 @@ const Charts = (() => {
     }
   }
 
+  // A single Plotly.react() runs 8-16ms for a spectrum trace and considerably
+  // more for a waterfall (its heatmap goes through a canvas toDataURL, the
+  // single most expensive call in a CPU profile of this page). Redrawing every
+  // mounted chart of every dirty node in one synchronous pass therefore
+  // produced ~265ms tasks with two nodes expanded and all panels open -- the
+  // main thread was blocked ~47% of the time, so scrolling, hovering and the
+  // WebSocket handler all had to wait behind a redraw. Total work was never
+  // the problem on its own; doing it all in one uninterruptible task was.
+  //
+  // So redraws are queued as individual jobs and drained under a per-frame
+  // time budget: whatever doesn't fit resumes on the next animation frame.
+  // Same work, same data, but the browser gets a turn between charts.
+  const FRAME_BUDGET_MS = 10; // of a 16.7ms frame, leaving room to composite
+
+  const renderQueue = [];
+  const queuedKeys = new Set();
+
+  // A chart scrolled out of view is still mounted and still gets fresh data,
+  // but redrawing it paints nothing anyone can see. Skipping those is what
+  // keeps a fleet with several nodes expanded affordable at all -- the queue
+  // is refilled from live state every flush, so anything scrolled back into
+  // view redraws on the very next tick with current data, not stale pixels.
+  function onScreen(el) {
+    if (!el || !el.isConnected) return false;
+    const r = el.getBoundingClientRect();
+    if (r.width === 0 && r.height === 0) return false; // display:none / collapsed
+    const margin = 200; // start drawing just before it scrolls in
+    return r.bottom > -margin && r.top < window.innerHeight + margin;
+  }
+
+  function enqueue(key, el, run) {
+    // Already pending: jobs read live node state when they run, so the queued
+    // one will pick up whatever arrived since. Re-adding would only make the
+    // same chart redraw twice for one frame's worth of data.
+    if (queuedKeys.has(key)) return;
+    if (!onScreen(el)) return;
+    queuedKeys.add(key);
+    renderQueue.push({ key, run });
+  }
+
+  function drainRenderQueue() {
+    const started = performance.now();
+    while (renderQueue.length) {
+      const job = renderQueue.shift();
+      queuedKeys.delete(job.key);
+      job.run();
+      if (performance.now() - started > FRAME_BUDGET_MS) break;
+    }
+    return renderQueue.length > 0; // more to do next frame
+  }
+
   function flush() {
     for (const nodeId of Array.from(dirty)) {
       dirty.delete(nodeId);
@@ -1082,16 +1133,22 @@ const Charts = (() => {
       if (node.classificationEl) node.classificationEl.innerHTML = buildClassificationHtml(node);
 
       if (node.anomalyMounted) {
-        const [traces, layout] = buildAnomalyFigure(nodeId, node);
-        Plotly.react(node.anomalyEl, traces, layout, SPECTRUM_CONFIG);
+        enqueue(`${nodeId}/anomaly`, node.anomalyEl, () => {
+          const [traces, layout] = buildAnomalyFigure(nodeId, node);
+          Plotly.react(node.anomalyEl, traces, layout, SPECTRUM_CONFIG);
+        });
       }
       if (node.accelSpectrumMounted) {
-        const [traces, layout] = buildAccelSpectrumFigure(nodeId, node);
-        Plotly.react(node.accelSpectrumEl, traces, layout, SPECTRUM_CONFIG);
+        enqueue(`${nodeId}/accel`, node.accelSpectrumEl, () => {
+          const [traces, layout] = buildAccelSpectrumFigure(nodeId, node);
+          Plotly.react(node.accelSpectrumEl, traces, layout, SPECTRUM_CONFIG);
+        });
       }
       if (node.micSpectrumMounted) {
-        const [traces, layout] = buildMicSpectrumFigure(nodeId, node);
-        Plotly.react(node.micSpectrumEl, traces, layout, SPECTRUM_CONFIG);
+        enqueue(`${nodeId}/mic`, node.micSpectrumEl, () => {
+          const [traces, layout] = buildMicSpectrumFigure(nodeId, node);
+          Plotly.react(node.micSpectrumEl, traces, layout, SPECTRUM_CONFIG);
+        });
       }
 
       if (scalarsOpenIds.has(nodeId)) {
@@ -1100,8 +1157,10 @@ const Charts = (() => {
             mountScalarIfNeeded(nodeId, node, stat); // data may have arrived since the panel opened
             continue;
           }
-          const [traces, layout] = buildScalarFigure(nodeId, node, stat);
-          Plotly.react(node.scalarEls[stat.key], traces, layout, SPECTRUM_CONFIG);
+          enqueue(`${nodeId}/scalar/${stat.key}`, node.scalarEls[stat.key], () => {
+            const [traces, layout] = buildScalarFigure(nodeId, node, stat);
+            Plotly.react(node.scalarEls[stat.key], traces, layout, SPECTRUM_CONFIG);
+          });
         }
       }
       if (waterfallOpenIds.has(nodeId)) {
@@ -1110,11 +1169,62 @@ const Charts = (() => {
             mountWaterfallIfNeeded(nodeId, node, channel);
             continue;
           }
-          const [traces, layout] = buildWaterfallFigure(nodeId, node, channel);
-          Plotly.react(node.waterfallEls[channel], traces, layout, WATERFALL_CONFIG);
+          enqueue(`${nodeId}/waterfall/${channel}`, node.waterfallEls[channel], () => {
+            const [traces, layout] = buildWaterfallFigure(nodeId, node, channel);
+            Plotly.react(node.waterfallEls[channel], traces, layout, WATERFALL_CONFIG);
+          });
         }
       }
     }
+  }
+
+  // flush() is a synchronous burst of Plotly.react() calls -- one per mounted
+  // chart on every dirty node -- so on a fleet with several nodes expanded it
+  // is comfortably the most expensive thing this page does. setInterval(flush,
+  // 300) started a new burst every 300ms whether or not the previous one had
+  // finished, so once a redraw exceeded its own interval the browser was left
+  // permanently behind, with the main thread never idle enough to service
+  // scrolling, hover or the incoming WebSocket -- the page reads as "stuck"
+  // even though data is still arriving.
+  //
+  // Self-scheduling instead: the next flush is only ever queued once the
+  // previous one has actually returned, so redraws degrade to a lower frame
+  // rate under load rather than overlapping. requestAnimationFrame both aligns
+  // the draw with the compositor (no half-painted frames) and is throttled to
+  // ~0 by the browser on a hidden tab, which is the right behavior for a
+  // background dashboard: handleSpectrum keeps buffering into `dirty`, and one
+  // redraw catches up on return.
+  function startRenderLoop() {
+    let scheduled = false;
+
+    const run = () => {
+      scheduled = false;
+      let more = false;
+      try {
+        flush();
+        more = drainRenderQueue();
+      } finally {
+        // Still charts left over from this batch: come straight back on the
+        // next frame to finish them. Only once the queue is empty does the
+        // loop fall back to the RENDER_THROTTLE_MS idle cadence, so a heavy
+        // batch is spread across consecutive frames rather than either
+        // blocking one frame or being stretched over several throttle ticks.
+        if (more) {
+          scheduled = true; // keep schedule() a no-op while this batch finishes
+          requestAnimationFrame(run);
+        } else {
+          setTimeout(schedule, RENDER_THROTTLE_MS);
+        }
+      }
+    };
+
+    const schedule = () => {
+      if (scheduled) return;
+      scheduled = true;
+      requestAnimationFrame(run);
+    };
+
+    schedule();
   }
 
   function chartSlotHtml(role, nodeId, channel) {
@@ -1265,7 +1375,7 @@ const Charts = (() => {
     connectWs();
     wireWaterfallToggle();
     wireAnomalyLiveToggle();
-    setInterval(flush, RENDER_THROTTLE_MS);
+    startRenderLoop();
   }
 
   return { init, onNodesPolled, detailBodyHtml, attachExpanded };

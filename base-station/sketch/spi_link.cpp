@@ -166,9 +166,28 @@ struct __attribute__((packed)) spi_link_frame_header {
  * all of that regardless of Zephyr thread priority, which a poll
  * fundamentally cannot. Not yet re-validated with real pacing numbers this
  * unlocks - see spi_link_dma_isr's comment for the interrupt setup and
- * ingestion/spi_reader.py's STREAM_PACING_S for the current tuned value. */
+ * ingestion/spi_reader.py's STREAM_PACING_S for the current tuned value.
+ *
+ * 2026-08-17: ceiling cut 1000 -> 100 ticks (~1s -> ~100ms). The ~1s value
+ * was sized as "generous", but generosity on this path is not free: this wait
+ * runs with spi_link_busy held for the WHOLE stream, so every spi_arm_stream
+ * the MPU makes while it runs is answered "busy" (see spi_link_thread_entry's
+ * header). A single timeout therefore stops frame service dead for the entire
+ * ceiling, and measured on real hardware these fire every ~10-20s - each one
+ * showing up on the dashboard as a ~1-2.8s freeze of the base_station node's
+ * charts while the satellite kept updating (get_spi_link_stats' timeout
+ * counter incrementing by exactly 1 per freeze is what pinned it).
+ *
+ * 100ms is still far above any legitimate completion: a 512-byte chunk at the
+ * daemon's ~40MHz clock is ~100us of actual SPI time, and the slowest real
+ * contributor is the MPU's own inter-chunk pacing (STREAM_PACING_S = 15ms,
+ * ingestion/spi_reader.py) plus a few ms of thread jitter. Anything that has
+ * not completed in 100ms is not slow, it is lost - the MPU gave up on that
+ * frame long before (FRAME_RETRIES x ARM_RETRIES there), so waiting the other
+ * 900ms only withholds the NEXT frame, which is already staged and fine.
+ * Lower still would start eating into legitimate jitter margin. */
 #define SPI_LINK_DMA_WAIT_TICK_MS 1
-#define SPI_LINK_DMA_WAIT_TICKS 1000
+#define SPI_LINK_DMA_WAIT_TICKS 100
 #define SPI_LINK_THREAD_STACK_SIZE 2048
 
 /* Back-off after a transfer that ended in a DMA error flag (not a timeout - the
