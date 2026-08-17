@@ -19,10 +19,13 @@
  */
 
 /* Mono samples per hal_audio_read_block() call - mic_i2s.cpp's internal
- * block size. Must equal MIC_FFT_BIN_COUNT * 2 (app_config.h) so one
+ * block size. Must equal MIC_FFT_BIN_COUNT * 4 (app_config.h) so one
  * block is exactly one FFT window - see mic_sampler_task.cpp's
- * static_assert. */
-#define AUDIO_BLOCK_SAMPLES 1024
+ * static_assert, and mic_sampler_task.h's MIC_FFT_LEN comment for why
+ * the multiplier is 4 and not 2 (mirrors base-station/sketch/
+ * mic_sampler.cpp's MIC_FFT_LEN exactly - same INMP441, same no-MCLK
+ * fold-back reasoning). */
+#define AUDIO_BLOCK_SAMPLES 2048
 
 int hal_audio_init(void);
 int hal_audio_start(void);

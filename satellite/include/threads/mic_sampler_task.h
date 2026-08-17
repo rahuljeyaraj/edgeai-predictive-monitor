@@ -12,7 +12,13 @@
  * needed - that's accel-specific, see accel_sampler_task.h).
  */
 
-#define MIC_FFT_LEN (MIC_FFT_BIN_COUNT * 2)
+/* *4, not *2: at 96kHz (mic_i2s.cpp's AUDIO_SAMPLE_RATE_HZ), without an
+ * external MCLK the INMP441 only has valid audio below Fs/4 = 24kHz - see
+ * mic_i2s.cpp's header comment. So only the first MIC_FFT_BIN_COUNT of
+ * the FFT's unique bins (up to 24kHz) are useful; mic_fft_magnitude()
+ * below keeps just those and drops the rest. Exact same reasoning/numbers
+ * as base-station/sketch/mic_sampler.cpp's MIC_FFT_LEN. */
+#define MIC_FFT_LEN (MIC_FFT_BIN_COUNT * 4)
 
 /* Spectrum plus the time-domain scalar tile computed on the same raw
  * window (rms/kurtosis/std/peak/crest_factor/skewness - dsp/

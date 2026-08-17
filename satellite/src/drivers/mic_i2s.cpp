@@ -27,13 +27,25 @@
  * left-justified (MSB-first) in that 32-bit word with 8 zero-padded LSBs
  * - hal_audio_read_block() below right-shifts by 8 to recover it as a
  * signed 24-bit value in an int32_t, matching common INMP441/ESP32
- * reference-driver convention. Not hardware-verified in this port (no
- * physical ESP32S3 + INMP441 available to bring up here, unlike mcu/'s
- * empirically-confirmed STM32 findings) - revisit the shift/sample rate
- * once real hardware is on the bench.
+ * reference-driver convention.
+ *
+ * Sample rate is 96kHz, same as mcu/'s SAI1_A path and for the identical
+ * reason (base-station/sketch/mic_sampler.cpp's header comment): this is
+ * the same INMP441, wired the same way (BCLK+WS+SD only, no MCLK pin -
+ * the part doesn't have one), so the same datasheet-level constraint
+ * applies regardless of host MCU - without an external MCLK the part's
+ * own natural rate is Fs/2, and the unavoidable 2x upsampling to the I2S
+ * frame rate Fs folds an image in above Fs/4. Sampling at 96kHz keeps
+ * that clean band at 0-24kHz; mic_sampler_task.cpp then keeps only the
+ * first MIC_FFT_BIN_COUNT of the FFT's unique bins (up to 24kHz) and
+ * drops the rest, exactly mirroring mic_sampler.cpp's own
+ * MIC_FFT_LEN/bin-keeping split. Not hardware-verified in this port yet
+ * (no physical ESP32S3 + INMP441 bring-up prior to this stage) - this is
+ * the config to verify against real hardware, not a placeholder to
+ * revisit later.
  */
 
-#define AUDIO_SAMPLE_RATE_HZ 48000
+#define AUDIO_SAMPLE_RATE_HZ 96000
 #define AUDIO_I2S_PORT        I2S_NUM_0
 #define AUDIO_DMA_BUF_COUNT   4
 #define AUDIO_DMA_BUF_LEN     256 /* frames per DMA buffer */
