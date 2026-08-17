@@ -60,7 +60,7 @@ from perf import PerformanceMonitor
 from gpu_perf import GpuPerfPoller
 from spi_reader import SpiConsumer
 import telegram_alerts
-from wifi import WifiStatusPoller, connect as wifi_connect, scan as wifi_scan
+from wifi import WifiStatusPoller, connect as wifi_connect, forget as wifi_forget, scan as wifi_scan
 from connection_manager import ConnectionManager
 from manager import PipelineManager
 from alert_store import AlertStore, SubscriberNotFoundError
@@ -473,7 +473,10 @@ def create_app(registry: Registry, history_store: HistoryStore,
     # failure (never breaks the form, but still distinguishable from a
     # genuinely empty scan), connect's 503 distinguishes "the bridge
     # itself isn't provisioned" from a normal 400 join failure (wrong
-    # password, out of range).
+    # password, out of range). forget is the counterpart to connect --
+    # leaves the currently-joined network on purpose and falls back to AP
+    # mode -- same 503-vs-400 split (bridge unreachable vs. "wasn't
+    # connected to begin with").
     @app.get("/network/wifi/status")
     def get_wifi_status():
         if app.state.wifi_status is None:
@@ -492,6 +495,16 @@ def create_app(registry: Registry, history_store: HistoryStore,
             raise HTTPException(status_code=503, detail=str(e))
         if not result.get("success"):
             raise HTTPException(status_code=400, detail=result.get("error") or "Connection failed")
+        return result
+
+    @app.post("/network/wifi/forget")
+    def forget_wifi():
+        try:
+            result = wifi_forget()
+        except RuntimeError as e:
+            raise HTTPException(status_code=503, detail=str(e))
+        if not result.get("success"):
+            raise HTTPException(status_code=400, detail=result.get("error") or "Failed to leave network")
         return result
 
     def _telegram_subscribers_dict() -> dict:

@@ -36,11 +36,18 @@ Two responsibilities:
        failure/timeout, distinct from a genuinely empty result)
      {"cmd": "connect", "ssid": str, "password": str}
        -> {"success": bool, "error": str|null}
+     {"cmd": "forget"}
+       -> {"success": bool, "error": str|null}
    A connect attempt blocks this connection for up to CONNECT_TIMEOUT_S
    while nmcli tries the join -- deliberately synchronous (same "blocking
    call, caller's worker thread absorbs it" shape the app side already
    uses for e.g. POST /classifier/ei/link's blocking EI login) since this
    is a rare, one-shot, technician-driven action, not a polled path.
+   "forget" is the only user-triggered way back to AP mode: it deletes the
+   currently-joined network's NM connection profile (so autoconnect can't
+   silently rejoin it) and brings the Hotspot back up. Without it the only
+   path back to AP mode was the monitor loop noticing a dropped connection
+   on its own -- there was no way to leave a working network on purpose.
 
 3. A captive-portal redirect: while the Hotspot is up, provision-wifi.sh's
    dnsmasq-shared.d drop-in resolves EVERY hostname a joined phone/laptop
@@ -281,6 +288,24 @@ def handle_connect(ssid, password):
     return {"success": success, "error": error}
 
 
+def handle_forget():
+    """Leaves the currently-joined network on purpose and falls back to AP
+    mode -- the counterpart to handle_connect(). Deletes the joined
+    network's NM connection profile (not just `connection down`) so
+    autoconnect can't immediately rejoin it out from under the fresh
+    Hotspot, mirroring _connect_to_network's own delete-before-add idiom.
+    ensure_hotspot_up() is called outside _nm_lock (same reasoning as
+    handle_connect's own call to it) since it takes the lock itself."""
+    with _nm_lock:
+        state_code, connection, _ = _device_state()
+        if not _is_connected_to_real_network(state_code, connection):
+            return {"success": False, "error": "Not connected to a network"}
+        _nmcli(["connection", "down", connection])
+        _nmcli(["connection", "delete", connection])
+    ensure_hotspot_up()
+    return {"success": True, "error": None}
+
+
 class _CaptivePortalRedirectHandler(http.server.BaseHTTPRequestHandler):
     """Answers every request on CAPTIVE_PORTAL_PORT with a 302 to the
     dashboard's Network tab. Deliberately ignores path/method specifics --
@@ -360,6 +385,8 @@ def handle_client(conn):
             response = scan_payload()
         elif cmd == "connect":
             response = handle_connect(request.get("ssid", ""), request.get("password", ""))
+        elif cmd == "forget":
+            response = handle_forget()
         else:
             response = {"error": f"unknown cmd {cmd!r}"}
         conn.sendall((json.dumps(response) + "\n").encode("utf-8"))

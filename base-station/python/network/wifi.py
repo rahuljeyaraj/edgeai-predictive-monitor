@@ -34,6 +34,10 @@ CONNECT_TIMEOUT_S = 60.0
 # Must outlast wifi_bridge.py's own SCAN_TIMEOUT_S (15s), same reasoning as
 # CONNECT_TIMEOUT_S above.
 SCAN_TIMEOUT_S = 20.0
+# handle_forget() does at most two NMCLI_TIMEOUT_S (10s) nmcli calls
+# (down + delete) followed by ensure_hotspot_up()'s own one -- generous
+# headroom over that worst case, same reasoning as the other *_TIMEOUT_S.
+FORGET_TIMEOUT_S = 35.0
 
 
 def _request(payload: dict, timeout: float) -> dict:
@@ -118,5 +122,17 @@ def connect(ssid: str, password: str) -> dict:
     route handler reports differently (503, not 400)."""
     try:
         return _request({"cmd": "connect", "ssid": ssid, "password": password}, CONNECT_TIMEOUT_S)
+    except (OSError, ValueError) as exc:
+        raise RuntimeError(f"wifi-bridge unreachable: {exc}") from exc
+
+
+def forget() -> dict:
+    """Blocking request to wifi_bridge to leave the currently-joined
+    network on purpose and fall back to AP mode. Returns {"success": bool,
+    "error": str|None} -- e.g. "not currently connected" comes back this
+    way, not as an exception. Raises RuntimeError only when the bridge
+    itself is unreachable, same distinction connect() makes."""
+    try:
+        return _request({"cmd": "forget"}, FORGET_TIMEOUT_S)
     except (OSError, ValueError) as exc:
         raise RuntimeError(f"wifi-bridge unreachable: {exc}") from exc

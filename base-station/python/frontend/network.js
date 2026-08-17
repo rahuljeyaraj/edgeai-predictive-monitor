@@ -17,6 +17,7 @@ const Network = (() => {
     status: { available: false, mode: null, ssid: null, ip: null },
     form: { ssid: "", password: "", busy: false, error: null, notice: null, success: null },
     networks: { list: [], scanning: false, error: null },
+    forget: { busy: false, error: null, notice: null },
   };
 
   function escapeHtml(str) {
@@ -51,12 +52,26 @@ const Network = (() => {
       </div>`;
       return;
     }
+    const fg = state.forget;
+    // Only offered while actually on a real network -- while on the
+    // Hotspot there's nothing to "go back" from, and monitor_loop already
+    // brings the Hotspot up on its own the moment a real network drops.
+    const forgetBlock = s.mode === "sta" ? `
+      <div class="perf-chart__caption">Switches the base station back to its own
+        EPM-BaseStation hotspot and forgets "${escapeHtml(s.ssid || "")}" -- this page will
+        likely lose connection right away since it's reachable through that network too.</div>
+      <button type="button" class="btn-label btn-label--danger" data-action="network_forget" ${fg.busy ? "disabled" : ""}>
+        ${fg.busy ? "Switching to hotspot…" : "Back to hotspot mode"}
+      </button>
+      ${fg.error ? `<div class="classifier-ei__error">${escapeHtml(fg.error)}</div>` : ""}
+      ${fg.notice ? `<div class="network-connect__notice">${escapeHtml(fg.notice)}</div>` : ""}` : "";
     el.innerHTML = `<div class="perf-card network-status__card">
       <div class="alerts-connect__title">WiFi</div>
       ${statusRow("Mode", modeLabel(s.mode))}
       ${s.ssid ? statusRow("SSID", s.ssid) : ""}
       ${(s.ip && s.mode !== "ap") ? statusRow("IP address", s.ip) : ""}
       ${s.mode === "sta" ? `<div class="perf-chart__caption">Reachable at epm-base.local on this network.</div>` : ""}
+      ${forgetBlock}
     </div>`;
   }
 
@@ -236,6 +251,37 @@ const Network = (() => {
     }
     renderConnect();
   }
+
+  async function submitForget() {
+    if (!confirm(`Switch back to the EPM-BaseStation hotspot and forget "${state.status.ssid}"?`)) return;
+    const fg = state.forget;
+    fg.busy = true;
+    fg.error = null;
+    fg.notice = null;
+    renderStatus();
+    try {
+      await postJson("/network/wifi/forget", {});
+      state.forget = { busy: false, error: null,
+        notice: "Switched back to the EPM-BaseStation hotspot. Reconnect to it to keep using the dashboard." };
+      await refreshStatus();
+    } catch (err) {
+      if (err instanceof TypeError) {
+        // Same reasoning as submitConnect's TypeError branch: this page's
+        // own request can lose the network the instant the base station
+        // leaves it, before any HTTP response makes it back -- that's the
+        // expected, successful outcome here, not a failure.
+        state.forget = { busy: false, error: null,
+          notice: "Switched back to the EPM-BaseStation hotspot. Reconnect to it to keep using the dashboard." };
+      } else {
+        state.forget = { busy: false, error: err.message, notice: null };
+      }
+    }
+    renderStatus();
+  }
+
+  document.getElementById("network-status").addEventListener("click", (e) => {
+    if (e.target.closest('[data-action="network_forget"]')) submitForget();
+  });
 
   document.getElementById("network-connect").addEventListener("click", (e) => {
     if (e.target.closest('[data-action="network_connect_submit"]')) submitConnect();
