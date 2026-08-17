@@ -35,15 +35,23 @@ static float fft_real[MIC_FFT_LEN];
 static float fft_imag[MIC_FFT_LEN];
 static ArduinoFFT<float> mic_fft;
 
-/* See accel_sampler_task.cpp's accel_fft_magnitude() comment - identical
- * reasoning (Hann windowing to match mpu/tools/satellite_node_sim.py's
- * compute_spectrum(), arrays bound once not per-call). */
+/* No windowing (rectangular) - matches base-station/sketch/mic_sampler.cpp's
+ * hand-rolled FFT (which windows nothing) and base-station/python/common/
+ * raw_features.py's fft_magnitude() (np.fft.rfft() with no window), the
+ * shared reference both the simulator and the offline training harness use.
+ * An earlier revision of this file applied a Hann window to match a
+ * since-reverted version of the sim that used np.hanning() (see git history
+ * around 4e3f285) - that sim code no longer windows either, so this doesn't
+ * either. Windowing a short transient (a tap, a voice onset) tapers it
+ * toward zero if it lands near the block edge and passes it near-full-scale
+ * if it lands center, so the reported peak swings with pure timing luck
+ * instead of tracking actual loudness - rectangular avoids that and keeps
+ * every sample weighted equally, same as the UNO Q. */
 static void mic_fft_magnitude(const float *window, float *out_mag)
 {
 	memcpy(fft_real, window, MIC_FFT_LEN * sizeof(float));
 	memset(fft_imag, 0, MIC_FFT_LEN * sizeof(float));
 
-	mic_fft.windowing(FFTWindow::Hann, FFTDirection::Forward);
 	mic_fft.compute(FFTDirection::Forward);
 	mic_fft.complexToMagnitude();
 

@@ -55,25 +55,25 @@ static ArduinoFFT<float> accel_fft;
 
 /* Computes the magnitude spectrum of one axis's window into out_mag
  * (ACCEL_FFT_BIN_COUNT values, bins 1..ACCEL_FFT_BIN_COUNT - DC
- * discarded, same convention as mcu/'s accel_fft_magnitude()). Hann
- * windowing applied before the transform - matches mpu/tools/
- * satellite_node_sim.py's compute_spectrum() (np.hanning()), unlike
- * mcu/'s UART path (which windows nothing) - windowing measurably
- * reduces spectral leakage/smearing between adjacent bins, which still
- * matters even though every bin now goes out on the wire (frame_codec/
- * spectrum_codec.h), not just a selected top-N. accel_fft's array
- * pointers are bound once (accel_sampler_task_start()) and reused for
- * every call - calling setArrays() per-call would re-allocate its
- * internal windowing-factor scratch buffer on every FFT, needless heap
- * churn on a long-running embedded task. `window` is left untouched
- * (fft_real is a scratch copy), since compute_scalars() below still
- * needs the original raw window after this returns. */
+ * discarded, same convention as mcu/'s accel_fft_magnitude()). No
+ * windowing (rectangular) - matches mcu/'s UART path and base-station/
+ * python/common/raw_features.py's fft_magnitude() (np.fft.rfft() with no
+ * window), the shared reference the simulator and offline training
+ * harness both use. An earlier revision windowed with Hann to match a
+ * since-reverted version of the sim that used np.hanning() (see git
+ * history around 4e3f285) - that sim code no longer windows either, so
+ * this doesn't. A window tapers samples near the block edges, so a short
+ * transient's reported magnitude ends up depending on where in the block
+ * it happened to land rather than tracking actual amplitude; rectangular
+ * avoids that. accel_fft's array pointers are bound once
+ * (accel_sampler_task_start()) and reused for every call. `window` is
+ * left untouched (fft_real is a scratch copy), since compute_scalars()
+ * below still needs the original raw window after this returns. */
 static void accel_fft_magnitude(const float *window, float *out_mag)
 {
 	memcpy(fft_real, window, ACCEL_FFT_LEN * sizeof(float));
 	memset(fft_imag, 0, ACCEL_FFT_LEN * sizeof(float));
 
-	accel_fft.windowing(FFTWindow::Hann, FFTDirection::Forward);
 	accel_fft.compute(FFTDirection::Forward);
 	accel_fft.complexToMagnitude();
 
