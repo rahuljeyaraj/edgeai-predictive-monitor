@@ -66,6 +66,13 @@ const Charts = (() => {
   const ANOMALY_RETENTION_SECONDS = 30 * 60; // how far back the rangeslider can scrub
   const ANOMALY_LIVE_SNAP_TOLERANCE_SECONDS = 3; // dragging the slider back within this of "now" resumes live-follow
   const ANOMALY_MAX_POINTS = 20000;
+  // Cap on points actually handed to Plotly per redraw, independent of how
+  // deep the buffer above is -- see anomalyRenderPoints for the measurements
+  // that set it. ~1200 is where a 1500px-wide chart stops resolving extra
+  // points anyway (under two per pixel across the rangeslider's full width),
+  // and it holds the redraw near the ~38ms the chart cost when the buffer was
+  // still short, for any session length.
+  const ANOMALY_MAX_RENDERED_POINTS = 1200;
   const RENDER_THROTTLE_MS = 300;
   const WS_RECONNECT_MS = 2000;
 
@@ -639,10 +646,101 @@ const Charts = (() => {
     return [min - pad, max + pad];
   }
 
+  // Min/max bucket decimation: splits `points` into budget/2 equal-count
+  // buckets and keeps each bucket's lowest- and highest-scoring sample.
+  // Every emitted point is a real sample carrying its own t/score/status, so
+  // its marker colour stays truthful -- nothing is averaged into existence.
+  // Keeping BOTH extremes (rather than every Nth point, or a per-bucket mean)
+  // is what stops a one-frame spike across the fault threshold from being
+  // decimated out of the picture, which is the one thing this chart exists to
+  // show.
+  function decimateMinMax(points, budget) {
+    if (points.length <= budget) return points;
+    const buckets = Math.max(1, Math.floor(budget / 2));
+    const out = [];
+    for (let b = 0; b < buckets; b++) {
+      const start = Math.floor((b * points.length) / buckets);
+      const end = Math.floor(((b + 1) * points.length) / buckets);
+      if (end <= start) continue;
+      let lo = start, hi = start;
+      for (let i = start + 1; i < end; i++) {
+        if (points[i].score < points[lo].score) lo = i;
+        if (points[i].score > points[hi].score) hi = i;
+      }
+      // Emit in ascending t, not lo-then-hi: the trace is a line plot, and
+      // one out-of-order pair draws a visible backwards spike.
+      const first = Math.min(lo, hi), second = Math.max(lo, hi);
+      out.push(points[first]);
+      if (second !== first) out.push(points[second]);
+    }
+    return out;
+  }
+
+  // Which of node.anomaly's points actually get drawn.
+  //
+  // Plotly.react's cost here is linear in the point count -- measured
+  // ~37us/point for this exact figure (SVG scatter, per-point marker colour
+  // array, spline, rangeslider). The buffer holds ANOMALY_RETENTION_SECONDS,
+  // so at the live ~5.4 scores/s it reaches ~9,700 points, and drawing all of
+  // them every RENDER_THROTTLE_MS measured 370ms per redraw: the main thread
+  // was ~67% busy in Plotly, this one chart took 49% of wall-clock, and every
+  // other chart's redraw starved behind it. That is the "charts frozen while
+  // the status LED still updates" failure -- the LED/gauge are plain DOM
+  // writes on the WS handler, so they kept full rate while the render queue
+  // never drained.
+  //
+  // Only the point count was worth attacking: at 10k points, dropping the
+  // rangeslider bought 370->190ms, a flat marker colour 341ms, linear instead
+  // of spline 323ms, scattergl 332ms. So the figure keeps every design choice
+  // it had and just draws fewer points.
+  //
+  // Full resolution inside the visible window, decimated envelope outside it:
+  // the window is the only part whose individual samples a reader can
+  // resolve, while the off-screen remainder exists purely to give the
+  // rangeslider its 30-minute overview, where an envelope is all that's
+  // wanted. Splitting it this way means zooming or scrubbing never shows
+  // decimated data -- the window moves and whatever it now covers is
+  // re-selected at full resolution on the next redraw.
+  function anomalyRenderPoints(node, range) {
+    const points = node.anomaly;
+    if (points.length <= ANOMALY_MAX_RENDERED_POINTS) return points;
+    if (!range) return decimateMinMax(points, ANOMALY_MAX_RENDERED_POINTS);
+
+    // points is sorted ascending by t -- trimByAge's documented contract.
+    const t0 = new Date(range[0]).getTime() / 1000;
+    const t1 = new Date(range[1]).getTime() / 1000;
+    let lo = 0;
+    while (lo < points.length && points[lo].t < t0) lo++;
+    let hi = lo;
+    while (hi < points.length && points[hi].t <= t1) hi++;
+
+    const visible = points.slice(lo, hi);
+    // A window wide enough to hold the whole budget on its own (a fully
+    // zoomed-out scrub) gets decimated like anything else.
+    if (visible.length >= ANOMALY_MAX_RENDERED_POINTS) {
+      return decimateMinMax(visible, ANOMALY_MAX_RENDERED_POINTS);
+    }
+
+    const before = points.slice(0, lo);
+    const after = points.slice(hi);
+    const budget = ANOMALY_MAX_RENDERED_POINTS - visible.length;
+    // Split the leftover budget between the two off-screen sides in
+    // proportion to how much off-screen data each holds, so a window scrubbed
+    // into the middle of the buffer doesn't spend it all on one side.
+    const offscreen = before.length + after.length;
+    const beforeBudget = offscreen ? Math.round((budget * before.length) / offscreen) : 0;
+    return decimateMinMax(before, beforeBudget)
+      .concat(visible, decimateMinMax(after, budget - beforeBudget));
+  }
+
   function buildAnomalyFigure(nodeId, node) {
-    const times = node.anomaly.map((p) => new Date(p.t * 1000));
-    const scores = node.anomaly.map((p) => p.score);
-    const colors = node.anomaly.map((p) => STATUS_COLOR[p.status] || TEXT_COLOR);
+    // Hoisted above the traces: the range decides which points are drawn at
+    // full resolution (see anomalyRenderPoints), not just how the axis reads.
+    const range = node.anomalyLive ? anomalyLiveRange(node) : node.anomalyPinnedRange;
+    const points = anomalyRenderPoints(node, range);
+    const times = points.map((p) => new Date(p.t * 1000));
+    const scores = points.map((p) => p.score);
+    const colors = points.map((p) => STATUS_COLOR[p.status] || TEXT_COLOR);
     const traces = [{
       type: "scatter", mode: "lines+markers",
       x: times, y: scores,
@@ -653,7 +751,6 @@ const Charts = (() => {
     const shapes = [];
     if (typeof node.warningThreshold === "number") shapes.push(hLine(node.warningThreshold, STATUS_COLOR.warning, "y"));
     if (typeof node.faultThreshold === "number") shapes.push(hLine(node.faultThreshold, STATUS_COLOR.fault, "y"));
-    const range = node.anomalyLive ? anomalyLiveRange(node) : node.anomalyPinnedRange;
     const yRange = anomalyVisibleYRange(node, range);
     const layout = {
       ...darkLayoutBase(), uirevision: nodeId, shapes, height: 230,
