@@ -3,9 +3,10 @@
 Status: **§1 (base station) implemented + live-verified 2026-07-29**, including
 Round 2's captive-portal auto-open (confirmed working on a real phone) and
 Round 3's scan/messaging fixes below. **§2 (satellite) implemented 2026-08-01,
-built + compiles clean, NOT yet live-verified on real hardware** — see
-"Implementation notes (§2, satellite)" below. §3 (sim onboarding) remains
-out of scope (no onboarding needed, see §3). Companion to
+restyled + scan/RGB fixes added 2026-08-17, built + compiles clean, NOT yet
+live-verified on real hardware** — see "Implementation notes (§2, satellite)"
+and its 2026-08-17 follow-up below. §3 (sim onboarding) remains out of scope
+(no onboarding needed, see §3). Companion to
 [SENSOR_TELEMETRY_FRAME_PLAN.md](SENSOR_TELEMETRY_FRAME_PLAN.md) and
 [EDGE_IMPULSE_FAULT_CLASSIFICATION_PLAN.md](EDGE_IMPULSE_FAULT_CLASSIFICATION_PLAN.md).
 
@@ -250,6 +251,88 @@ future upgrade path** if a real deployment scales to dozens of satellites.
   test against `EPM-BaseStation`, a wrong-password retry-in-place test, a WiFi-loss
   recovery test, and an iOS + Android captive-portal auto-open check (probe/redirect
   behavior varies by OS, same caveat the base station's own Round 2/3 testing found).
+
+### Follow-up (2026-08-17): dashboard-matched styling, network scan, split mDNS/IP fields, RGB gaps closed
+
+Built without a fresh live-hardware pass (compiles clean, `pio run` verified; portal
+HTML/JS behavior verified in a headless-browser mock, not the real ESP32-served
+page — same caveat as above still applies, now also covering these changes).
+
+1. **Portal now visually matches the dashboard**, not the light-themed placeholder
+   CSS the first build shipped with: `satellite/src/drivers/provisioning_portal.cpp`'s
+   inline `<style>` block now reuses the exact palette from
+   `base-station/python/frontend/style.css` (`#0f172a` page / `#1e293b` card /
+   `#334155` border / `#e2e8f0` text / `#10b981` primary-action green). No tabs —
+   this is a single-purpose page, unlike the dashboard's multi-tab shell.
+2. **Nearby-network scan + tap-to-fill chips**, the same fix the base station's own
+   onboarding needed in Round 3 (a `<datalist>` dropdown doesn't render reliably in
+   a mobile/captive-portal browser) — built this way from the start here instead of
+   repeating that mistake. New `GET /scan` route calls `WiFi.scanNetworks()`
+   synchronously (a couple of seconds, same blocking tradeoff `attempt_sta_join()`
+   already makes) and returns a de-duped SSID list; the page's JS renders one
+   tappable pill per network. Unlike the base station's Linux radio, ESP32 AP+STA
+   scanning while hosting an active softAP is standard ESP-IDF behavior, not a known
+   limitation — not yet confirmed against real interference/noise on the bench
+   boards, though. Live hardware testing the same day surfaced one real gap: the
+   page only ever scanned once, on load — no way to retry if the technician's
+   target network powers on late or a first scan just misses it. Fixed with an
+   **exact copy of the base station's own "Scan for networks" button**
+   (`network.js`'s `.btn-label` — same label text, same style: `#334155`
+   background, `#e2e8f0` text, 30px height, 6px radius) added to the portal page,
+   wired to the same `/scan` fetch the initial page-load scan already used, now
+   pulled into a shared `doScan()` so both call sites stay in sync. Button
+   disables and reads "Scanning…" for the duration, same as the base station's.
+3. **MQTT broker address split into two fields** instead of one field that silently
+   accepted either an mDNS name or a raw IP: "Base station address (mDNS name)"
+   (prefilled from `MQTT_BROKER_HOST`/last-saved value) plus an optional "IP address
+   — only if mDNS doesn't resolve" field. A filled-in IP always wins over the mDNS
+   field at submit time. Picking the base station's own hotspot SSID
+   (`BASE_STATION_HOTSPOT_SSID` = `EPM-BaseStation`, `app_config.h`) from the scan
+   chip list auto-fills the IP field with `BASE_STATION_HOTSPOT_IP` = `10.42.0.1`
+   (matching `base-station/host/wifi_bridge.py`'s own `HOTSPOT_IP`) and shows an
+   inline hint — this is the direct answer to "what do I put in the MQTT field if
+   I'm joining the base station's own hotspot instead of the factory network,"
+   since mDNS resolution on that hotspot's own subnet is untested and there'd
+   otherwise be no way for a technician to know that fixed address. Switching to a
+   different chip afterward clears the auto-filled IP again (tracked via a
+   `data-auto` flag so a manually-typed IP is never clobbered).
+4. **Two real RGB gaps closed** — both existed since the 2026-08-01 build but were
+   never wired up, and neither the "not yet done" line above nor
+   [[satellite-bringup-guide]]'s own troubleshooting table (which had already
+   started documenting an amber "last attempt failed" ring color) had a build that
+   actually produced it:
+   - `RGB_JOIN_FAILED` (amber) was defined in `transport_task.cpp` but never once
+     passed to `hal_display_rgb_set()` — a failed portal submission left the ring on
+     whatever `RGB_STA_TESTING` (magenta) was showing, indistinguishable from
+     "still testing." Now set (`RGB_DISPLAY_BREATHE`, 700ms) the moment a submitted
+     join fails, before returning to `PROVISIONING`.
+   - No ring color existed at all for "WiFi joined fine, but the MQTT broker itself
+     is unreachable" (wrong host/IP, broker down, firewall) — `TRANSPORT_STATE_
+     CONNECTED` looked identically solid-cyan whether or not telemetry was actually
+     flowing. New `RGB_MQTT_UNREACHABLE` (`0xff0000`, reusing `status_color.py`'s
+     tuned WS2812 FAULT red rather than inventing a new hue — safe to reuse since
+     this state can only ever show while the dashboard has no MQTT channel to push
+     a real FAULT command anyway) now breathes on the ring for as long as
+     `mqtt_client.connected()` is false, switching back to solid cyan the moment it
+     connects.
+5. **Technician-triggered re-provisioning, closing a real field gap found live
+   the same day**: before this, the *only* way back to the portal once a node had
+   joined a network was waiting out a genuine WiFi drop (`RECOVERY_WINDOW_MS`,
+   60s) or a full `pio run -t erase` + reflash — no help at all for "this node is
+   happily connected to the wrong network, or the right network with a wrong
+   broker address, please give me the form back." Holding the XIAO's onboard
+   **BOOT button** (`PIN_BOOT_BUTTON` = GPIO0, `board_pins.h`) for 3s
+   (`FORCE_PROVISION_HOLD_MS`) now forces the AP+portal back up from *any*
+   state, including `CONNECTED` — deliberately landing in a new
+   `TRANSPORT_STATE_FORCED_PROVISIONING` rather than reusing `PROVISIONING`
+   as-is, since `PROVISIONING`'s existing background self-heal check
+   (`WiFi.status() == WL_CONNECTED` → declare success, close the portal) would
+   otherwise fire on the very next 10ms tick whenever the node was still
+   genuinely connected underneath (the exact case this exists for). The
+   existing STA link, if any, is left alone (concurrent AP+STA, same as
+   `STA_TESTING`) until a real submission supersedes it. No new hardware — BOOT
+   already exists on the XIAO for bootloader entry, just unused at runtime
+   before this.
 
 ## 3. Simulated satellites
 

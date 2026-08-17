@@ -45,6 +45,16 @@
  * "EPM-SAT-a1b2c3"), per docs/WIFI_ONBOARDING_PLAN.md S2. */
 #define PROVISIONING_AP_SSID_PREFIX "EPM-SAT-"
 
+/* The base station's own onboarding hotspot (base-station/host/
+ * wifi_bridge.py's HOTSPOT_SSID/HOTSPOT_IP) - a satellite can join this
+ * directly instead of the factory WiFi. drivers/provisioning_portal.cpp's
+ * form JS matches a picked SSID against this constant to auto-fill the MQTT
+ * broker IP field with the hotspot's fixed address, since mDNS resolution
+ * on that hotspot is untested and the technician has no other way to know
+ * this specific address. */
+#define BASE_STATION_HOTSPOT_SSID "EPM-BaseStation"
+#define BASE_STATION_HOTSPOT_IP   "10.42.0.1"
+
 /* Per-sensor enable/disable - mirrors mcu/'s MIC_SENSOR_ENABLED/
  * ACCEL_SENSOR_ENABLED exactly (app_config.h there). 0 disables that
  * sensor's task entirely (the task still exists but its own _start()

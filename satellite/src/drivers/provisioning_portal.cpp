@@ -22,6 +22,9 @@
 
 #define DNS_PORT 53
 #define HTTP_PORT 80
+/* Cap on distinct SSIDs handle_scan() reports - generous for any real site,
+ * bounds the on-stack dedup array to a fixed, small size. */
+#define MAX_SCAN_RESULTS 24
 
 enum portal_status {
 	PORTAL_STATUS_IDLE = 0,
@@ -43,20 +46,101 @@ static bool has_pending;
 static enum portal_status status = PORTAL_STATUS_IDLE;
 static char status_detail[96];
 
+/* Shared dark-theme styling, matching the base station dashboard's own
+ * palette (base-station/python/frontend/style.css: #0f172a page / #1e293b
+ * card / #334155 border / #e2e8f0 text / #10b981 primary-action green) so a
+ * technician sees one consistent visual language whether they're looking at
+ * this portal or the dashboard's own Network tab
+ * (docs/WIFI_ONBOARDING_PLAN.md S1) a minute later. Kept as one inline
+ * <style> block (no external stylesheet) since this is served standalone
+ * off the ESP32's own web server, with no dashboard asset pipeline to draw
+ * from. */
+#define PORTAL_STYLE                                                                             \
+	"<style>:root{color-scheme:dark}*{box-sizing:border-box}"                                \
+	"body{margin:0;padding:28px 16px;background:#0f172a;"                                     \
+	"font-family:system-ui,-apple-system,'Segoe UI',sans-serif;color:#e2e8f0}"                 \
+	".card{max-width:420px;margin:0 auto;background:#1e293b;border:1px solid #334155;"         \
+	"border-radius:12px;padding:20px}"                                                         \
+	"h1{font-size:20px;font-weight:700;color:#f8fafc;margin:0 0 16px}"                          \
+	".tip{background:rgba(245,158,11,.14);color:#f59e0b;border-radius:8px;padding:10px 12px;"  \
+	"font-size:13px;margin-bottom:16px}"                                                       \
+	".err{background:rgba(239,68,68,.14);color:#f87171;border-radius:8px;padding:10px 12px;"   \
+	"font-size:13px;margin-bottom:16px}"                                                       \
+	"label{display:block;font-size:13px;color:#94a3b8;margin:14px 0 6px}"                       \
+	"input{width:100%;padding:10px 12px;font-size:16px;background:#0f172a;"                     \
+	"border:1px solid #334155;border-radius:8px;color:#e2e8f0;font-family:inherit}"             \
+	"input::placeholder{color:#64748b}"                                                        \
+	".hint{font-size:12px;color:#64748b;margin-top:6px}"                                        \
+	".chips{display:flex;flex-wrap:wrap;gap:8px}"                                              \
+	".chip{font:inherit;font-size:14px;font-weight:600;color:#94a3b8;background:#0f172a;"       \
+	"border:1px solid #334155;border-radius:999px;padding:6px 14px;cursor:pointer}"             \
+	".chip.is-active{color:#e2e8f0;background:rgba(57,135,229,.22);border-color:#3987e5}"       \
+	".scan-msg{font-size:13px;color:#64748b;margin-top:8px}"                                    \
+	".btn-label{display:inline-flex;align-items:center;justify-content:center;gap:6px;"        \
+	"height:30px;padding:0 12px;background-color:#334155;color:#e2e8f0;border:none;"           \
+	"border-radius:6px;cursor:pointer;font:inherit;font-size:14px;margin-top:8px}"             \
+	".btn-label:disabled{color:#64748b;cursor:not-allowed}"                                    \
+	"button.connect{width:100%;margin-top:22px;padding:12px;font-size:16px;font-weight:600;"    \
+	"color:#0f172a;background:#10b981;border:none;border-radius:8px;cursor:pointer}"            \
+	"#msg{padding:12px;border-radius:8px;background:rgba(148,163,184,.12);color:#cbd5e1;"       \
+	"font-size:14px}</style>"
+
+static void append_json_escaped(String &out, const char *s)
+{
+	for (const char *p = s; *p; p++) {
+		if (*p == '"' || *p == '\\') {
+			out += '\\';
+		}
+		out += *p;
+	}
+}
+
+static void append_attr_escaped(String &out, const char *s)
+{
+	for (const char *p = s; *p; p++) {
+		if (*p == '"') {
+			out += "&quot;";
+		} else if (*p == '&') {
+			out += "&amp;";
+		} else {
+			out += *p;
+		}
+	}
+}
+
+/* Distinguishes a raw IPv4 literal from an mDNS hostname in a previously-
+ * saved broker value, so a re-provision splits it back into the right one
+ * of the form's two fields (see send_form_page()) instead of always
+ * offering it back as the mDNS field's value. */
+static bool looks_like_ipv4(const char *s)
+{
+	int dots = 0;
+
+	if (!s || !*s) {
+		return false;
+	}
+	for (const char *p = s; *p; p++) {
+		if (*p == '.') {
+			dots++;
+			continue;
+		}
+		if (!isdigit((unsigned char)*p)) {
+			return false;
+		}
+	}
+	return dots == 3;
+}
+
 static void send_form_page(const char *error_msg)
 {
+	bool prefill_is_ip = looks_like_ipv4(broker_prefill);
 	String html;
 
-	html.reserve(2048);
+	html.reserve(3072);
 	html += "<!DOCTYPE html><html><head><meta charset=\"utf-8\">"
 		"<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
-		"<title>EPM Satellite Setup</title>"
-		"<style>body{font-family:sans-serif;max-width:420px;margin:2em auto;padding:0 1em}"
-		"input{width:100%;box-sizing:border-box;padding:.6em;margin:.3em 0 1em;font-size:1em}"
-		"button{width:100%;padding:.8em;font-size:1.1em}"
-		".tip{background:#fff3cd;padding:.8em;border-radius:6px;margin-bottom:1em;font-size:.9em}"
-		".err{background:#f8d7da;padding:.8em;border-radius:6px;margin-bottom:1em}</style>"
-		"</head><body><h2>Connect this sensor to WiFi</h2>";
+		"<title>EPM Satellite Setup</title>" PORTAL_STYLE
+		"</head><body><div class=\"card\"><h1>Connect this sensor to Wi-Fi</h1>";
 
 	if (error_msg && error_msg[0]) {
 		html += "<div class=\"err\">";
@@ -65,19 +149,52 @@ static void send_form_page(const char *error_msg)
 	}
 
 	html += "<div class=\"tip\">Submitting tests this network without disconnecting you. "
-		"On success this device's own WiFi turns off in a few seconds and it joins your "
-		"network &mdash; reconnect your phone to your normal WiFi afterward.</div>"
+		"On success this device's own Wi-Fi turns off a few seconds later and it joins "
+		"your network &mdash; reconnect your phone to your normal Wi-Fi afterward.</div>"
+		"<label>Nearby networks</label><div class=\"chips\" id=\"chips\"></div>"
+		"<div class=\"scan-msg\" id=\"scanmsg\">Scanning&hellip;</div>"
+		"<button type=\"button\" class=\"btn-label\" id=\"rescan\" onclick=\"doScan()\">Scan for networks</button>"
 		"<form method=\"POST\" action=\"/save\">"
-		"<label>WiFi network name (SSID)</label>"
-		"<input name=\"ssid\" required maxlength=\"32\" autocapitalize=\"off\" autocorrect=\"off\">"
-		"<label>WiFi password</label>"
-		"<input name=\"password\" type=\"password\" maxlength=\"64\">"
-		"<label>MQTT broker address</label>"
-		"<input name=\"broker\" maxlength=\"64\" autocapitalize=\"off\" autocorrect=\"off\" value=\"";
-	html += broker_prefill;
+		"<label>Wi-Fi network name (SSID)</label>"
+		"<input name=\"ssid\" id=\"ssid\" required maxlength=\"32\" autocapitalize=\"off\" autocorrect=\"off\">"
+		"<label>Wi-Fi password (leave blank if open)</label>"
+		"<input name=\"password\" type=\"password\" maxlength=\"64\" autocomplete=\"off\">"
+		"<label>Base station address (mDNS name)</label>"
+		"<input name=\"broker_host\" maxlength=\"64\" autocapitalize=\"off\" autocorrect=\"off\" value=\"";
+	append_attr_escaped(html, prefill_is_ip ? MQTT_BROKER_HOST : broker_prefill);
 	html += "\">"
-		"<button type=\"submit\">Connect</button>"
-		"</form></body></html>";
+		"<label>IP address (optional &mdash; only if mDNS doesn't resolve)</label>"
+		"<input name=\"broker_ip\" id=\"broker_ip\" placeholder=\"e.g. " BASE_STATION_HOTSPOT_IP
+		"\" maxlength=\"64\" autocapitalize=\"off\" autocorrect=\"off\" value=\"";
+	if (prefill_is_ip) {
+		append_attr_escaped(html, broker_prefill);
+	}
+	html += "\">"
+		"<div class=\"hint\" id=\"hotspot-hint\" style=\"display:none\">Connecting straight to "
+		"the base station's own hotspot &mdash; its fixed address is filled in above.</div>"
+		"<button class=\"connect\" type=\"submit\">Connect</button>"
+		"</form></div><script>"
+		"var HOTSPOT_SSID=\"" BASE_STATION_HOTSPOT_SSID "\",HOTSPOT_IP=\"" BASE_STATION_HOTSPOT_IP "\";"
+		"function pick(ssid){document.getElementById('ssid').value=ssid;"
+		"var ip=document.getElementById('broker_ip'),hint=document.getElementById('hotspot-hint');"
+		"if(ssid===HOTSPOT_SSID){ip.value=HOTSPOT_IP;ip.dataset.auto='1';hint.style.display='block';}"
+		"else{if(ip.dataset.auto==='1'){ip.value='';}ip.dataset.auto='';hint.style.display='none';}}"
+		"function esc(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/\"/g,'&quot;');}"
+		"function renderChips(list){"
+		"var el=document.getElementById('chips'),msg=document.getElementById('scanmsg');"
+		"if(!list.length){msg.textContent='No networks found \\u2014 type the name below.';el.innerHTML='';return;}"
+		"msg.textContent='';"
+		"el.innerHTML=list.map(function(n){return '<button type=\"button\" class=\"chip\" "
+		"onclick=\"pick(this.dataset.ssid)\" data-ssid=\"'+esc(n)+'\">'+esc(n)+'</button>';}).join('');}"
+		"function doScan(){var btn=document.getElementById('rescan');btn.disabled=true;"
+		"btn.textContent='Scanning\\u2026';document.getElementById('scanmsg').textContent='Scanning\\u2026';"
+		"fetch('/scan').then(function(r){return r.json();}).then(function(d){renderChips(d.networks||[]);"
+		"btn.disabled=false;btn.textContent='Scan for networks';})"
+		".catch(function(){document.getElementById('scanmsg').textContent="
+		"'Couldn\\u2019t scan \\u2014 type the name below.';btn.disabled=false;"
+		"btn.textContent='Scan for networks';});}"
+		"doScan();"
+		"</script></body></html>";
 
 	web_server.send(200, "text/html", html);
 }
@@ -86,14 +203,13 @@ static void send_status_page(void)
 {
 	String html;
 
-	html.reserve(1024);
+	html.reserve(1280);
 	html += "<!DOCTYPE html><html><head><meta charset=\"utf-8\">"
 		"<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
-		"<title>EPM Satellite Setup</title>"
-		"<style>body{font-family:sans-serif;max-width:420px;margin:2em auto;padding:0 1em}"
-		"#msg{padding:.8em;border-radius:6px;background:#e2e3e5}</style></head><body>"
-		"<h2>Connecting&hellip;</h2><div id=\"msg\">Testing the network, please wait&hellip;</div>"
-		"<script>"
+		"<title>EPM Satellite Setup</title>" PORTAL_STYLE
+		"</head><body><div class=\"card\">"
+		"<h1>Connecting&hellip;</h1><div id=\"msg\">Testing the network, please wait&hellip;</div>"
+		"</div><script>"
 		"function poll(){fetch('/status').then(r=>r.json()).then(function(d){"
 		"var m=document.getElementById('msg');"
 		"if(d.state=='testing'){m.textContent='Testing the network, please wait\\u2026';setTimeout(poll,1000);}"
@@ -144,7 +260,19 @@ static void handle_save(void)
 	}
 
 	String password = web_server.arg("password");
-	String broker = web_server.arg("broker");
+	String broker_host = web_server.arg("broker_host");
+	String broker_ip = web_server.arg("broker_ip");
+
+	broker_host.trim();
+	broker_ip.trim();
+
+	/* Two fields (mDNS name + optional IP override), not one ambiguous
+	 * "MQTT broker address" field (docs/WIFI_ONBOARDING_PLAN.md S2's
+	 * original shape) - a filled-in IP always wins, since it's the one the
+	 * technician deliberately typed (or the auto-fill picked, see
+	 * send_form_page()'s HOTSPOT_SSID JS) specifically because mDNS won't
+	 * do here. */
+	String broker = broker_ip.length() > 0 ? broker_ip : broker_host;
 
 	if (broker.length() == 0) {
 		broker = broker_prefill;
@@ -154,9 +282,9 @@ static void handle_save(void)
 	strncpy(pending.wifi_ssid, ssid.c_str(), CREDS_SSID_MAX_LEN);
 	strncpy(pending.wifi_password, password.c_str(), CREDS_PASS_MAX_LEN);
 
-	/* Single "MQTT broker address" field, matching docs/
-	 * WIFI_ONBOARDING_PLAN.md S2 exactly (not split host/port inputs) -
-	 * parse an optional trailing ":<port>" off the end. */
+	/* Parse an optional trailing ":<port>" off whichever field won above -
+	 * same shape docs/WIFI_ONBOARDING_PLAN.md S2 always used, now applying
+	 * to either field rather than one merged one. */
 	String host = broker;
 	uint16_t port = MQTT_BROKER_PORT;
 	int colon = broker.lastIndexOf(':');
@@ -217,6 +345,58 @@ static void handle_status(void)
 	web_server.send(200, "application/json", json);
 }
 
+/* Nearby-network chip list (send_form_page()'s JS), the ESP32-native
+ * counterpart to the base station's Round 3 fix of replacing an unreliable
+ * <datalist> dropdown with real tappable buttons
+ * (docs/WIFI_ONBOARDING_PLAN.md's wifi-onboarding-round-3 notes) - built
+ * that way here from the start rather than repeating the same mobile-
+ * browser mistake. A synchronous WiFi.scanNetworks() blocks this one
+ * request for a couple of seconds, same tradeoff attempt_sta_join() already
+ * makes elsewhere in this firmware; unlike the base station's Linux radio,
+ * ESP32 AP+STA scanning while hosting an active softAP is standard
+ * ESP-IDF behavior, not a known limitation. */
+static void handle_scan(void)
+{
+	int n = WiFi.scanNetworks();
+	String seen[MAX_SCAN_RESULTS];
+	int seen_count = 0;
+	String json = "{\"networks\":[";
+	bool first = true;
+
+	for (int i = 0; i < n && seen_count < MAX_SCAN_RESULTS; i++) {
+		String ssid = WiFi.SSID(i);
+
+		if (ssid.length() == 0) {
+			continue;
+		}
+
+		bool dup = false;
+
+		for (int j = 0; j < seen_count; j++) {
+			if (seen[j] == ssid) {
+				dup = true;
+				break;
+			}
+		}
+		if (dup) {
+			continue;
+		}
+		seen[seen_count++] = ssid;
+
+		if (!first) {
+			json += ",";
+		}
+		first = false;
+		json += "\"";
+		append_json_escaped(json, ssid.c_str());
+		json += "\"";
+	}
+	json += "]}";
+	WiFi.scanDelete();
+
+	web_server.send(200, "application/json", json);
+}
+
 int hal_provisioning_start(const char *ap_ssid_in, const char *broker_prefill_in)
 {
 	if (provisioning_active) {
@@ -244,6 +424,7 @@ int hal_provisioning_start(const char *ap_ssid_in, const char *broker_prefill_in
 	web_server.on("/", HTTP_GET, handle_root);
 	web_server.on("/save", HTTP_POST, handle_save);
 	web_server.on("/status", HTTP_GET, handle_status);
+	web_server.on("/scan", HTTP_GET, handle_scan);
 	/* Known OS captive-portal probe paths get the same redirect as
 	 * onNotFound below - registered explicitly since a couple of OS
 	 * captive-portal detectors are picky about matching the probe path

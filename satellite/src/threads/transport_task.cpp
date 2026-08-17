@@ -9,6 +9,7 @@
 #include <freertos/task.h>
 
 #include "app_config.h"
+#include "board_pins.h"
 #include "frame_codec/spectrum_codec.h"
 #include "frame_codec/wire_protocol.h"
 #include "hal/hal_credentials.h"
@@ -55,6 +56,14 @@
  * for the "success response never arrives" race the base station's own
  * onboarding hit (only possible here because AP+STA run concurrently). */
 #define PROVISIONING_AP_TEARDOWN_GRACE_MS 4000
+/* Hold PIN_BOOT_BUTTON this long to force re-provisioning from ANY state -
+ * long enough that a normal tap (e.g. someone bumping the board) can't
+ * trigger it by accident, short enough a technician isn't left guessing
+ * whether it registered. The only field-accessible way back to the portal
+ * before this existed was waiting out a genuine RECOVERY_WINDOW_MS WiFi
+ * drop, or a full erase+reflash - neither works for "this node is happily
+ * connected to the wrong network/broker, give me the form back." */
+#define FORCE_PROVISION_HOLD_MS 3000
 
 /* PubSubClient::publish() packs the MQTT PUBLISH header + topic string +
  * the *entire* payload byte-by-byte into this->buffer before writing it to
@@ -85,11 +94,21 @@
  * already match (same color vocabulary a technician has already learned
  * from the dashboard), with one new hue (magenta) for the one concept that
  * has no existing equivalent: this node's own local AP/provisioning mode. */
-#define RGB_PROVISIONING 0xff00ffu /* magenta - new concept, no dashboard equivalent */
-#define RGB_STA_TESTING  0xff00ffu /* same hue; faster BREATHE = "actively working" */
-#define RGB_JOIN_FAILED  0xf59e0bu /* reuses status_color.py's WARNING tuple exactly */
-#define RGB_CONNECTED    0x22d3eeu /* reuses status_color.py's NEW tuple */
-#define RGB_RECOVERING   0x4d4d4du /* reuses status_color.py's OFFLINE tuple */
+#define RGB_PROVISIONING     0xff00ffu /* magenta - new concept, no dashboard equivalent */
+#define RGB_STA_TESTING      0xff00ffu /* same hue; faster BREATHE = "actively working" */
+#define RGB_JOIN_FAILED      0xf59e0bu /* reuses status_color.py's WARNING tuple exactly */
+#define RGB_CONNECTED        0x22d3eeu /* reuses status_color.py's NEW tuple */
+#define RGB_RECOVERING       0x4d4d4du /* reuses status_color.py's OFFLINE tuple */
+/* WiFi joined fine but the MQTT broker itself can't be reached (wrong
+ * host/IP, broker down, firewall) - previously invisible on the ring,
+ * indistinguishable from a fully healthy RGB_CONNECTED. Reuses
+ * status_color.py's tuned WS2812 FAULT red (0xff0000, not the screen
+ * #ef4444) rather than inventing a new hue - this can never collide with a
+ * real dashboard-pushed FAULT command in practice, since the dashboard has
+ * no channel to send one for as long as this exact state is showing. BREATHE
+ * (not FAULT's alarm STROBE) since this is an ongoing retry, not something
+ * needing immediate action. */
+#define RGB_MQTT_UNREACHABLE 0xff0000u
 
 static WiFiClient wifi_client;
 static PubSubClient mqtt_client(wifi_client);
@@ -107,6 +126,30 @@ enum transport_state {
 	TRANSPORT_STATE_STA_TESTING,
 	TRANSPORT_STATE_CONNECTED,
 	TRANSPORT_STATE_RECOVERING,
+	/* Reached only via a held PIN_BOOT_BUTTON (see FORCE_PROVISION_HOLD_MS) -
+	 * handled by the exact same switch-case body as TRANSPORT_STATE_
+	 * PROVISIONING (AP+portal up, waiting for a submission), but kept as a
+	 * distinct value on purpose: the background "have_saved_creds &&
+	 * WiFi.status() != WL_CONNECTED -> keep retrying" / "already connected
+	 * -> declare self-healed, close the portal" logic below the switch
+	 * statement is keyed on state == TRANSPORT_STATE_PROVISIONING
+	 * specifically. A technician forcing this state is very often still
+	 * connected to a perfectly good WiFi link (e.g. the actual bug that
+	 * motivated this: WiFi fine, wrong MQTT broker address) - reusing
+	 * PROVISIONING as-is would have that self-heal check fire on the very
+	 * next 10ms tick and slam the portal shut before they could touch it. */
+	TRANSPORT_STATE_FORCED_PROVISIONING,
+};
+
+/* Tracks which of RGB_CONNECTED/RGB_MQTT_UNREACHABLE the ring is currently
+ * showing while in TRANSPORT_STATE_CONNECTED, so hal_display_rgb_set() is
+ * only called on an actual transition (every ~10ms loop tick otherwise,
+ * which would keep resetting the BREATHE phase and never let it actually
+ * breathe). UNKNOWN forces a fresh check the moment CONNECTED is (re-)entered. */
+enum mqtt_led_state {
+	MQTT_LED_UNKNOWN = 0,
+	MQTT_LED_UP,
+	MQTT_LED_DOWN,
 };
 
 static void derive_node_id(void)
@@ -216,6 +259,34 @@ static void connect_mqtt(void)
 	}
 }
 
+/* Debounced hold-detector for PIN_BOOT_BUTTON (active LOW) - fires exactly
+ * once per physical press-and-hold, not once per loop tick for the whole
+ * duration it's held down. Checked from the main state-machine loop
+ * (transport_task_entry() below), NOT from inside attempt_sta_join()'s own
+ * blocking wait - a press during a join attempt (up to STA_JOIN_TIMEOUT_MS)
+ * isn't caught until that attempt resolves one way or the other, an
+ * accepted gap given how rarely a technician needs this mid-join. */
+static bool boot_button_force_requested(void)
+{
+	static uint32_t press_start;
+	static bool consumed;
+
+	if (digitalRead(PIN_BOOT_BUTTON) != LOW) {
+		press_start = 0;
+		consumed = false;
+		return false;
+	}
+	if (press_start == 0) {
+		press_start = millis();
+		return false;
+	}
+	if (consumed || millis() - press_start < FORCE_PROVISION_HOLD_MS) {
+		return false;
+	}
+	consumed = true;
+	return true;
+}
+
 /* Blocks up to STA_JOIN_TIMEOUT_MS waiting for WiFi.begin() to resolve one
  * way or the other - unlike the old connect_wifi(), never blocks
  * indefinitely, since an unprovisioned/mis-provisioned node has the
@@ -256,6 +327,7 @@ static void transport_task_entry(void *arg)
 
 	derive_node_id();
 	maybe_seed_bench_credentials();
+	pinMode(PIN_BOOT_BUTTON, INPUT_PULLUP);
 
 	char ap_ssid[64];
 
@@ -277,8 +349,19 @@ static void transport_task_entry(void *arg)
 	}
 
 	uint32_t recovery_deadline = 0;
+	enum mqtt_led_state mqtt_led = MQTT_LED_UNKNOWN;
 
 	while (1) {
+		if (boot_button_force_requested() && state != TRANSPORT_STATE_FORCED_PROVISIONING) {
+			Serial.println("[transport] BOOT button held - forcing re-provisioning");
+			hal_provisioning_stop(); /* no-op if not already active */
+			WiFi.mode(WIFI_AP_STA);
+			hal_provisioning_start(ap_ssid, creds.mqtt_broker_host);
+			hal_display_rgb_set(RGB_PROVISIONING, RGB_DISPLAY_BREATHE, 1500);
+			mqtt_led = MQTT_LED_UNKNOWN;
+			state = TRANSPORT_STATE_FORCED_PROVISIONING;
+		}
+
 		switch (state) {
 		case TRANSPORT_STATE_BOOT_STA_ATTEMPT:
 			if (attempt_sta_join(creds.wifi_ssid, creds.wifi_password)) {
@@ -291,7 +374,8 @@ static void transport_task_entry(void *arg)
 			}
 			break;
 
-		case TRANSPORT_STATE_PROVISIONING: {
+		case TRANSPORT_STATE_PROVISIONING:
+		case TRANSPORT_STATE_FORCED_PROVISIONING: {
 			hal_provisioning_poll();
 
 			struct node_credentials submitted;
@@ -312,10 +396,12 @@ static void transport_task_entry(void *arg)
 				vTaskDelay(pdMS_TO_TICKS(PROVISIONING_AP_TEARDOWN_GRACE_MS));
 				hal_provisioning_stop();
 				WiFi.mode(WIFI_STA);
+				mqtt_led = MQTT_LED_UNKNOWN; /* force a real MQTT check next tick, not an assumed "up" */
 				state = TRANSPORT_STATE_CONNECTED;
 			} else {
 				hal_provisioning_report_result(
 					false, "Couldn't join that network - check the password and try again.");
+				hal_display_rgb_set(RGB_JOIN_FAILED, RGB_DISPLAY_BREATHE, 700);
 				state = TRANSPORT_STATE_PROVISIONING;
 			}
 			break;
@@ -325,16 +411,26 @@ static void transport_task_entry(void *arg)
 				Serial.println("[transport] WiFi dropped, attempting silent recovery...");
 				recovery_deadline = millis() + RECOVERY_WINDOW_MS;
 				hal_display_rgb_set(RGB_RECOVERING, RGB_DISPLAY_CONST, 0);
+				mqtt_led = MQTT_LED_UNKNOWN;
 				state = TRANSPORT_STATE_RECOVERING;
 				break;
 			}
 
 			if (!mqtt_client.connected()) {
+				if (mqtt_led != MQTT_LED_DOWN) {
+					hal_display_rgb_set(RGB_MQTT_UNREACHABLE, RGB_DISPLAY_BREATHE, 1000);
+					mqtt_led = MQTT_LED_DOWN;
+				}
 				connect_mqtt();
 				if (!mqtt_client.connected()) {
 					vTaskDelay(pdMS_TO_TICKS(MQTT_RECONNECT_BACKOFF_MS));
 					break;
 				}
+			}
+
+			if (mqtt_led != MQTT_LED_UP) {
+				hal_display_rgb_set(RGB_CONNECTED, RGB_DISPLAY_CONST, 0);
+				mqtt_led = MQTT_LED_UP;
 			}
 
 			xSemaphoreTake(mqtt_mutex, portMAX_DELAY);

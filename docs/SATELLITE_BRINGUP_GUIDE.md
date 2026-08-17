@@ -246,13 +246,17 @@ the node has no saved creds so it starts its own AP instead. Join it from your
 phone/laptop:
 
 1. The node's serial log prints its AP SSID: `EPM-SAT-<node_id>` (node_id is its
-   MAC-derived id, same one Stage 2 below teaches you to read).
+   MAC-derived id, same one Stage 2 below teaches you to read). This AP is open —
+   no password needed to join it.
 2. Join that WiFi network. A login-style page should **auto-open** (same "airport
-   WiFi" captive-portal experience as the base station) — if it doesn't, browse to
-   `http://192.168.4.1`.
-3. Fill in: your desktop's WiFi SSID/password, and **MQTT broker address = your
-   desktop's IP from Section 4b** (the prefilled `epm-base.local` only resolves on
-   the real UNO Q's network, not your desktop).
+   WiFi" captive-portal experience as the base station, dark-themed to match the
+   dashboard) — if it doesn't, browse to `http://192.168.4.1`. Tap your desktop's
+   network from the scanned list to fill in its SSID, or type it manually if it
+   doesn't show up.
+3. Fill in your desktop's WiFi password (leave blank if it's open), and put your
+   desktop's IP from Section 4b into the **IP address** field — the prefilled
+   "Base station address (mDNS name)" field (`epm-base.local`) only resolves on the
+   real UNO Q's network, not your desktop, and a filled-in IP always wins over it.
 4. Submit. The page tests the join without disconnecting you — on success it says
    so and the node's own AP switches off a few seconds later; on failure (e.g. typo
    in the password) it shows an error inline and you can retry immediately, still
@@ -260,6 +264,15 @@ phone/laptop:
 
 Use Option B specifically if you want to exercise the onboarding feature itself,
 or once boards start production builds that don't compile in real credentials.
+
+**Already connected to the wrong network, or the right network with a typo'd
+broker address, and the node's own AP is gone?** Hold the XIAO's onboard **BOOT**
+button (the same one used to enter bootloader mode) for **3 seconds** — this
+forces the AP+portal back up from any state, including a fully working
+connection, without erasing anything or losing the existing WiFi link until you
+actually submit a new form. See
+[WIFI_ONBOARDING_PLAN.md](WIFI_ONBOARDING_PLAN.md)'s 2026-08-17 follow-up for why
+this exists and how it's implemented.
 
 ### 5b. USB / flashing basics
 
@@ -356,17 +369,20 @@ then, after you submit the portal form from your phone:
 **That `a1b2c3` is your node_id — note it down.** It's also in the AP SSID
 (`EPM-SAT-a1b2c3`) if you used Option B.
 
-**Ring color while this is happening** (Option B, or any later re-provision):
-magenta slow breathe = AP up, waiting for a submission; magenta fast breathe =
-testing a submitted join; amber breathe = last attempt failed, portal still up,
-retry; solid cyan = joined, about to hand off to normal operation.
+**Ring color while this is happening** (Option B, or any later re-provision; full
+rationale in [WIFI_ONBOARDING_PLAN.md](WIFI_ONBOARDING_PLAN.md)'s "RGB status
+colors" note and its 2026-08-17 follow-up): magenta slow breathe = AP up, waiting
+for a submission; magenta fast breathe = testing a submitted join; amber breathe =
+last attempt failed, portal still up, retry; solid cyan = WiFi **and** MQTT both
+connected; **red breathe = WiFi joined fine but the MQTT broker itself is
+unreachable** (this is the one to watch for the "no MQTT connected" row below).
 
 Troubleshooting:
 
 | Symptom | Cause / fix |
 |---|---|
-| `WiFi join timed out`, ring goes back to magenta breathe | Wrong SSID/password, or board not on 2.4 GHz (ESP32-S3 is 2.4 GHz only). Bounded to 15s now, not indefinite — if using Option A, fix `app_config.h` and reflash; NVS won't have saved a failed attempt, so it'll seed again from the corrected values. If using Option B, just resubmit the portal form with the fix — the AP is still up. |
-| WiFi joins, but no "MQTT connected" | Wrong desktop IP in the broker field/`MQTT_BROKER_HOST`, broker not listening on `0.0.0.0`, or firewall. Recheck Section 4a. From the desktop try `mosquitto_sub -h <desktop-ip> -t test` to prove the broker is reachable by IP, not just localhost. |
+| `WiFi join timed out`, ring goes to amber breathe | Wrong SSID/password, or board not on 2.4 GHz (ESP32-S3 is 2.4 GHz only). Bounded to 15s now, not indefinite — if using Option A, fix `app_config.h` and reflash; NVS won't have saved a failed attempt, so it'll seed again from the corrected values. If using Option B, just resubmit the portal form with the fix — the AP is still up. |
+| WiFi joins, but no "MQTT connected" (ring stays on red breathe) | Wrong desktop IP in the portal's IP field/`MQTT_BROKER_HOST`, broker not listening on `0.0.0.0`, or firewall. Recheck Section 4a. From the desktop try `mosquitto_sub -h <desktop-ip> -t test` to prove the broker is reachable by IP, not just localhost. |
 | `MQTT connect failed, rc=...` | Broker reachable but rejecting. Confirm `allow_anonymous true`. |
 | Ring stuck on magenta slow breathe forever | Node has no saved creds and nobody's submitted the portal form yet — expected if you're using Option B and haven't joined `EPM-SAT-<id>` yet. |
 | Portal page doesn't auto-open on your phone | Auto-open behavior depends on the OS's captive-portal probe; browse to `http://192.168.4.1` manually as a fallback. |
@@ -508,9 +524,9 @@ watch the dashboard:
 | What you see | Where | Likely cause |
 |---|---|---|
 | No onboard heartbeat LED | board | boot halted — read the last serial line for which `*_start failed` |
-| `WiFi join timed out`, ring magenta breathe | serial / ring | wrong WiFi creds / not 2.4 GHz — fix and reflash (Option A) or resubmit the portal form (Option B) |
+| `WiFi join timed out`, ring goes to amber breathe | serial / ring | wrong WiFi creds / not 2.4 GHz — fix and reflash (Option A) or resubmit the portal form (Option B) |
 | Ring stuck magenta slow breathe | ring | no saved creds yet and nobody's joined `EPM-SAT-<id>` + submitted the form (Option B, before submission) |
-| WiFi OK, no MQTT | serial | wrong desktop IP, broker not on `0.0.0.0`, firewall |
+| WiFi OK, no MQTT, ring red breathe | serial / ring | wrong desktop IP (portal's IP field / `MQTT_BROKER_HOST`), broker not on `0.0.0.0`, firewall |
 | Node absent from dashboard | dashboard | no *data* frames — check `mosquitto_sub`, check a sensor is enabled |
 | `WHO_AM_I mismatch` | serial | KX134 SPI wiring (CS/INT1/SCK/MISO/MOSI) |
 | `[mic_i2s] ... failed` | serial | INMP441 I2S wiring (WS/BCLK/SD) |

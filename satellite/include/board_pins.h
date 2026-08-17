@@ -45,7 +45,18 @@
  * in main.cpp - the direct equivalent of mcu/src/main.c's heartbeat_led
  * (onboard LED3 green channel), independent of the WS2812 ring the same
  * way mcu/'s heartbeat LED is independent of that board's own ring.
+ *
+ * PIN_BOOT_BUTTON (GPIO0) is the onboard "BOOT" silkscreen button used to
+ * enter the ROM bootloader (hold BOOT, tap RESET) - not one of the D0-D10
+ * header pins either, same exception as LED_BUILTIN above. Reused at
+ * runtime by threads/transport_task.cpp as a technician-triggered "forget
+ * this network, let me give you a new one" gesture: no field way existed to
+ * force re-provisioning once a node had already joined a network (the AP
+ * only reopened automatically on a genuine WiFi drop) until this was added.
+ * Active LOW (this SoC's own internal pull-up during normal runtime, same
+ * as its bootloader-entry role).
  */
+#define PIN_BOOT_BUTTON 0
 
 #define PIN_KX134_SCK  D8
 #define PIN_KX134_MISO D9
