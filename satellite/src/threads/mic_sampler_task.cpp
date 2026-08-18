@@ -123,8 +123,9 @@ int mic_sampler_task_start(void)
 
 	TaskHandle_t handle = NULL;
 	BaseType_t ok =
-		xTaskCreate(mic_sampler_task_entry, "mic_sampler", MIC_SAMPLER_TASK_STACK_WORDS,
-			    NULL, MIC_SAMPLER_TASK_PRIORITY, &handle);
+		xTaskCreatePinnedToCore(mic_sampler_task_entry, "mic_sampler",
+					MIC_SAMPLER_TASK_STACK_WORDS, NULL,
+					MIC_SAMPLER_TASK_PRIORITY, &handle, CORE_SENSING);
 
 	return ok == pdPASS ? 0 : -ENOMEM;
 }

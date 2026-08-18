@@ -32,20 +32,47 @@
  */
 
 #define ACCEL_SAMPLER_TASK_STACK_WORDS 6144
-#define ACCEL_SAMPLER_TASK_PRIORITY    4
+/* Above mic/fuser (5), unlike mcu/ where this was 4. On core 1 those are
+ * the only tasks that can pre-empt this one, and this is the one with the
+ * hard deadline: the KX134 FIFO gives 6.7ms before it discards samples,
+ * whereas the mic's I2S DMA ring (4 x 256 frames at 96kHz, mic_i2s.cpp)
+ * absorbs ~10.7ms, and the fuser just pools whatever is in its queues. Of
+ * the three, accel is the only one where being late destroys data rather
+ * than merely delaying it. */
+#define ACCEL_SAMPLER_TASK_PRIORITY    6
 
-/* Frames requested per hal_accel_read_block() call. Unlike mcu/'s
- * ACCEL_SAMPLER_READ_CHUNK_FRAMES (64 - empirically tuned on real STM32
- * hardware, see that constant's own long comment), this value is *not*
- * hardware-tuned - there's no physical XIAO ESP32S3 + KX134 on the bench
- * in this port to run the same characterization against. 64 is carried
- * over as a reasonable starting point (divides ACCEL_FFT_LEN evenly,
- * fits under the 86-frame hardware FIFO cap) - revisit empirically once
- * real hardware is available, exactly as mcu/'s own comment describes
- * doing for its platform. */
-#define ACCEL_SAMPLER_READ_CHUNK_FRAMES 64
+/* Frames requested per hal_accel_read_block() call: the FIFO's full
+ * depth, i.e. drain it completely every time.
+ *
+ * This WAS 64, carried over from mcu/'s constant of the same name without
+ * the characterization that justified it there ("revisit empirically once
+ * real hardware is available" - now done, on node e36428). Taking 64 of
+ * 86 leaves 22 frames behind, so the next Buffer Full interrupt arrives
+ * after only 64/12800 = 5.0ms, and the task has to complete a whole
+ * SPI read plus its share of the FFT inside that. Measured: the FIFO was
+ * at its cap on 89.3% of reads with a mean inter-read gap of 5126us -
+ * i.e. the average read was already past the point where BM_STREAM had
+ * begun discarding the oldest samples. Each lost run splices the FFT
+ * window, and with ACCEL_FFT_LEN/86 reads per window that reached most
+ * windows, raising and destabilizing the whole broadband noise floor.
+ *
+ * Draining all 86 both empties the FIFO and stretches the budget to
+ * 86/12800 = 6.7ms. 86 does not divide ACCEL_FFT_LEN evenly, so the read
+ * that completes a window leaves a few frames unused (the loop below
+ * stops at ACCEL_FFT_LEN); that costs nothing, because consecutive
+ * windows were never contiguous anyway - fuser_task publishes one window
+ * per FUSER_EPOCH_MS and drops the rest. What matters is that samples
+ * WITHIN a window are contiguous, and that is exactly what this
+ * restores. */
+#define ACCEL_SAMPLER_READ_CHUNK_FRAMES HAL_ACCEL_FIFO_MAX_FRAMES
 
 #define ACCEL_SAMPLER_MAX_RECOVERY_ATTEMPTS 5
+
+/* How often to print the FIFO-drain stats line. One window is
+ * ACCEL_FFT_LEN/ODR = 80ms, so 50 windows is roughly every 4s - frequent
+ * enough to watch a trend during a bench run, sparse enough not to become
+ * its own source of scheduling jitter on the very task it measures. */
+#define ACCEL_SAMPLER_STATS_EVERY_WINDOWS 50
 
 QueueHandle_t accel_spectrum_queue;
 
@@ -98,6 +125,7 @@ static void accel_sampler_task_entry(void *arg)
 	static struct accel_sample sample;
 	size_t frames_accumulated = 0;
 	uint32_t consecutive_failures = 0;
+	uint32_t windows_since_stats = 0;
 
 	while (1) {
 		if (consecutive_failures >= ACCEL_SAMPLER_MAX_RECOVERY_ATTEMPTS) {
@@ -144,6 +172,26 @@ static void accel_sampler_task_entry(void *arg)
 		xQueueOverwrite(accel_spectrum_queue, &sample);
 
 		frames_accumulated = 0;
+
+		/* FIFO-drain health, every ACCEL_SAMPLER_STATS_EVERY_WINDOWS
+		 * windows. Silent sample loss (hal_accel.h's struct
+		 * hal_accel_stats) shows up in the spectrum as a raised, jittery
+		 * broadband floor rather than as any error, so it needs its own
+		 * readout to be diagnosable at all. */
+		if (++windows_since_stats >= ACCEL_SAMPLER_STATS_EVERY_WINDOWS) {
+			struct hal_accel_stats st;
+
+			windows_since_stats = 0;
+			hal_accel_get_stats(&st);
+			Serial.printf("[accel] reads=%u fifo_full=%u (%.1f%%) overrun=%u (%.1f%%) "
+				      "gap_us mean=%llu max=%u limit=%u frames=%u\n",
+				      st.reads, st.fifo_full_reads,
+				      st.reads ? 100.0f * st.fifo_full_reads / st.reads : 0.0f,
+				      st.overrun_reads,
+				      st.reads ? 100.0f * st.overrun_reads / st.reads : 0.0f,
+				      st.reads > 1 ? st.total_gap_us / (st.reads - 1) : 0,
+				      st.max_gap_us, st.span_us, st.frames_read);
+		}
 	}
 }
 
@@ -174,8 +222,9 @@ int accel_sampler_task_start(void)
 
 	TaskHandle_t handle = NULL;
 	BaseType_t ok =
-		xTaskCreate(accel_sampler_task_entry, "accel_sampler", ACCEL_SAMPLER_TASK_STACK_WORDS,
-			    NULL, ACCEL_SAMPLER_TASK_PRIORITY, &handle);
+		xTaskCreatePinnedToCore(accel_sampler_task_entry, "accel_sampler",
+					ACCEL_SAMPLER_TASK_STACK_WORDS, NULL,
+					ACCEL_SAMPLER_TASK_PRIORITY, &handle, CORE_SENSING);
 
 	return ok == pdPASS ? 0 : -ENOMEM;
 }

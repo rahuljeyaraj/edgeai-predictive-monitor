@@ -198,8 +198,8 @@ static void fuser_task_entry(void *arg)
 int fuser_task_start(void)
 {
 	TaskHandle_t handle = NULL;
-	BaseType_t ok = xTaskCreate(fuser_task_entry, "fuser", FUSER_TASK_STACK_WORDS, NULL,
-				    FUSER_TASK_PRIORITY, &handle);
+	BaseType_t ok = xTaskCreatePinnedToCore(fuser_task_entry, "fuser", FUSER_TASK_STACK_WORDS,
+						NULL, FUSER_TASK_PRIORITY, &handle, CORE_SENSING);
 
 	return ok == pdPASS ? 0 : -1;
 }

@@ -97,4 +97,25 @@
  * firmware sent at the same bin count (~32KB/epoch). */
 #define FUSER_EPOCH_MS 200
 
+/*
+ * Core affinity. The ESP32-S3 is DUAL-core - core 0 and core 1; there is
+ * no third core. Under arduino-esp32 the WiFi driver task and the lwIP
+ * TCP/IP task both sit on core 0 by default, which is why that is the
+ * core the radio-facing work is deliberately kept on here.
+ *
+ * Every task in this firmware previously used plain xTaskCreate(), which
+ * on ESP-IDF FreeRTOS means tskNO_AFFINITY - the scheduler was free to
+ * put the accel sampler on core 0 alongside the WiFi stack, and did. That
+ * matters because the KX134 FIFO holds only 86 frames = 6.7ms at ODR
+ * 12800Hz and runs in BM_STREAM mode (discard oldest when full), so a
+ * WiFi-induced stall of a few ms silently destroys samples and splices
+ * the FFT window - measured on this node at 89.3% of reads finding the
+ * FIFO already at its cap. See hal_accel.h's struct hal_accel_stats.
+ *
+ * Split: radio work on core 0 with the stack it talks to, sensing and DSP
+ * on core 1 where nothing pre-empts it.
+ */
+#define CORE_RADIO   0
+#define CORE_SENSING 1
+
 #endif /* APP_CONFIG_H_ */

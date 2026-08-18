@@ -2,6 +2,7 @@
 #include <freertos/task.h>
 
 #include "hal/hal_display_rgb.h"
+#include "app_config.h"
 #include "threads/rgb_display_task.h"
 
 /* Periodic hal_display_rgb_tick() driver - the Arduino/FreeRTOS port of
@@ -30,9 +31,9 @@ int rgb_display_task_start(void)
 	}
 
 	TaskHandle_t handle = NULL;
-	BaseType_t ok = xTaskCreate(rgb_display_task_entry, "rgb_display",
-				    RGB_DISPLAY_TASK_STACK_WORDS, NULL, RGB_DISPLAY_TASK_PRIORITY,
-				    &handle);
+	BaseType_t ok = xTaskCreatePinnedToCore(rgb_display_task_entry, "rgb_display",
+						RGB_DISPLAY_TASK_STACK_WORDS, NULL,
+						RGB_DISPLAY_TASK_PRIORITY, &handle, CORE_RADIO);
 
 	return ok == pdPASS ? 0 : -1;
 }

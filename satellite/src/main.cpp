@@ -1,5 +1,10 @@
 #include <Arduino.h>
 
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
+
+#include "app_config.h"
+
 #include "threads/accel_sampler_task.h"
 #include "threads/fuser_task.h"
 #include "threads/mic_sampler_task.h"
@@ -29,6 +34,43 @@
  * confirmed in this port (no physical board on the bench here) - doesn't
  * matter functionally for a blink indicator either way. */
 #define HEARTBEAT_PERIOD_MS 500
+
+/* Reports which core each task of interest is pinned to. Core affinity is
+ * load-bearing on this node rather than cosmetic (app_config.h's
+ * CORE_RADIO/CORE_SENSING explains why), and "which core is WiFi actually
+ * on" is a property of the arduino-esp32 build rather than something
+ * worth assuming - so print it and read it off the console.
+ *
+ * Probes tasks by name via xTaskGetHandle() instead of enumerating with
+ * uxTaskGetSystemState(): the latter is declared by this SDK's headers
+ * but not present in its prebuilt libfreertos.a, so it fails at link.
+ * "any" means tskNO_AFFINITY - the scheduler may migrate that task
+ * between cores at will, which is what every task here used to do.
+ */
+static void log_task_affinities(void)
+{
+	/* The first four are arduino-esp32/ESP-IDF's own; the rest are ours. */
+	static const char *const names[] = {
+		"wifi", "tiT", "sys_evt", "loopTask",
+		"transport", "rgb_display", "mic_sampler", "accel_sampler", "fuser",
+	};
+
+	Serial.printf("[cores] radio=core%d sensing=core%d\n", CORE_RADIO, CORE_SENSING);
+	for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
+		TaskHandle_t handle = xTaskGetHandle(names[i]);
+
+		if (handle == NULL) {
+			Serial.printf("[cores]   %-14s (not running)\n", names[i]);
+			continue;
+		}
+
+		BaseType_t core = xTaskGetAffinity(handle);
+
+		Serial.printf("[cores]   %-14s prio=%-2u core=%s\n", names[i],
+			      (unsigned)uxTaskPriorityGet(handle),
+			      core == tskNO_AFFINITY ? "any" : (core == 0 ? "0" : "1"));
+	}
+}
 
 void setup(void)
 {
@@ -61,6 +103,8 @@ void setup(void)
 		Serial.println("fuser_task_start failed");
 		return;
 	}
+
+	log_task_affinities();
 
 	Serial.println("edgeai-predictive-monitor satellite node booted");
 

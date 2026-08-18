@@ -16,6 +16,40 @@
  * map).
  */
 
+/* Hardware FIFO depth (KX134 TRM: 86 sets of 16-bit samples). Exposed
+ * because the caller's chunk size has to be chosen against it - asking
+ * for fewer frames than this per read leaves the FIFO permanently near
+ * its cap, which is where samples get discarded. */
+#define HAL_ACCEL_FIFO_MAX_FRAMES 86
+
+/*
+ * FIFO-drain diagnostics. The KX134 runs in BM_STREAM mode ("discard
+ * oldest when full") off the Buffer Full interrupt, so a late read loses
+ * samples SILENTLY - the next read just returns newer data and the
+ * assembled FFT window is spliced across the gap, which splatters energy
+ * across every bin. base-station/sketch/accel_sampler.h counts the same
+ * condition (its fifo_full_count); this node had no equivalent, so drops
+ * were invisible here.
+ *
+ * gap_us is the discriminator, not fifo_full_reads: the FIFO holds
+ * KX134_FIFO_MAX_FRAMES=86 frames, which at ODR 12800Hz is 6.72ms of
+ * data, so any interval longer than that between consecutive reads means
+ * samples were definitely overwritten before they were read. Being at
+ * cap merely means the interrupt fired, which is the normal steady state.
+ */
+struct hal_accel_stats {
+	uint32_t reads;           /* successful hal_accel_read_block() calls */
+	uint32_t fifo_full_reads; /* reads that found the FIFO at its cap */
+	uint32_t overrun_reads;   /* reads later than the FIFO's own span */
+	uint32_t frames_read;     /* frames handed back in total */
+	uint32_t max_gap_us;      /* longest gap between consecutive reads */
+	uint32_t span_us;         /* the FIFO's span, i.e. the overrun limit */
+	uint64_t total_gap_us;    /* for a mean; pair with `reads` */
+};
+
+/* Snapshots the counters above. Safe to call from any task. */
+void hal_accel_get_stats(struct hal_accel_stats *out);
+
 int hal_accel_init(void);
 int hal_accel_start(void);
 

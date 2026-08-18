@@ -66,7 +66,21 @@
 #define KX134_INC1_CONFIG (KX134_INC1_IEN1 | KX134_INC1_IEA1 | KX134_INC1_IEL1)
 
 #define KX134_INC4_BFI1 (1 << 6) /* Buffer Full Interrupt -> INT1 */
-#define KX134_INC4_CONFIG KX134_INC4_BFI1
+#define KX134_INC4_WMI1 (1 << 5) /* Watermark Interrupt (BUF_CNTL1 SMP_TH) -> INT1 */
+/* Wake on the WATERMARK, not just on buffer-full. Buffer-full alone means
+ * the task is only ever woken at the instant the FIFO has no room left,
+ * so in BM_STREAM mode ("discard oldest") every scheduling hiccup from
+ * that point on destroys samples - measured on node e36428 at 93-98% of
+ * reads finding the FIFO at its cap even after switching to a full drain.
+ * The watermark fires at KX134_BUF_CNTL1_SMP_TH frames instead, leaving
+ * the rest of the FIFO as genuine headroom for the task to be late in.
+ *
+ * BFI1 is deliberately kept enabled alongside it as a backstop: if the
+ * watermark were ever misconfigured such that it did not fire, buffer-
+ * full still wakes the reader, so the accel channel degrades to its old
+ * behaviour rather than stalling outright (hal_accel_read_block()'s
+ * KX134_READ_TIMEOUT_MS path and the sampler task's recovery loop). */
+#define KX134_INC4_CONFIG (KX134_INC4_BFI1 | KX134_INC4_WMI1)
 
 #define KX134_BUF_CNTL2_BUFE (1 << 7)
 #define KX134_BUF_CNTL2_BRES (1 << 6) /* 16-bit samples */
@@ -76,12 +90,48 @@
 	(KX134_BUF_CNTL2_BUFE | KX134_BUF_CNTL2_BRES | KX134_BUF_CNTL2_BFIE |                     \
 	 KX134_BUF_CNTL2_BM_STREAM)
 
-#define KX134_BUF_CNTL1_SMP_TH 32 /* valid mid-capacity value; BFI-driven, not watermark-driven */
+/* Watermark, in sample-sets: wake the reader once this many frames are
+ * queued, leaving KX134_FIFO_MAX_FRAMES - SMP_TH still free. At 32 of 86
+ * that is 54 frames = 4.2ms of slack before BM_STREAM starts discarding,
+ * against the ~1.7ms the buffer-full-only configuration left. Reads get
+ * more frequent (every 32/12800 = 2.5ms) but each is far cheaper than the
+ * spliced FFT window a missed one produces. */
+#define KX134_BUF_CNTL1_SMP_TH 32
 
-#define KX134_FIFO_MAX_FRAMES      86
+#define KX134_FIFO_MAX_FRAMES      HAL_ACCEL_FIFO_MAX_FRAMES
 #define KX134_FIFO_BYTES_PER_FRAME 6 /* X_L,X_H,Y_L,Y_H,Z_L,Z_H per frame */
 
 #define KX134_READ_TIMEOUT_MS 1000
+
+/* How much wall time the FIFO can hold before it starts discarding the
+ * oldest sample (BM_STREAM). Any read that lands later than this since
+ * the previous one has definitely lost samples - see hal_accel.h's
+ * struct hal_accel_stats for why this, not the at-cap count, is the
+ * measure that matters. 86 frames / 12800Hz = 6.72ms. */
+#define KX134_FIFO_SPAN_US ((KX134_FIFO_MAX_FRAMES * 1000000UL) / KX134_ODR_HZ)
+
+/* Written only by the accel sampler task (the sole caller of
+ * hal_accel_read_block()) and read by hal_accel_get_stats(); a torn read
+ * of a counter here would misreport a diagnostic, not break sampling, so
+ * these are plain volatiles rather than worth a mutex on the hot path. */
+static volatile uint32_t kx134_reads;
+static volatile uint32_t kx134_fifo_full_reads;
+static volatile uint32_t kx134_overrun_reads;
+static volatile uint32_t kx134_frames_read;
+static volatile uint32_t kx134_max_gap_us;
+static volatile uint64_t kx134_total_gap_us;
+static volatile uint32_t kx134_last_read_us;
+
+void hal_accel_get_stats(struct hal_accel_stats *out)
+{
+	out->reads = kx134_reads;
+	out->fifo_full_reads = kx134_fifo_full_reads;
+	out->overrun_reads = kx134_overrun_reads;
+	out->frames_read = kx134_frames_read;
+	out->max_gap_us = kx134_max_gap_us;
+	out->span_us = KX134_FIFO_SPAN_US;
+	out->total_gap_us = kx134_total_gap_us;
+}
 
 static SPISettings kx134_spi_settings(KX134_SPI_CLOCK_HZ, MSBFIRST, SPI_MODE0);
 
@@ -245,7 +295,40 @@ int hal_accel_read_block(int32_t *out_samples, size_t max_samples)
 	uint16_t smp_lev = status[0] | ((uint16_t)(status[1] & 0x03) << 8);
 
 	frames = smp_lev / KX134_FIFO_BYTES_PER_FRAME;
+
+	/* Diagnostics, before `frames` is clamped to the caller's chunk size -
+	 * the pending count is the interesting number, not what we take. */
+	if (frames >= KX134_FIFO_MAX_FRAMES) {
+		kx134_fifo_full_reads++;
+	}
+	uint32_t now_us = micros();
+	if (kx134_last_read_us != 0) {
+		/* Unsigned wraparound makes this correct across micros()' 32-bit
+		 * rollover (~71min) without a special case. */
+		uint32_t gap = now_us - kx134_last_read_us;
+
+		/* Now that the reader is woken on the watermark and drains the
+		 * FIFO to empty, the budget really is the FIFO's whole span:
+		 * loss needs KX134_FIFO_MAX_FRAMES to arrive between two reads.
+		 * (An earlier revision compared against the previous read's own
+		 * frame count, which was the right threshold only while the
+		 * buffer-full config left 86-k frames sitting in the FIFO -
+		 * under the watermark config it flagged ordinary jitter as
+		 * loss.) fifo_full_reads above stays the definitive indicator:
+		 * BM_STREAM cannot discard anything unless the FIFO is at cap. */
+		if (gap > KX134_FIFO_SPAN_US) {
+			kx134_overrun_reads++;
+		}
+		if (gap > kx134_max_gap_us) {
+			kx134_max_gap_us = gap;
+		}
+		kx134_total_gap_us += gap;
+	}
+	kx134_last_read_us = now_us;
+	kx134_reads++;
+
 	frames = min(frames, min(max_samples, (size_t)KX134_FIFO_MAX_FRAMES));
+	kx134_frames_read += frames;
 
 	ret = kx134_read_regs(KX134_REG_BUF_READ, raw, frames * KX134_FIFO_BYTES_PER_FRAME);
 	if (ret < 0) {

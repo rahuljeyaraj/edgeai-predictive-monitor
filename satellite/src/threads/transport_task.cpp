@@ -557,8 +557,9 @@ int transport_task_start(void)
 	}
 
 	TaskHandle_t handle = NULL;
-	BaseType_t ok = xTaskCreate(transport_task_entry, "transport", TRANSPORT_TASK_STACK_WORDS,
-				    NULL, TRANSPORT_TASK_PRIORITY, &handle);
+	BaseType_t ok = xTaskCreatePinnedToCore(transport_task_entry, "transport",
+						TRANSPORT_TASK_STACK_WORDS, NULL,
+						TRANSPORT_TASK_PRIORITY, &handle, CORE_RADIO);
 
 	return ok == pdPASS ? 0 : -ENOMEM;
 }
