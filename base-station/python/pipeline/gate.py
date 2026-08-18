@@ -84,12 +84,26 @@ DEFAULT_STOPPED_MARGIN` -- a multiple of what this machine's own silence
 measures -- and needs no running reference at all, so capturing one does
 not invalidate an existing commissioning or force a retrain. Nodes without
 one keep the running_fraction path below, unchanged.
+
+Subtracting the floor is still not enough on every mounting. A node whose
+own noise floor is unusually jittery (measured: 1.91x frame-to-frame spread
+against another node's 1.37x on the same rig, in the same minute, after its
+firmware-side FIFO-overrun bug was fixed) fails both directions of this at
+once -- pipeline/stopped_baseline.py refuses to fit a baseline it cannot put
+a threshold above, and if one is forced through, real running frames flicker
+either side of a threshold scaled up from that inflated floor and get
+silently dropped from whatever is collecting. The last layer is therefore to
+average consecutive frames' spectra before measuring them at all
+(SpectrumAverager / DEFAULT_SMOOTHING_FRAMES), which shrinks the noise that
+does not repeat frame to frame while leaving the motor lines that do.
 """
 import logging
 import math
+from collections import deque
 from dataclasses import dataclass
 from enum import Enum
-from typing import Callable, List, Mapping, Optional, Sequence, Tuple
+from typing import (Callable, Deque, Dict, List, Mapping, Optional, Sequence,
+                     Tuple)
 
 from sensor_frame import SensorFrame
 
@@ -149,6 +163,127 @@ DEFAULT_STOPPED_MARGIN = 1.75
 DEFAULT_RUNNING_HYSTERESIS = 0.5
 
 
+# How many consecutive frames' spectra a node's gate averages together
+# before measuring energy. Not a filter in the DSP sense -- band-limiting
+# was measured and made things *worse* (1.09x, the module docstring's
+# "the noise floor is tallest in exactly the low bins where the signal
+# lives"). This averages across TIME, where the noise really is
+# independent frame to frame and the motor's lines are not.
+#
+# Why it works, measured on node e36428 (docs: the satellite idle-vibration
+# diagnosis): after the FIFO-overrun firmware fix its 30-frame-window spread
+# still sat at 1.91x against base_station's 1.37x in the same room, i.e. the
+# residual is that mounting's own jitter, not a bug left to find. Frame-to-
+# frame lag-1 autocorrelation of the excess energy measured only +0.17, so
+# the frames are near-independent and a K-frame mean cuts that jitter by
+# roughly 1/sqrt(K) -- 1.91x -> ~1.46x at K=4, comfortably back under
+# DEFAULT_STOPPED_MARGIN.
+#
+# It helps the RUNNING side twice over, which is the point that makes this
+# the durable fix rather than a way to squeak a baseline past its check.
+# Averaging the *spectra* (not the resulting energies) before
+# excess_over_stopped() clamps them at zero means the rectified noise the
+# floor leaves behind shrinks with K while a real motor line -- present in
+# every frame, well above the floor -- does not. So stopped_energy_ref
+# falls, the threshold scaled from it falls with it, and running energy
+# stays put: the two states move further apart rather than the line moving
+# up. Averaging energies after the clamp would do none of that.
+#
+# 6 rather than 4, chosen by measurement, not by the 1/sqrt(K) arithmetic.
+# 251 live frames off e36428 (machine off, 50.9s, 4.93 fps), scored as the
+# sliding 150-frame captures an operator would actually take:
+#
+#   K   accepted    median spread   worst    energy_ref   gate threshold
+#   1    0 of 21        2.11x       2.21x       2705          4734
+#   4   15 of 21        1.70x       1.79x       1333          2333
+#   6   21 of 21        1.56x       1.64x       1089          1906
+#
+# K=4 works on a good capture and fails on an unlucky one; K=6 had margin on
+# every window measured. Above 6 the returns flatten and the worst case
+# starts drifting back up (the residual is not purely white -- there is a
+# slower wander that a longer average cannot cancel), so this is a measured
+# optimum rather than "more is better".
+#
+# The right-hand column is the other half of the point. The gate threshold
+# is stopped_energy_ref * DEFAULT_STOPPED_MARGIN, so averaging lowers the
+# line a running machine has to clear by 2.5x (4734 -> 1906) while leaving
+# the running energy that clears it alone. That is what stops this from
+# being a way to squeak a bad baseline past its check and into the next
+# problem: the alternative fix, raising MAX_STOPPED_SPREAD or scaling the
+# margin per node, would have accepted the same baseline and then starved
+# commissioning's next step of frames, since both numbers are multiples of
+# the same inflated floor.
+#
+# 6 frames is ~1.2s at the satellite's ~4.9 fps. That lands on protection's
+# trip gate too, whose own DEFAULT_TRIP_DELAY_S is 10s, so it is noise
+# against the delay already there by design.
+DEFAULT_SMOOTHING_FRAMES = 6
+
+
+class BinsFrame:
+    """The two attributes excess_over_stopped()/energy_channels() actually
+    read. Lets this module and pipeline/stopped_baseline.py measure derived
+    bins (a rolling mean, stored capture frames) through exactly the same
+    functions a live SensorFrame goes through, instead of either duplicating
+    the maths or keeping whole SensorFrames alive."""
+
+    __slots__ = ("node_id", "bins")
+
+    def __init__(self, node_id: str, bins: Mapping[str, Sequence[float]]):
+        self.node_id = node_id
+        self.bins = bins
+
+
+class SpectrumAverager:
+    """Rolling per-bin mean of the last k frames, per channel.
+
+    k is passed to push() rather than fixed at construction because it is a
+    property of the node's stored StoppedBaseline (see its smoothing_frames
+    field), which the gate re-reads on every frame so that a freshly
+    captured baseline takes effect immediately -- the same reason
+    MotorStateGate holds providers rather than values.
+
+    Resets on any change to the channel set or bin counts: averaging across
+    a sensor_config change would mix two different measurements into one
+    frame, and the shape check is (channel, bin_count) pairs for the same
+    reason pipeline/stopped_baseline.py commits to that shape.
+    """
+
+    def __init__(self) -> None:
+        self._window: Deque[Dict[str, Tuple[float, ...]]] = deque()
+        self._shape: Optional[Tuple[Tuple[str, int], ...]] = None
+
+    def push(self, frame, k: int):
+        """Returns `frame` itself when k <= 1 or only one frame is buffered
+        (the no-op path pays no copy), else a BinsFrame of the mean. A
+        partial window is averaged as-is rather than waiting for k frames:
+        a gate that returned nothing for its first frames would stall
+        collection at exactly the moment an operator has just pressed
+        Start."""
+        shape = tuple((chan, len(frame.bins[chan])) for chan in sorted(frame.bins))
+        if shape != self._shape:
+            self._window.clear()
+            self._shape = shape
+        if k <= 1:
+            # Keep no history: k can change under us (a re-captured
+            # baseline), and stale frames from before that change must not
+            # leak into the first averaged frame after it.
+            self._window.clear()
+            return frame
+        self._window.append({chan: tuple(frame.bins[chan]) for chan, _ in shape})
+        while len(self._window) > k:
+            self._window.popleft()
+        if len(self._window) == 1:
+            return frame
+        count = len(self._window)
+        averaged = {
+            chan: tuple(sum(values) / count
+                        for values in zip(*(f[chan] for f in self._window)))
+            for chan, _ in self._shape
+        }
+        return BinsFrame(frame.node_id, averaged)
+
+
 @dataclass(frozen=True)
 class StoppedBaseline:
     """What a node measured with its machine deliberately stopped, captured
@@ -163,9 +298,24 @@ class StoppedBaseline:
     asks "is this frame further above the floor than the floor's own
     jitter", which is the question the noise makes hard, rather than
     re-deriving it from a running reference on a different scale.
+    smoothing_frames: how many consecutive frames were averaged together
+    (SpectrumAverager) before both of the above were measured, and
+    therefore how many the gate must average before measuring a live frame
+    against them. Persisted with the pair rather than read from a global
+    setting, and defaulting to 1, because it is part of the scale those
+    two numbers are on: the floor is a median over K-averaged spectra,
+    which sits at the raw bins' *mean* rather than their median (FFT
+    magnitudes are Rayleigh-ish, so mean/median ~ 1.065), and subtracting
+    that from an unaveraged frame would leave a systematic ~6% positive
+    excess in every bin that no amount of margin absorbs. A baseline
+    captured before this field existed reads back as 1 and is gated
+    exactly as it was, unsmoothed -- changing K means re-capturing, the
+    same rule compute_energy()'s docstring already states for the
+    subtracted/unsubtracted scales.
     """
     spectrum: Mapping[str, Sequence[float]]
     energy: float
+    smoothing_frames: int = 1
 
 
 class MotorState(Enum):
@@ -302,6 +452,11 @@ class MotorStateGate:
         # make it tunable from real numbers instead of guesswork.
         self._last_energy: Optional[float] = None
         self._last_threshold: Optional[float] = None
+        # Rolling frame buffer for the smoothing this node's baseline was
+        # captured with (StoppedBaseline.smoothing_frames). Per-gate, and
+        # gates are per-node, so no cross-node mixing is possible; a node
+        # with no baseline never buffers anything.
+        self._averager = SpectrumAverager()
 
     @property
     def state(self) -> MotorState:
@@ -337,13 +492,22 @@ class MotorStateGate:
         energy with an unsubtracted threshold is the failure this design
         guards against (see the module docstring)."""
         stopped = self._stopped_provider() if self._stopped_provider else None
-        excess = excess_over_stopped(frame, stopped)
+        # Averaged over exactly the frames the baseline itself was measured
+        # over -- see StoppedBaseline.smoothing_frames for why this cannot
+        # be a separate setting, and DEFAULT_SMOOTHING_FRAMES for what it
+        # buys. Read fresh every frame like the baseline itself, so a
+        # re-capture that changes K takes effect on the next frame.
+        smoothed = self._averager.push(frame, stopped.smoothing_frames if stopped else 1)
+        excess = excess_over_stopped(smoothed, stopped)
         if excess is not None and stopped.energy > 0:
             return _rms(excess), stopped.energy * self._stopped_margin
         # No baseline, one that doesn't fit this frame's channels, or a
         # degenerate zero-energy one (a sensor dead throughout the stopped
         # capture would read a perfectly constant floor) -- measure and
-        # threshold the pre-baseline way instead, both unsubtracted.
+        # threshold the pre-baseline way instead, both unsubtracted, and
+        # on the RAW frame: running_energy_ref was commissioned from
+        # unaveraged frames, so measuring an averaged one against it would
+        # mix the two scales this function exists to keep apart.
         return compute_energy(frame), self._running_threshold()
 
     def update(self, frame: SensorFrame) -> MotorState:

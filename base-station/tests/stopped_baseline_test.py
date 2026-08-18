@@ -24,8 +24,9 @@ import tempfile
 from sensor_frame import FrameSource, SensorFrame
 from gate import MotorState, MotorStateGate, StoppedBaseline
 from registry import Registry, SensorChannel
-from stopped_baseline import (MAX_STOPPED_SPREAD, StoppedBaselineError,
-                               StoppedBaselineSession)
+from gate import BinsFrame, compute_energy
+from stopped_baseline import (MAX_STOPPED_SPREAD, OUTLIER_ENERGY_FACTOR,
+                               StoppedBaselineError, StoppedBaselineSession)
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from gate_test import RUNNING_FRAME_X, STOPPED_FRAME_X, STOPPED_REF_X  # noqa: E402
@@ -62,6 +63,22 @@ def _slide(bins, by):
 
 
 STOPPED_FRAMES = [_slide(STOPPED_REF_X, i * _STRIDE) for i in range(6)]
+# Same generator, enough frames that outlier rejection has somewhere to
+# drop one from without dipping under MIN_FRAMES.
+MANY_STOPPED_FRAMES = [_slide(STOPPED_REF_X, i * _STRIDE) for i in range(20)]
+
+
+def session_for(reg, min_frames=MIN_FRAMES, smoothing_frames=1):
+    """Most of these tests are about the fit, the retry shape and the
+    registry, so they pin smoothing to 1 (the pre-smoothing behaviour)
+    rather than the shipped default: six slid copies of one real frame are
+    a deliberately decorrelated fixture, not a time series, so averaging
+    them models nothing real. The tests below that ARE about smoothing say
+    so and set it explicitly; what the shipped default actually does was
+    measured on 251 live frames instead (gate.py's
+    DEFAULT_SMOOTHING_FRAMES)."""
+    return StoppedBaselineSession(reg, NODE, min_frames=min_frames,
+                                   smoothing_frames=smoothing_frames)
 
 
 def new_registry():
@@ -80,7 +97,7 @@ def collect(session, frames):
 
 def test_baseline_is_fitted_and_persisted():
     reg, path = new_registry()
-    session = StoppedBaselineSession(reg, NODE, min_frames=MIN_FRAMES)
+    session = session_for(reg)
     session.start()
     collect(session, STOPPED_FRAMES)
     baseline = session.stop()
@@ -112,7 +129,7 @@ def test_captured_baseline_separates_real_spectra_through_the_gate():
     stopped frame as STOPPED and a real running one as RUNNING -- the pair
     that the pre-baseline gate could not tell apart at all."""
     reg, _ = new_registry()
-    session = StoppedBaselineSession(reg, NODE, min_frames=MIN_FRAMES)
+    session = session_for(reg)
     session.start()
     collect(session, STOPPED_FRAMES)
     session.stop()
@@ -137,7 +154,7 @@ def test_too_few_frames_keeps_the_capture_alive():
     is standing next to a machine they just switched off, so the fix is to
     keep collecting, not to start over."""
     reg, _ = new_registry()
-    session = StoppedBaselineSession(reg, NODE, min_frames=MIN_FRAMES)
+    session = session_for(reg)
     session.start()
     collect(session, STOPPED_FRAMES[:3])
     try:
@@ -157,7 +174,7 @@ def test_dead_sensor_is_rejected():
     """Identical frames mean the sensor isn't producing live data, not that
     the machine is quiet. Storing that would give gate.py a zero threshold."""
     reg, _ = new_registry()
-    session = StoppedBaselineSession(reg, NODE, min_frames=MIN_FRAMES)
+    session = session_for(reg)
     session.start()
     collect(session, [STOPPED_REF_X] * MIN_FRAMES)
     try:
@@ -170,14 +187,20 @@ def test_dead_sensor_is_rejected():
 
 
 def test_unsteady_floor_is_rejected():
-    """Something still moving during the capture. Left alone it would fit a
-    floor whose own loudest frame is already past where the gate would put
-    the line, so the node would flap on its own baseline data."""
+    """Something still moving during the capture -- steadily, which is the
+    case no amount of averaging or outlier-dropping can help. Left alone it
+    would fit a floor whose own frames are already past where the gate
+    would put the line, so the node would flap on its own baseline data.
+
+    Every frame here is inside OUTLIER_ENERGY_FACTOR of the others, so the
+    transient path deliberately does not fire: this is the "your machine is
+    on" verdict, not the "you knocked the bench" one."""
     reg, _ = new_registry()
-    session = StoppedBaselineSession(reg, NODE, min_frames=MIN_FRAMES)
+    session = session_for(reg, min_frames=12)
     session.start()
-    loud = tuple(b * 4.0 for b in STOPPED_REF_X)
-    collect(session, STOPPED_FRAMES[:-1] + [loud])
+    swelling = [tuple(b * (1.0 + 1.2 * (i % 2)) for b in bins)
+                for i, bins in enumerate(MANY_STOPPED_FRAMES)]
+    collect(session, swelling)
     try:
         session.stop()
         raise AssertionError("stop() should have refused an unsteady floor")
@@ -188,12 +211,116 @@ def test_unsteady_floor_is_rejected():
     print("a floor too unsteady to gate on is rejected with the reason: PASS")
 
 
+def test_one_knock_is_dropped_instead_of_failing_the_capture():
+    """The whole reason a long capture kept failing: one transient -- a
+    knock against the bench, someone leaning on the machine -- used to be
+    measured as max() and sank the entire capture, however long it was."""
+    reg, _ = new_registry()
+    session = session_for(reg, min_frames=12)
+    session.start()
+    knock = tuple(b * 8.0 for b in STOPPED_REF_X)
+    collect(session, MANY_STOPPED_FRAMES[:-1] + [knock])
+    baseline = session.stop()
+    assert baseline.energy > 0
+
+    # The knock must not have raised the stored floor either: fitting it in
+    # would put the gate's line above real running energy.
+    clean = session_for(reg, min_frames=12)
+    clean.start()
+    collect(clean, MANY_STOPPED_FRAMES[:-1])
+    assert abs(clean.stop().energy - baseline.energy) < 1e-6
+    print("a single knock is dropped and changes nothing about the fit: PASS")
+
+
+def test_a_capture_full_of_transients_is_rejected_as_still_running():
+    """The other side of that: dropping outliers must not become a way to
+    quietly fit a floor from the quiet quarter of a capture taken with the
+    machine still on."""
+    reg, _ = new_registry()
+    session = session_for(reg, min_frames=6)
+    session.start()
+    # 6 of 20 frames (30%) well past OUTLIER_ENERGY_FACTOR -- above
+    # MAX_OUTLIER_FRACTION, so dropping them all is no longer a credible
+    # reading of the capture.
+    noisy = [tuple(b * (20.0 if i % 3 == 0 else 1.0) for b in bins)
+             for i, bins in enumerate(MANY_STOPPED_FRAMES[:18])]
+    collect(session, noisy)
+    try:
+        session.stop()
+        raise AssertionError("stop() should have refused a capture of transients")
+    except StoppedBaselineError as e:
+        assert "too many to be knocks" in str(e), e
+    assert reg.get(NODE).stopped_energy_ref is None
+    print("a capture where half the frames are transients is rejected: PASS")
+
+
+def test_smoothing_is_recorded_and_the_gate_obeys_it():
+    """The scale rule from gate.py's StoppedBaseline.smoothing_frames: a
+    baseline fitted on averaged frames is only meaningful against averaged
+    frames, so how it was fitted travels with it to the registry and out to
+    the gate, instead of both ends reading a shared setting."""
+    reg, _ = new_registry()
+    session = session_for(reg, smoothing_frames=2)
+    session.start()
+    collect(session, STOPPED_FRAMES)
+    baseline = session.stop()
+    assert baseline.smoothing_frames == 2
+    assert reg.get(NODE).stopped_smoothing_frames == 2
+
+    # And the gate really averages: fed a loud frame then a quiet one, the
+    # second measurement must be the mean of the two, not the quiet one.
+    gate = MotorStateGate(threshold=0.05, debounce_frames=1,
+                          stopped_provider=lambda: baseline)
+    loud = tuple(b * 3.0 for b in STOPPED_REF_X)
+    quiet = STOPPED_REF_X
+    gate.update(frame(loud))
+    gate.update(frame(quiet))
+    averaged = BinsFrame(NODE, {"accel_x": tuple((a + b) / 2 for a, b in zip(loud, quiet))})
+    assert abs(gate.last_energy - compute_energy(averaged, baseline)) < 1e-6, gate.last_energy
+    assert gate.last_energy > compute_energy(frame(quiet), baseline)
+    print("smoothing travels with the baseline and the gate averages by it: PASS")
+
+
+def test_a_baseline_from_before_smoothing_existed_is_gated_unsmoothed():
+    """Back-compat, and it is not cosmetic: those baselines were fitted at
+    the raw bins' per-bin MEDIAN, and gating them on averaged frames (which
+    converge on the MEAN, ~6.5% higher for Rayleigh-ish magnitudes) would
+    leave a systematic positive excess in every bin and read RUNNING at
+    rest."""
+    reg, _ = new_registry()
+    session = session_for(reg)
+    session.start()
+    collect(session, STOPPED_FRAMES)
+    session.stop()
+    entry = reg.get(NODE)
+    # What Registry stores for a caller that never mentions smoothing.
+    reg.set_stopped_baseline(NODE, entry.stopped_spectrum_ref, entry.stopped_energy_ref)
+    assert reg.get(NODE).stopped_smoothing_frames == 1
+    assert StoppedBaseline(spectrum={}, energy=1.0).smoothing_frames == 1
+    print("a pre-smoothing baseline reads back as unsmoothed: PASS")
+
+
+def test_a_capture_too_short_for_its_averaging_is_refused():
+    """Caught by the shipped defaults being 150 and 6, but not by a caller
+    that lowers one and forgets the other: at min_frames 4 with 6-frame
+    averaging, every window is a partial average and the spread measured is
+    the averaging's, not the machine's."""
+    reg, _ = new_registry()
+    try:
+        StoppedBaselineSession(reg, NODE, min_frames=4, smoothing_frames=6)
+        raise AssertionError("a capture shorter than twice its averaging should be refused")
+    except ValueError as e:
+        assert "at least twice" in str(e), e
+    StoppedBaselineSession(reg, NODE, min_frames=12, smoothing_frames=6)
+    print("a capture too short for its own averaging is refused up front: PASS")
+
+
 def test_foreign_and_mismatched_frames_are_dropped():
     """A live stream mixes nodes by nature, and a node whose sensor_config
     changes mid-capture would otherwise contribute bins the baseline can
     never be applied to."""
     reg, _ = new_registry()
-    session = StoppedBaselineSession(reg, NODE, min_frames=MIN_FRAMES)
+    session = session_for(reg)
     session.start()
     session.feed_frame(frame(STOPPED_REF_X, node_id="someone-else"))
     assert session.collected_count == 0, session.collected_count
@@ -208,7 +335,7 @@ def test_mic_only_node_uses_mic():
     """A node with no accelerometer has nothing else to measure -- same
     fallback gate.energy_channels() makes for the live gate."""
     reg, _ = new_registry()
-    session = StoppedBaselineSession(reg, NODE, min_frames=MIN_FRAMES)
+    session = session_for(reg)
     session.start()
     for bins in STOPPED_FRAMES:
         session.feed_frame(frame(bins, channel="mic"))
@@ -219,13 +346,13 @@ def test_mic_only_node_uses_mic():
 
 def test_cancel_leaves_any_existing_baseline_alone():
     reg, _ = new_registry()
-    session = StoppedBaselineSession(reg, NODE, min_frames=MIN_FRAMES)
+    session = session_for(reg)
     session.start()
     collect(session, STOPPED_FRAMES)
     session.stop()
     stored = reg.get(NODE).stopped_energy_ref
 
-    again = StoppedBaselineSession(reg, NODE, min_frames=MIN_FRAMES)
+    again = session_for(reg)
     again.start()
     collect(again, STOPPED_FRAMES[:2])
     again.cancel()
@@ -258,6 +385,11 @@ if __name__ == "__main__":
         test_too_few_frames_keeps_the_capture_alive()
         test_dead_sensor_is_rejected()
         test_unsteady_floor_is_rejected()
+        test_one_knock_is_dropped_instead_of_failing_the_capture()
+        test_a_capture_full_of_transients_is_rejected_as_still_running()
+        test_smoothing_is_recorded_and_the_gate_obeys_it()
+        test_a_baseline_from_before_smoothing_existed_is_gated_unsmoothed()
+        test_a_capture_too_short_for_its_averaging_is_refused()
         test_foreign_and_mismatched_frames_are_dropped()
         test_mic_only_node_uses_mic()
         test_cancel_leaves_any_existing_baseline_alone()

@@ -78,8 +78,14 @@ class Harness:
         self.commissioning = CommissioningController(
             self.registry, os.path.join(tmp_dir, "models"), gate_factory,
             min_frames=MIN_FRAMES, epochs=EPOCHS, captures_dir=self.captures_dir)
+        # smoothing_frames pinned low to match the deliberately tiny
+        # min_frames above -- StoppedBaselineSession requires min_frames to
+        # be at least twice it, and this file is about the wizard's
+        # sequencing, not about signal quality. What the shipped 150/6
+        # actually measures was checked against live frames instead
+        # (pipeline/gate.py's DEFAULT_SMOOTHING_FRAMES).
         self.stopped_baseline = StoppedBaselineController(
-            self.registry, min_frames=BASELINE_MIN_FRAMES)
+            self.registry, min_frames=BASELINE_MIN_FRAMES, smoothing_frames=2)
         self.published = []
         self.running = {}
         self.protection = ProtectionController(

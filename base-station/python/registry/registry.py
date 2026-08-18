@@ -195,6 +195,15 @@ class RegistryEntry:
     # must not invalidate an existing model or force a retrain.
     stopped_spectrum_ref: Optional[Dict[str, Tuple[float, ...]]] = None
     stopped_energy_ref: Optional[float] = None
+    # How many consecutive frames' spectra were averaged together before
+    # the two above were measured, and therefore how many gate.py must
+    # average before measuring a live frame against them -- they are only
+    # meaningful on frames smoothed the same way (gate.py's
+    # StoppedBaseline.smoothing_frames explains the ~6.5% systematic error
+    # a mismatch produces). None on any baseline captured before this
+    # existed, which gate.py reads as 1, i.e. exactly the unsmoothed
+    # behaviour those baselines were fitted for.
+    stopped_smoothing_frames: Optional[int] = None
 
     def to_dict(self) -> dict:
         d = asdict(self)
@@ -579,12 +588,17 @@ class Registry:
 
     def set_stopped_baseline(self, node_id: str,
                               spectrum_ref: Optional[Dict[str, Tuple[float, ...]]],
-                              energy_ref: Optional[float]) -> RegistryEntry:
+                              energy_ref: Optional[float],
+                              smoothing_frames: Optional[int] = None) -> RegistryEntry:
         """Records what this node measures with its machine stopped, or
         clears it back to "never measured" when passed None (both fields go
         together -- see RegistryEntry.stopped_spectrum_ref; a spectrum
         without its energy, or the reverse, would leave gate.py with a
         floor it can subtract but no scale to threshold against).
+
+        smoothing_frames records how the two were measured, and is stored
+        with them for the same reason: they are only valid against live
+        frames averaged the same way.
 
         Deliberately not folded into complete_commissioning(): that runs at
         the end of a batch collected with the machine RUNNING, and this
@@ -605,6 +619,13 @@ class Registry:
             entry = self.get(node_id)
             entry.stopped_spectrum_ref = spectrum_ref
             entry.stopped_energy_ref = energy_ref
+            # Defaults to 1 rather than to the current
+            # DEFAULT_SMOOTHING_FRAMES when a caller omits it: a caller that
+            # didn't say how it smoothed didn't smooth, and guessing the
+            # global default here would silently claim a scale the fit was
+            # never on. Cleared with the pair, like the pair itself.
+            entry.stopped_smoothing_frames = (
+                None if spectrum_ref is None else (smoothing_frames or 1))
             self._save()
             return entry
 

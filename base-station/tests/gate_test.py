@@ -11,8 +11,9 @@ Run with PYTHONPATH covering base-station/python/ingestion and base-station/pyth
 import sys
 
 from sensor_frame import FrameSource, SensorFrame
-from gate import (DEFAULT_STOPPED_MARGIN, MotorState, MotorStateGate, StoppedBaseline,
-                   compute_energy, excess_over_stopped)
+from gate import (DEFAULT_STOPPED_MARGIN, BinsFrame, MotorState, MotorStateGate,
+                   SpectrumAverager, StoppedBaseline, compute_energy,
+                   excess_over_stopped)
 
 THRESHOLD = 1.0
 DEBOUNCE = 3
@@ -395,6 +396,118 @@ def test_invalid_stopped_margin_rejected():
     print("stopped_margin at or below 1 is rejected: PASS")
 
 
+# --- frame averaging ------------------------------------------------------
+# The last layer of the same bug (gate.py's DEFAULT_SMOOTHING_FRAMES): a
+# mounting whose noise floor jitters frame to frame is unusable at BOTH ends
+# -- no baseline can be fitted on it, and a baseline forced through raises
+# the running threshold so far that real running frames stop counting.
+#
+# The jitter modelled here is common-mode, one factor scaling a whole real
+# stopped frame, because that is what was measured on the hardware: all
+# three axes moving together (r = 0.83-0.96) with lag-1 autocorrelation of
+# only +0.17, i.e. near-independent frame to frame. The factors are held in
+# a fixed list rather than drawn randomly so a failure is reproducible.
+JITTER = (1.00, 1.45, 0.82, 1.30, 0.90, 1.22, 0.86, 1.38, 0.95, 1.15, 1.05, 0.88)
+
+
+def jittered_stopped_frames():
+    return [accel_x_frame(tuple(b * f for b in STOPPED_FRAME_X)) for f in JITTER]
+
+
+def measured_energies(gate, frames):
+    out = []
+    for f in frames:
+        gate.update(f)
+        out.append(gate.last_energy)
+    return out
+
+
+def test_averaging_shrinks_the_floor_jitter_it_is_there_for():
+    """Same frames, same baseline, K=1 vs K=6: the spread of what the gate
+    measures on a stopped machine has to come down, because that spread is
+    the whole reason a baseline gets rejected."""
+    unsmoothed = MotorStateGate(threshold=THRESHOLD, debounce_frames=1,
+                                 stopped_provider=lambda: REAL_BASELINE)
+    smoothed = MotorStateGate(
+        threshold=THRESHOLD, debounce_frames=1,
+        stopped_provider=lambda: StoppedBaseline(spectrum=REAL_BASELINE.spectrum,
+                                                  energy=REAL_BASELINE.energy,
+                                                  smoothing_frames=6))
+    raw = measured_energies(unsmoothed, jittered_stopped_frames())
+    avg = measured_energies(smoothed, jittered_stopped_frames())[6:]
+    raw_spread = max(raw) / min(raw)
+    avg_spread = max(avg) / min(avg)
+    assert avg_spread < raw_spread / 2, (raw_spread, avg_spread)
+    print(f"averaging 6 frames cuts the stopped floor's spread {raw_spread:.2f}x -> "
+           f"{avg_spread:.2f}x: PASS")
+
+
+def test_averaging_does_not_erase_a_real_running_signature():
+    """The half that makes this a fix rather than a way to hide the
+    problem. The motor's lines are in every frame; the floor's jitter is
+    not. Averaging must leave a genuinely running machine reading RUNNING
+    -- otherwise the baseline would pass its check and commissioning's next
+    step would starve, which is the failure this replaced."""
+    baseline = StoppedBaseline(spectrum=REAL_BASELINE.spectrum,
+                                energy=REAL_BASELINE.energy, smoothing_frames=6)
+    gate = MotorStateGate(threshold=THRESHOLD, debounce_frames=DEBOUNCE,
+                          stopped_provider=lambda: baseline)
+    for _ in range(10):
+        gate.update(REAL_RUNNING_FRAME)
+    assert gate.state == MotorState.RUNNING, gate.state
+    running = gate.last_energy
+    for _ in range(10):
+        gate.update(REAL_STOPPED_FRAME)
+    assert gate.state == MotorState.STOPPED, gate.state
+    assert running > gate.last_threshold, (running, gate.last_threshold)
+    print(f"averaged real running energy {running:.0f} still clears the "
+           f"{gate.last_threshold:.0f} threshold and a real stopped frame does not: PASS")
+
+
+def test_smoothing_of_one_is_exactly_the_old_behaviour():
+    """Every baseline captured before smoothing existed reads back as 1,
+    so this is the path most already-commissioned nodes are still on."""
+    gate = MotorStateGate(threshold=THRESHOLD, debounce_frames=1,
+                          stopped_provider=lambda: REAL_BASELINE)
+    frames = jittered_stopped_frames()
+    assert measured_energies(gate, frames) == [
+        compute_energy(f, REAL_BASELINE) for f in frames]
+    print("smoothing_frames=1 measures each frame exactly as before: PASS")
+
+
+def test_averager_resets_when_the_frame_shape_changes():
+    """A node whose sensor_config changes mid-stream must not have two
+    different measurements averaged into one frame."""
+    averager = SpectrumAverager()
+    averager.push(accel_x_frame((10.0, 10.0)), 4)
+    averager.push(accel_x_frame((20.0, 20.0)), 4)
+    assert averager.push(accel_x_frame((30.0, 30.0)), 4).bins["accel_x"] == (20.0, 20.0)
+    other = SensorFrame(node_id="node-1", source=FrameSource.SPI, timestamp=0.0,
+                        bins={"accel_y": (100.0, 100.0)})
+    assert averager.push(other, 4).bins["accel_y"] == (100.0, 100.0)
+    print("the averager drops its window when the channel set changes: PASS")
+
+
+def test_averager_returns_partial_windows_rather_than_stalling():
+    """A gate that produced nothing for its first K frames would stall
+    collection at exactly the moment an operator pressed Start."""
+    averager = SpectrumAverager()
+    assert averager.push(accel_x_frame((10.0, 10.0)), 6).bins["accel_x"] == (10.0, 10.0)
+    assert averager.push(accel_x_frame((20.0, 20.0)), 6).bins["accel_x"] == (15.0, 15.0)
+    print("a partial window is averaged as-is instead of withheld: PASS")
+
+
+def test_changing_k_to_one_drops_the_buffered_history():
+    """K travels with the baseline, so a re-capture can change it under a
+    live gate -- frames averaged for the old baseline must not leak into
+    the first measurement made against the new one."""
+    averager = SpectrumAverager()
+    averager.push(accel_x_frame((10.0, 10.0)), 4)
+    averager.push(accel_x_frame((10.0, 10.0)), 1)
+    assert averager.push(accel_x_frame((30.0, 30.0)), 4).bins["accel_x"] == (30.0, 30.0)
+    print("dropping to K=1 clears the window instead of averaging across the change: PASS")
+
+
 if __name__ == "__main__":
     try:
         main()
@@ -417,6 +530,14 @@ if __name__ == "__main__":
         test_baseline_is_reread_every_update()
         test_invalid_stopped_margin_rejected()
         print("RESULT: PASS - stopped baselines separate real stopped/running spectra")
+        test_averaging_shrinks_the_floor_jitter_it_is_there_for()
+        test_averaging_does_not_erase_a_real_running_signature()
+        test_smoothing_of_one_is_exactly_the_old_behaviour()
+        test_averager_resets_when_the_frame_shape_changes()
+        test_averager_returns_partial_windows_rather_than_stalling()
+        test_changing_k_to_one_drops_the_buffered_history()
+        print("RESULT: PASS - frame averaging cuts floor jitter without erasing a "
+               "running signature")
     except AssertionError as e:
         print(f"RESULT: FAIL - {e}")
         sys.exit(1)

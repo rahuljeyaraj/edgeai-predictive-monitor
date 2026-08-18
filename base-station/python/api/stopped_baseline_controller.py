@@ -14,14 +14,16 @@ for a machine the operator has already switched back on.
 from typing import Callable, Dict, Optional, Tuple
 
 from registry import Registry
-from stopped_baseline import (DEFAULT_MIN_FRAMES, StoppedBaselineError,
-                               StoppedBaselineSession)
+from stopped_baseline import (DEFAULT_MIN_FRAMES, DEFAULT_SMOOTHING_FRAMES,
+                               StoppedBaselineError, StoppedBaselineSession)
 
 
 class StoppedBaselineController:
-    def __init__(self, registry: Registry, min_frames: int = DEFAULT_MIN_FRAMES):
+    def __init__(self, registry: Registry, min_frames: int = DEFAULT_MIN_FRAMES,
+                 smoothing_frames: int = DEFAULT_SMOOTHING_FRAMES):
         self._registry = registry
         self._min_frames = min_frames
+        self._smoothing_frames = smoothing_frames
         self._sessions: Dict[str, StoppedBaselineSession] = {}
         self._listeners: list = []
 
@@ -43,7 +45,8 @@ class StoppedBaselineController:
         if node_id in self._sessions:
             raise StoppedBaselineError(
                 f"stopped-baseline capture already running for {node_id!r}")
-        session = StoppedBaselineSession(self._registry, node_id, self._min_frames)
+        session = StoppedBaselineSession(self._registry, node_id, self._min_frames,
+                                          smoothing_frames=self._smoothing_frames)
         session.start()  # raises NodeNotFoundError for an unknown node
         self._sessions[node_id] = session
         self._notify(node_id, "collecting", 0)

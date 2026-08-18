@@ -52,6 +52,7 @@ from registry import NodeNotFoundError, Registry
 from led_keeper import StatusLedKeeper
 from wire_protocol import LED_MODE_TO_INT
 from gate import (DEFAULT_RUNNING_FRACTION, DEFAULT_RUNNING_HYSTERESIS,
+                   DEFAULT_SMOOTHING_FRAMES,
                    DEFAULT_STOPPED_MARGIN, MotorStateGate, StoppedBaseline)
 from classifier import ClassifierRegistry
 from manager import PipelineManager
@@ -125,8 +126,13 @@ def build_gate_factory(registry: Registry, threshold: float, debounce_frames: in
                 # threshold it against a running reference on the old,
                 # unsubtracted scale.
                 return None
+            # smoothing_frames or 1: a baseline captured before that
+            # field existed was fitted on unaveraged frames and must keep
+            # being gated on unaveraged frames -- see gate.py's
+            # StoppedBaseline.smoothing_frames.
             return StoppedBaseline(spectrum=entry.stopped_spectrum_ref,
-                                    energy=entry.stopped_energy_ref)
+                                    energy=entry.stopped_energy_ref,
+                                    smoothing_frames=entry.stopped_smoothing_frames or 1)
 
         return MotorStateGate(threshold=threshold, debounce_frames=debounce_frames,
                                energy_ref_provider=energy_ref,
@@ -379,6 +385,17 @@ def main():
                               "real running energy that sits close to the threshold "
                               "flickers the gate and silently drops frames from whatever "
                               "is collecting (see pipeline/gate.py).")
+    parser.add_argument("--gate-smoothing-frames", type=int,
+                         default=DEFAULT_SMOOTHING_FRAMES,
+                         help="How many consecutive frames' spectra to average together "
+                              "before measuring running/stopped energy. Recorded onto "
+                              "each stopped baseline as it is captured, and obeyed "
+                              "per-node from there -- changing this does not alter how "
+                              "an already-captured baseline is gated, it only applies to "
+                              "the next capture (see pipeline/gate.py's "
+                              "StoppedBaseline.smoothing_frames). Averaging across time "
+                              "is what makes a jittery mounting gateable without raising "
+                              "its running threshold.")
     parser.add_argument("--gate-debounce-frames", type=int, default=3)
     parser.add_argument("--status-debounce-frames", type=int, default=3)
     parser.add_argument("--min-commission-frames", type=int, default=50)
@@ -493,7 +510,8 @@ def main():
         registry, models_dir, collection_gate_factory, min_frames=args.min_commission_frames,
         captures_dir=captures_dir)
     capture = CaptureController(registry, captures_dir, collection_gate_factory)
-    stopped_baseline = StoppedBaselineController(registry)
+    stopped_baseline = StoppedBaselineController(
+        registry, smoothing_frames=args.gate_smoothing_frames)
     # The guided flow itself owns no collection of its own -- it sequences
     # the three controllers above plus protection (see setup_controller.py).
     setup = SetupController(registry, commissioning, stopped_baseline=stopped_baseline,
