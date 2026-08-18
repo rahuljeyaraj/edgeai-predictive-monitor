@@ -27,7 +27,7 @@ from typing import List, Optional, Tuple
 from sensor_frame import SensorFrame
 from registry import Registry
 from gate import MotorState, MotorStateGate
-from features import build_feature_vector
+from features import build_feature_vector, muted_channel_names
 
 
 class CaptureError(Exception):
@@ -166,6 +166,14 @@ def save_vectors(captures_dir: str, node_id: str, label: str,
         "condition": condition,
         "timestamp": timestamp,
         "sensor_config": sorted(c.value for c in sensor_config),
+        # Which of those channels were zeroed out of these vectors
+        # (pipeline/features.py's MUTED_CHANNELS). Recorded per file
+        # because it is NOT recoverable from the data: a muted channel's
+        # columns are present and correctly sized, just constant. Without
+        # it, a dataset recorded muted and one recorded unmuted look
+        # identical on disk and would be pooled into one Edge Impulse
+        # training run with two incompatible column meanings.
+        "muted_channels": muted_channel_names(),
         "input_dim": input_dim,
         "vectors": [list(v) for v in vectors],
     }

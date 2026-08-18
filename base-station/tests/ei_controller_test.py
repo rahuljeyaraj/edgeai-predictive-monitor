@@ -31,9 +31,14 @@ from sensor_frame import FrameSource, SensorFrame
 
 NODE_A = "node-a"
 NODE_B = "node-b"
-DIM = 128  # SensorChannel.MIC's spectral bin count (registry._DIM_BY_CHANNEL)
-MIC_SCALARS = {"rms_mic": 1.0, "kurtosis_mic": 1.0, "std_mic": 1.0,
-               "peak_mic": 1.0, "crest_factor_mic": 1.0, "skewness_mic": 1.0}
+DIM = 128  # SensorChannel.ACCEL_X's spectral bin count (registry._DIM_BY_CHANNEL)
+# accel_x as the generic single channel throughout this file: mic is muted
+# by default (features.MUTED_CHANNELS zeroes its columns in every vector
+# build_feature_vector produces), so a mic-only fixture would make every
+# saved capture all zeros and the pooled mu/sigma this file asserts on
+# meaningless. Nothing here is channel-specific.
+ACCEL_X_SCALARS = {"rms_x": 1.0, "kurtosis_x": 1.0, "std_x": 1.0,
+                   "peak_x": 1.0, "crest_factor_x": 1.0, "skewness_x": 1.0}
 
 
 class FakeEiClient:
@@ -133,9 +138,9 @@ class SlowFakeEiClient(FakeEiClient):
         return super().upload_samples(api_key, category, label, samples)
 
 
-def frame(node_id, mic_bins):
+def frame(node_id, accel_x_bins):
     return SensorFrame(node_id=node_id, source=FrameSource.SPI, timestamp=0.0,
-                        bins={"mic": mic_bins}, scalars=MIC_SCALARS)
+                        bins={"accel_x": accel_x_bins}, scalars=ACCEL_X_SCALARS)
 
 
 def running_frame(node_id):
@@ -144,12 +149,12 @@ def running_frame(node_id):
 
 def scalar_frame(node_id, scalar_value):
     """Like running_frame(), but every scalar column is set to
-    scalar_value instead of the fixed MIC_SCALARS -- lets a test control
+    scalar_value instead of the fixed ACCEL_X_SCALARS -- lets a test control
     exactly what a pooled mu/sigma should come out to."""
     bins = tuple(3.0 + 0.001 * i for i in range(DIM))
-    scalars = {name: scalar_value for name in MIC_SCALARS}
+    scalars = {name: scalar_value for name in ACCEL_X_SCALARS}
     return SensorFrame(node_id=node_id, source=FrameSource.SPI, timestamp=0.0,
-                        bins={"mic": bins}, scalars=scalars)
+                        bins={"accel_x": bins}, scalars=scalars)
 
 
 def new_gate():
@@ -201,7 +206,7 @@ def new_env():
 
 def test_link_creates_project_on_first_call():
     registry, projects_path, captures_dir, models_dir, scaling_path = new_env()
-    registry.add(NODE_A, sensor_config=frozenset({SensorChannel.MIC}))
+    registry.add(NODE_A, sensor_config=frozenset({SensorChannel.ACCEL_X}))
     registry.set_device_type(NODE_A, "motor001")
     client = FakeEiClient()
     controller = EIController(registry, projects_path, captures_dir, models_dir, scaling_path, client=client)
@@ -220,7 +225,7 @@ def test_link_creates_project_on_first_call():
 
 def test_link_passes_real_axis_names_to_create_impulse():
     registry, projects_path, captures_dir, models_dir, scaling_path = new_env()
-    registry.add(NODE_A, sensor_config=frozenset({SensorChannel.MIC}))
+    registry.add(NODE_A, sensor_config=frozenset({SensorChannel.ACCEL_X}))
     registry.set_device_type(NODE_A, "motor001")
     client = FakeEiClient()
     controller = EIController(registry, projects_path, captures_dir, models_dir, scaling_path, client=client)
@@ -230,17 +235,17 @@ def test_link_passes_real_axis_names_to_create_impulse():
     create_call = next(c for c in client.calls if c[0] == "create_impulse")
     axes = create_call[4]
     assert len(axes) == DIM + 6, axes
-    assert axes[0] == "mic_bin0", axes[0]
-    assert axes[DIM - 1] == f"mic_bin{DIM - 1}", axes[DIM - 1]
-    assert axes[DIM:] == ["mic_rms", "mic_kurtosis", "mic_std", "mic_peak",
-                           "mic_crest_factor", "mic_skewness"], axes[DIM:]
-    print("link() passes real per-column axis names (mic_binN, mic_rms, ...) "
+    assert axes[0] == "accel_x_bin0", axes[0]
+    assert axes[DIM - 1] == f"accel_x_bin{DIM - 1}", axes[DIM - 1]
+    assert axes[DIM:] == ["accel_x_rms", "accel_x_kurtosis", "accel_x_std", "accel_x_peak",
+                           "accel_x_crest_factor", "accel_x_skewness"], axes[DIM:]
+    print("link() passes real per-column axis names (accel_x_binN, accel_x_rms, ...) "
           "to create_impulse(), not generic feature_N ones: PASS")
 
 
 def test_link_is_idempotent():
     registry, projects_path, captures_dir, models_dir, scaling_path = new_env()
-    registry.add(NODE_A, sensor_config=frozenset({SensorChannel.MIC}))
+    registry.add(NODE_A, sensor_config=frozenset({SensorChannel.ACCEL_X}))
     registry.set_device_type(NODE_A, "motor001")
     client = FakeEiClient()
     controller = EIController(registry, projects_path, captures_dir, models_dir, scaling_path, client=client)
@@ -270,7 +275,7 @@ def test_link_raises_for_device_type_with_no_node():
 
 def test_link_propagates_totp_required():
     registry, projects_path, captures_dir, models_dir, scaling_path = new_env()
-    registry.add(NODE_A, sensor_config=frozenset({SensorChannel.MIC}))
+    registry.add(NODE_A, sensor_config=frozenset({SensorChannel.ACCEL_X}))
     registry.set_device_type(NODE_A, "motor001")
     client = FakeEiClient(totp_code="654321")
     controller = EIController(registry, projects_path, captures_dir, models_dir, scaling_path, client=client)
@@ -287,7 +292,7 @@ def test_link_propagates_totp_required():
 
 def test_unlink_clears_project_and_allows_relink():
     registry, projects_path, captures_dir, models_dir, scaling_path = new_env()
-    registry.add(NODE_A, sensor_config=frozenset({SensorChannel.MIC}))
+    registry.add(NODE_A, sensor_config=frozenset({SensorChannel.ACCEL_X}))
     registry.set_device_type(NODE_A, "motor001")
     client = FakeEiClient()
     controller = EIController(registry, projects_path, captures_dir, models_dir, scaling_path, client=client)
@@ -311,9 +316,9 @@ def test_unlink_clears_project_and_allows_relink():
 
 def test_status_reflects_linked_device_types():
     registry, projects_path, captures_dir, models_dir, scaling_path = new_env()
-    registry.add(NODE_A, sensor_config=frozenset({SensorChannel.MIC}))
+    registry.add(NODE_A, sensor_config=frozenset({SensorChannel.ACCEL_X}))
     registry.set_device_type(NODE_A, "motor001")
-    registry.add(NODE_B, sensor_config=frozenset({SensorChannel.MIC}))
+    registry.add(NODE_B, sensor_config=frozenset({SensorChannel.ACCEL_X}))
     registry.set_device_type(NODE_B, "pump002")
     client = FakeEiClient()
     controller = EIController(registry, projects_path, captures_dir, models_dir, scaling_path, client=client)
@@ -342,9 +347,9 @@ def test_upload_standardizes_using_pooled_device_type_baseline():
     # that label's contribution to the pooled train-only fit -- the pooled
     # mean/stdev below is fully deterministic.
     registry, projects_path, captures_dir, models_dir, scaling_path = new_env()
-    registry.add(NODE_A, sensor_config=frozenset({SensorChannel.MIC}))
+    registry.add(NODE_A, sensor_config=frozenset({SensorChannel.ACCEL_X}))
     registry.set_device_type(NODE_A, "motor001")
-    registry.add(NODE_B, sensor_config=frozenset({SensorChannel.MIC}))
+    registry.add(NODE_B, sensor_config=frozenset({SensorChannel.ACCEL_X}))
     registry.set_device_type(NODE_B, "motor001")
     client = FakeEiClient()
     controller = EIController(registry, projects_path, captures_dir, models_dir, scaling_path, client=client)
@@ -376,9 +381,9 @@ def test_upload_standardizes_using_pooled_device_type_baseline():
 
 def test_upload_only_includes_captures_for_the_given_device_type():
     registry, projects_path, captures_dir, models_dir, scaling_path = new_env()
-    registry.add(NODE_A, sensor_config=frozenset({SensorChannel.MIC}))
+    registry.add(NODE_A, sensor_config=frozenset({SensorChannel.ACCEL_X}))
     registry.set_device_type(NODE_A, "motor001")
-    registry.add(NODE_B, sensor_config=frozenset({SensorChannel.MIC}))
+    registry.add(NODE_B, sensor_config=frozenset({SensorChannel.ACCEL_X}))
     registry.set_device_type(NODE_B, "pump002")
     client = FakeEiClient()
     controller = EIController(registry, projects_path, captures_dir, models_dir, scaling_path, client=client)
@@ -395,7 +400,7 @@ def test_upload_only_includes_captures_for_the_given_device_type():
 
 def test_upload_pools_same_label_across_captures_before_splitting():
     registry, projects_path, captures_dir, models_dir, scaling_path = new_env()
-    registry.add(NODE_A, sensor_config=frozenset({SensorChannel.MIC}))
+    registry.add(NODE_A, sensor_config=frozenset({SensorChannel.ACCEL_X}))
     registry.set_device_type(NODE_A, "motor001")
     client = FakeEiClient()
     controller = EIController(registry, projects_path, captures_dir, models_dir, scaling_path, client=client)
@@ -414,7 +419,7 @@ def test_upload_pools_same_label_across_captures_before_splitting():
 
 def test_upload_never_wipes_project_and_reports_uploading_progress():
     registry, projects_path, captures_dir, models_dir, scaling_path = new_env()
-    registry.add(NODE_A, sensor_config=frozenset({SensorChannel.MIC}))
+    registry.add(NODE_A, sensor_config=frozenset({SensorChannel.ACCEL_X}))
     registry.set_device_type(NODE_A, "motor001")
     client = FakeEiClient()
     controller = EIController(registry, projects_path, captures_dir, models_dir, scaling_path, client=client)
@@ -448,7 +453,7 @@ def test_upload_sends_only_selected_recordings_but_fits_baseline_from_all():
     # recordings even though only one label's capture is selected for
     # upload.
     registry, projects_path, captures_dir, models_dir, scaling_path = new_env()
-    registry.add(NODE_A, sensor_config=frozenset({SensorChannel.MIC}))
+    registry.add(NODE_A, sensor_config=frozenset({SensorChannel.ACCEL_X}))
     registry.set_device_type(NODE_A, "motor001")
     client = FakeEiClient()
     controller = EIController(registry, projects_path, captures_dir, models_dir, scaling_path, client=client)
@@ -482,7 +487,7 @@ def test_upload_sends_only_selected_recordings_but_fits_baseline_from_all():
 
 def test_upload_raises_when_no_recordings_selected():
     registry, projects_path, captures_dir, models_dir, scaling_path = new_env()
-    registry.add(NODE_A, sensor_config=frozenset({SensorChannel.MIC}))
+    registry.add(NODE_A, sensor_config=frozenset({SensorChannel.ACCEL_X}))
     registry.set_device_type(NODE_A, "motor001")
     client = FakeEiClient()
     controller = EIController(registry, projects_path, captures_dir, models_dir, scaling_path, client=client)
@@ -501,7 +506,7 @@ def test_upload_raises_when_no_recordings_selected():
 
 def test_upload_sends_batches_concurrently():
     registry, projects_path, captures_dir, models_dir, scaling_path = new_env()
-    registry.add(NODE_A, sensor_config=frozenset({SensorChannel.MIC}))
+    registry.add(NODE_A, sensor_config=frozenset({SensorChannel.ACCEL_X}))
     registry.set_device_type(NODE_A, "motor001")
     client = SlowFakeEiClient(delay_s=0.3)
     controller = EIController(registry, projects_path, captures_dir, models_dir, scaling_path, client=client)
@@ -529,7 +534,7 @@ def test_upload_sends_batches_concurrently():
 
 def test_upload_raises_for_unlinked_device_type():
     registry, projects_path, captures_dir, models_dir, scaling_path = new_env()
-    registry.add(NODE_A, sensor_config=frozenset({SensorChannel.MIC}))
+    registry.add(NODE_A, sensor_config=frozenset({SensorChannel.ACCEL_X}))
     registry.set_device_type(NODE_A, "motor001")
     client = FakeEiClient()
     controller = EIController(registry, projects_path, captures_dir, models_dir, scaling_path, client=client)
@@ -547,7 +552,7 @@ def test_upload_raises_for_unlinked_device_type():
 
 def test_upload_raises_when_no_local_recordings():
     registry, projects_path, captures_dir, models_dir, scaling_path = new_env()
-    registry.add(NODE_A, sensor_config=frozenset({SensorChannel.MIC}))
+    registry.add(NODE_A, sensor_config=frozenset({SensorChannel.ACCEL_X}))
     registry.set_device_type(NODE_A, "motor001")
     client = FakeEiClient()
     controller = EIController(registry, projects_path, captures_dir, models_dir, scaling_path, client=client)
@@ -564,7 +569,7 @@ def test_upload_raises_when_no_local_recordings():
 
 def test_upload_rejects_concurrent_job_for_same_device_type():
     registry, projects_path, captures_dir, models_dir, scaling_path = new_env()
-    registry.add(NODE_A, sensor_config=frozenset({SensorChannel.MIC}))
+    registry.add(NODE_A, sensor_config=frozenset({SensorChannel.ACCEL_X}))
     registry.set_device_type(NODE_A, "motor001")
     client = FakeEiClient()
     controller = EIController(registry, projects_path, captures_dir, models_dir, scaling_path, client=client)
@@ -585,7 +590,7 @@ def test_upload_rejects_concurrent_job_for_same_device_type():
 
 def test_train_runs_generate_features_then_train_in_order():
     registry, projects_path, captures_dir, models_dir, scaling_path = new_env()
-    registry.add(NODE_A, sensor_config=frozenset({SensorChannel.MIC}))
+    registry.add(NODE_A, sensor_config=frozenset({SensorChannel.ACCEL_X}))
     registry.set_device_type(NODE_A, "motor001")
     client = FakeEiClient()
     controller = EIController(registry, projects_path, captures_dir, models_dir, scaling_path, client=client)
@@ -619,7 +624,7 @@ def test_train_raises_for_unlinked_device_type():
 
 def test_train_propagates_job_failure_and_clears_active_job():
     registry, projects_path, captures_dir, models_dir, scaling_path = new_env()
-    registry.add(NODE_A, sensor_config=frozenset({SensorChannel.MIC}))
+    registry.add(NODE_A, sensor_config=frozenset({SensorChannel.ACCEL_X}))
     registry.set_device_type(NODE_A, "motor001")
     client = FakeEiClient(fail_job="train")
     controller = EIController(registry, projects_path, captures_dir, models_dir, scaling_path, client=client)
@@ -637,7 +642,7 @@ def test_train_propagates_job_failure_and_clears_active_job():
 
 def test_train_rejects_concurrent_job_for_same_device_type():
     registry, projects_path, captures_dir, models_dir, scaling_path = new_env()
-    registry.add(NODE_A, sensor_config=frozenset({SensorChannel.MIC}))
+    registry.add(NODE_A, sensor_config=frozenset({SensorChannel.ACCEL_X}))
     registry.set_device_type(NODE_A, "motor001")
     client = FakeEiClient()
     controller = EIController(registry, projects_path, captures_dir, models_dir, scaling_path, client=client)
@@ -657,7 +662,7 @@ def test_train_rejects_concurrent_job_for_same_device_type():
 
 def test_fetch_model_builds_downloads_and_saves_tflite_file():
     registry, projects_path, captures_dir, models_dir, scaling_path = new_env()
-    registry.add(NODE_A, sensor_config=frozenset({SensorChannel.MIC}))
+    registry.add(NODE_A, sensor_config=frozenset({SensorChannel.ACCEL_X}))
     registry.set_device_type(NODE_A, "motor001")
     save_capture(registry, captures_dir, NODE_A, "bearing")
     save_capture(registry, captures_dir, NODE_A, "healthy")
@@ -699,7 +704,7 @@ def test_fetch_model_raises_for_unlinked_device_type():
 
 def test_model_status_reports_none_before_any_fetch():
     registry, projects_path, captures_dir, models_dir, scaling_path = new_env()
-    registry.add(NODE_A, sensor_config=frozenset({SensorChannel.MIC}))
+    registry.add(NODE_A, sensor_config=frozenset({SensorChannel.ACCEL_X}))
     registry.set_device_type(NODE_A, "motor001")
     client = FakeEiClient()
     controller = EIController(registry, projects_path, captures_dir, models_dir, scaling_path, client=client)
@@ -717,7 +722,7 @@ def test_labels_for_reports_none_before_any_fetch():
 
 def test_fetch_model_rejects_device_type_with_no_local_recordings():
     registry, projects_path, captures_dir, models_dir, scaling_path = new_env()
-    registry.add(NODE_A, sensor_config=frozenset({SensorChannel.MIC}))
+    registry.add(NODE_A, sensor_config=frozenset({SensorChannel.ACCEL_X}))
     registry.set_device_type(NODE_A, "motor001")
     client = FakeEiClient()
     controller = EIController(registry, projects_path, captures_dir, models_dir, scaling_path, client=client)

@@ -13,10 +13,27 @@ Run with PYTHONPATH covering base-station/python/ingestion, base-station/python/
         python3 base-station/tests/features_test.py
 """
 import sys
+from contextlib import contextmanager
 
 from sensor_frame import FrameSource, SensorFrame
 from registry import SensorChannel
-from features import SCALAR_NAMES, build_feature_vector, normalize_bins, standardize_scalars
+import features
+from features import (SCALAR_NAMES, build_feature_vector, muted_channel_names,
+                      normalize_bins, standardize_scalars)
+
+
+@contextmanager
+def _muted(channels):
+    """Temporarily override features.MUTED_CHANNELS. build_feature_vector()
+    reads the module global on every call, so patching it here is enough --
+    no re-import needed."""
+    original = features.MUTED_CHANNELS
+    features.MUTED_CHANNELS = channels
+    try:
+        yield
+    finally:
+        features.MUTED_CHANNELS = original
+
 
 BINS = 128  # SensorChannel.MIC/ACCEL_X/Y/Z's spectral bin count (registry._DIM_BY_CHANNEL)
 
@@ -35,12 +52,15 @@ def frame(mic_bins=None, accel_x_bins=None, scalars=None) -> SensorFrame:
 
 
 def test_dual_sensor_both():
+    """Layout math, muting off -- see test_muted_mic_zeroes_only_mic_columns
+    for what the shipped default does to this same vector."""
     mic_bins = tuple(float(i) for i in range(1, BINS + 1))        # peak 128.0
     accel_x_bins = tuple(float(2 * i) for i in range(1, BINS + 1))  # peak 256.0
     both_scalars = {**MIC_SCALARS, **ACCEL_X_SCALARS}
-    vector, spectral_dim = build_feature_vector(
-        frame(mic_bins, accel_x_bins, both_scalars),
-        frozenset({SensorChannel.MIC, SensorChannel.ACCEL_X}), 268)
+    with _muted(frozenset()):
+        vector, spectral_dim = build_feature_vector(
+            frame(mic_bins, accel_x_bins, both_scalars),
+            frozenset({SensorChannel.MIC, SensorChannel.ACCEL_X}), 268)
 
     assert len(vector) == 268, len(vector)
     assert spectral_dim == 256, spectral_dim
@@ -72,10 +92,13 @@ def test_single_sensor_accel_only():
 
 
 def test_single_sensor_mic_only():
+    """Layout math, muting off (a mic-only node under the shipped default
+    would produce an all-zero vector -- covered separately below)."""
     mic_bins = tuple(float(i) for i in range(1, BINS + 1))
-    vector, spectral_dim = build_feature_vector(
-        frame(mic_bins=mic_bins, scalars=MIC_SCALARS),
-        frozenset({SensorChannel.MIC}), 134)
+    with _muted(frozenset()):
+        vector, spectral_dim = build_feature_vector(
+            frame(mic_bins=mic_bins, scalars=MIC_SCALARS),
+            frozenset({SensorChannel.MIC}), 134)
 
     assert len(vector) == 134, len(vector)
     assert spectral_dim == 128, spectral_dim
@@ -158,6 +181,70 @@ def test_standardize_scalars_round_trip():
     print("test_standardize_scalars_round_trip: PASS")
 
 
+def test_muted_mic_zeroes_only_mic_columns():
+    """The shipped default (features.MUTED_CHANNELS == {MIC}): every mic
+    column -- 128 bins AND its 6 scalars -- is exactly 0.0, while accel_x's
+    columns are bit-identical to what they'd be unmuted. Length, spectral_dim
+    and column order are unchanged, which is the whole point: input_dim, the
+    saved-model layout, the capture-file schema and the Edge Impulse axis
+    list all stay as they were."""
+    mic_bins = tuple(float(i) for i in range(1, BINS + 1))
+    accel_x_bins = tuple(float(2 * i) for i in range(1, BINS + 1))
+    both_scalars = {**MIC_SCALARS, **ACCEL_X_SCALARS}
+    args = (frame(mic_bins, accel_x_bins, both_scalars),
+            frozenset({SensorChannel.MIC, SensorChannel.ACCEL_X}), 268)
+
+    assert features.MUTED_CHANNELS == frozenset({SensorChannel.MIC}), features.MUTED_CHANNELS
+    vector, spectral_dim = build_feature_vector(*args)
+    with _muted(frozenset()):
+        unmuted, unmuted_spectral_dim = build_feature_vector(*args)
+
+    assert len(vector) == 268, len(vector)
+    assert spectral_dim == unmuted_spectral_dim == 256, (spectral_dim, unmuted_spectral_dim)
+    # mic spectral half + mic scalar block: all zero
+    assert vector[:128] == tuple(0.0 for _ in range(128)), vector[:128]
+    assert vector[256:262] == tuple(0.0 for _ in range(6)), vector[256:262]
+    # accel_x spectral half + accel_x scalar block: untouched by muting
+    assert vector[128:256] == unmuted[128:256], vector[128:256]
+    assert vector[262:] == unmuted[262:], vector[262:]
+    print("test_muted_mic_zeroes_only_mic_columns: PASS")
+
+
+def test_muting_does_not_relax_frame_validation():
+    """A muted channel is still required to be present and correctly sized
+    on the wire -- muting is a modelling decision, not a licence to accept a
+    version-skewed firmware that stopped sending mic data. Both the
+    bin-count check and the missing-scalar check must still fire."""
+    accel_x_bins = tuple(float(i) for i in range(1, BINS + 1))
+    both_scalars = {**MIC_SCALARS, **ACCEL_X_SCALARS}
+    config = frozenset({SensorChannel.MIC, SensorChannel.ACCEL_X})
+
+    # mic bins missing entirely -> length check fires
+    try:
+        build_feature_vector(frame(accel_x_bins=accel_x_bins, scalars=both_scalars), config, 268)
+        assert False, "expected ValueError: muted mic bins are still required"
+    except ValueError:
+        pass
+
+    # mic bins present, mic scalars missing -> scalar check fires
+    try:
+        build_feature_vector(
+            frame(mic_bins=accel_x_bins, accel_x_bins=accel_x_bins, scalars=ACCEL_X_SCALARS),
+            config, 268)
+        assert False, "expected ValueError: muted mic scalars are still required"
+    except ValueError:
+        pass
+    print("test_muting_does_not_relax_frame_validation: PASS")
+
+
+def test_muted_channel_names_reports_the_default():
+    """What pipeline/capture.py stamps into every saved capture file."""
+    assert muted_channel_names() == ["mic"], muted_channel_names()
+    with _muted(frozenset()):
+        assert muted_channel_names() == [], muted_channel_names()
+    print("test_muted_channel_names_reports_the_default: PASS")
+
+
 def main():
     test_dual_sensor_both()
     test_single_sensor_accel_only()
@@ -167,8 +254,11 @@ def main():
     test_missing_scalar_key_raises()
     test_all_zero_bins_normalize_to_zero_without_crash()
     test_standardize_scalars_round_trip()
+    test_muted_mic_zeroes_only_mic_columns()
+    test_muting_does_not_relax_frame_validation()
+    test_muted_channel_names_reports_the_default()
     print("RESULT: PASS - feature vectors have correct shape/values for dual- and single-sensor "
-          "nodes, and the scalar tail is standardized correctly")
+          "nodes, the scalar tail is standardized correctly, and muted channels contribute only zeros")
 
 
 if __name__ == "__main__":

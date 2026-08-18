@@ -123,27 +123,33 @@ def main():
 
 
 NODE_ID = "commissioned-node"
-DIM = 128  # SensorChannel.MIC's spectral bin count (registry._DIM_BY_CHANNEL)
+DIM = 128  # SensorChannel.ACCEL_X's spectral bin count (registry._DIM_BY_CHANNEL)
 INPUT_DIM = 134  # + 6-value scalar tail
 HEALTHY_BINS = tuple(1.0 for _ in range(DIM))
 FAULT_BINS = tuple(4.0 if i % 2 == 0 else 1.0 for i in range(DIM))
 
 # Fixed, identical on every synthetic frame below -- these tests are about
 # manager.py's routing/inference/history wiring, not the scalar tail's own
-# signal, so every frame's anomaly-relevant signal comes from mic_bins alone.
-MIC_SCALARS = {"rms_mic": 1.0, "kurtosis_mic": 1.0, "std_mic": 1.0,
-               "peak_mic": 1.0, "crest_factor_mic": 1.0, "skewness_mic": 1.0}
+# signal, so every frame's anomaly-relevant signal comes from accel_x's bins
+# alone.
+#
+# accel_x rather than mic as the generic single channel here (unlike the
+# routing tests above, which model a real mic-only satellite): mic is muted
+# by default (features.MUTED_CHANNELS), so a mic-only fixture would score
+# an all-zero vector and FAULT_BINS could never raise reconstruction error.
+ACCEL_X_SCALARS = {"rms_x": 1.0, "kurtosis_x": 1.0, "std_x": 1.0,
+                   "peak_x": 1.0, "crest_factor_x": 1.0, "skewness_x": 1.0}
 
 
 def scored_frame(bins, timestamp) -> SensorFrame:
     return SensorFrame(node_id=NODE_ID, source=FrameSource.SPI, timestamp=timestamp,
-                        bins={"mic": bins}, scalars=MIC_SCALARS)
+                        bins={"accel_x": bins}, scalars=ACCEL_X_SCALARS)
 
 
 def test_commissioned_node_routes_through_inference_and_writes_history():
     tmp_dir = tempfile.mkdtemp(prefix="pipeline_manager_test_")
     registry = Registry(os.path.join(tmp_dir, "registry.json"))
-    registry.add(NODE_ID, sensor_config=frozenset({SensorChannel.MIC}))
+    registry.add(NODE_ID, sensor_config=frozenset({SensorChannel.ACCEL_X}))
     history = HistoryStore(os.path.join(tmp_dir, "history.db"))
 
     # Commission for real via the gate/features/autoencoder modules
@@ -154,7 +160,7 @@ def test_commissioned_node_routes_through_inference_and_writes_history():
     # will actually score frames with below.
     model = build_autoencoder(INPUT_DIM)
     healthy_vector, _ = build_feature_vector(
-        scored_frame(HEALTHY_BINS, 0.0), frozenset({SensorChannel.MIC}), INPUT_DIM)
+        scored_frame(HEALTHY_BINS, 0.0), frozenset({SensorChannel.ACCEL_X}), INPUT_DIM)
     train_autoencoder(model, [healthy_vector] * 5, epochs=500)
     model_path = os.path.join(tmp_dir, f"{NODE_ID}.pt")
     save_model(model, model_path)
@@ -208,12 +214,12 @@ def test_recommissioning_rebuilds_stale_inference_pipeline():
     muddy which bug this test is actually pinning down."""
     tmp_dir = tempfile.mkdtemp(prefix="pipeline_manager_test_")
     registry = Registry(os.path.join(tmp_dir, "registry.json"))
-    registry.add(NODE_ID, sensor_config=frozenset({SensorChannel.MIC}))
+    registry.add(NODE_ID, sensor_config=frozenset({SensorChannel.ACCEL_X}))
     history = HistoryStore(os.path.join(tmp_dir, "history.db"))
 
     model = build_autoencoder(INPUT_DIM)
     healthy_vector, _ = build_feature_vector(
-        scored_frame(HEALTHY_BINS, 0.0), frozenset({SensorChannel.MIC}), INPUT_DIM)
+        scored_frame(HEALTHY_BINS, 0.0), frozenset({SensorChannel.ACCEL_X}), INPUT_DIM)
     train_autoencoder(model, [healthy_vector] * 5, epochs=500)
     model_path = os.path.join(tmp_dir, f"{NODE_ID}.pt")
     save_model(model, model_path)
@@ -256,12 +262,12 @@ def test_paused_node_is_not_scored():
     so the dashboard's anomaly score kept moving on a "paused" node."""
     tmp_dir = tempfile.mkdtemp(prefix="pipeline_manager_test_")
     registry = Registry(os.path.join(tmp_dir, "registry.json"))
-    registry.add(NODE_ID, sensor_config=frozenset({SensorChannel.MIC}))
+    registry.add(NODE_ID, sensor_config=frozenset({SensorChannel.ACCEL_X}))
     history = HistoryStore(os.path.join(tmp_dir, "history.db"))
 
     model = build_autoencoder(INPUT_DIM)
     healthy_vector, _ = build_feature_vector(
-        scored_frame(HEALTHY_BINS, 0.0), frozenset({SensorChannel.MIC}), INPUT_DIM)
+        scored_frame(HEALTHY_BINS, 0.0), frozenset({SensorChannel.ACCEL_X}), INPUT_DIM)
     train_autoencoder(model, [healthy_vector] * 5, epochs=500)
     model_path = os.path.join(tmp_dir, f"{NODE_ID}.pt")
     save_model(model, model_path)
@@ -312,12 +318,12 @@ def test_resume_resyncs_stale_confirmed_status():
     dashboard/sim status reports healthy."""
     tmp_dir = tempfile.mkdtemp(prefix="pipeline_manager_test_")
     registry = Registry(os.path.join(tmp_dir, "registry.json"))
-    registry.add(NODE_ID, sensor_config=frozenset({SensorChannel.MIC}))
+    registry.add(NODE_ID, sensor_config=frozenset({SensorChannel.ACCEL_X}))
     history = HistoryStore(os.path.join(tmp_dir, "history.db"))
 
     model = build_autoencoder(INPUT_DIM)
     healthy_vector, _ = build_feature_vector(
-        scored_frame(HEALTHY_BINS, 0.0), frozenset({SensorChannel.MIC}), INPUT_DIM)
+        scored_frame(HEALTHY_BINS, 0.0), frozenset({SensorChannel.ACCEL_X}), INPUT_DIM)
     train_autoencoder(model, [healthy_vector] * 5, epochs=500)
     model_path = os.path.join(tmp_dir, f"{NODE_ID}.pt")
     save_model(model, model_path)
@@ -396,7 +402,7 @@ def test_decommission_removes_mid_commissioning_node():
     history = HistoryStore(os.path.join(tmp_dir, "history.db"))
     manager = PipelineManager(registry, default_gate_factory, history_store=history)
 
-    registry.add(NODE_ID, sensor_config=frozenset({SensorChannel.MIC}))
+    registry.add(NODE_ID, sensor_config=frozenset({SensorChannel.ACCEL_X}))
     registry.start_commissioning(NODE_ID)
     manager.route(scored_frame(HEALTHY_BINS, timestamp=0.0))
     history.record(NODE_ID, 0.0, 0.01, registry.get(NODE_ID).status)
@@ -524,7 +530,7 @@ def classifier_env(labels_and_scores):
     manager.py's _maybe_classify() docstring)."""
     tmp_dir = tempfile.mkdtemp(prefix="pipeline_manager_test_")
     registry = Registry(os.path.join(tmp_dir, "registry.json"))
-    registry.add(NODE_ID, sensor_config=frozenset({SensorChannel.MIC}))
+    registry.add(NODE_ID, sensor_config=frozenset({SensorChannel.ACCEL_X}))
     registry.set_device_type(NODE_ID, "motor001")
 
     models_dir = os.path.join(tmp_dir, "ei_models")
@@ -611,7 +617,7 @@ def test_classification_frozen_while_paused():
 
     model = build_autoencoder(INPUT_DIM)
     healthy_vector, _ = build_feature_vector(
-        scored_frame(HEALTHY_BINS, 0.0), frozenset({SensorChannel.MIC}), INPUT_DIM)
+        scored_frame(HEALTHY_BINS, 0.0), frozenset({SensorChannel.ACCEL_X}), INPUT_DIM)
     train_autoencoder(model, [healthy_vector] * 5, epochs=50)
     model_path = os.path.join(tempfile.mkdtemp(prefix="pipeline_manager_test_"), f"{NODE_ID}.pt")
     save_model(model, model_path)

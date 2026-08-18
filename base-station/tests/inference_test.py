@@ -22,23 +22,29 @@ from autoencoder import build_autoencoder, save_model, train_autoencoder
 from inference import InferenceError, InferencePipeline
 
 NODE_ID = "node-1"
-DIM = 128  # SensorChannel.MIC's spectral bin count (registry._DIM_BY_CHANNEL)
+DIM = 128  # SensorChannel.ACCEL_X's spectral bin count (registry._DIM_BY_CHANNEL)
 WARNING_THRESHOLD = 0.05
 FAULT_THRESHOLD = 0.2
 
 # Fixed, identical across every synthetic frame -- these tests are about
 # threshold/debounce/status-transition behavior, not the scalar tail's own
-# signal, so every frame's anomaly-relevant signal comes from mic_bins
+# signal, so every frame's anomaly-relevant signal comes from accel_x_bins
 # alone, same as before this file gained a scalar tail at all. This module
 # builds its model directly (not via commissioning.py), so there's no
 # standardization fit here either -- constant scalars need none.
-MIC_SCALARS = {"rms_mic": 1.0, "kurtosis_mic": 1.0, "std_mic": 1.0,
-               "peak_mic": 1.0, "crest_factor_mic": 1.0, "skewness_mic": 1.0}
+#
+# accel_x rather than mic as the generic single channel: mic is muted by
+# default (features.MUTED_CHANNELS), so a mic-only fixture would feed the
+# model an all-zero vector and no injected "fault" could ever raise
+# reconstruction error. Nothing here is mic-specific -- see
+# features_test.py for the muting behavior itself.
+ACCEL_X_SCALARS = {"rms_x": 1.0, "kurtosis_x": 1.0, "std_x": 1.0,
+                   "peak_x": 1.0, "crest_factor_x": 1.0, "skewness_x": 1.0}
 
 
-def frame(mic_bins) -> SensorFrame:
+def frame(accel_x_bins) -> SensorFrame:
     return SensorFrame(node_id=NODE_ID, source=FrameSource.SPI, timestamp=0.0,
-                        bins={"mic": mic_bins}, scalars=MIC_SCALARS)
+                        bins={"accel_x": accel_x_bins}, scalars=ACCEL_X_SCALARS)
 
 
 # Flat spectrum -- what the model is trained on ("healthy").
@@ -55,15 +61,15 @@ def new_registry_with_model(tmp_dir: str) -> Registry:
     models_dir = tempfile.mkdtemp(dir=tmp_dir)
     registry_path = os.path.join(models_dir, "registry.json")
     registry = Registry(registry_path)
-    registry.add(NODE_ID, sensor_config=frozenset({SensorChannel.MIC}))
+    registry.add(NODE_ID, sensor_config=frozenset({SensorChannel.ACCEL_X}))
 
-    # input_dim_for({MIC}) == 134 (128 spectral + 6 scalar, registry.py's
+    # input_dim_for({ACCEL_X}) == 134 (128 spectral + 6 scalar, registry.py's
     # _DIM_BY_CHANNEL). Built via the real build_feature_vector() (not
     # hand-rolled) so this test trains on exactly what production would --
     # raw, unstandardized (this test builds the model directly, bypassing
     # commissioning.py's standardization fit; constant scalars need none).
     model = build_autoencoder(134)
-    healthy_vector, _ = build_feature_vector(HEALTHY, frozenset({SensorChannel.MIC}), 134)
+    healthy_vector, _ = build_feature_vector(HEALTHY, frozenset({SensorChannel.ACCEL_X}), 134)
     train_autoencoder(model, [healthy_vector] * 5, epochs=500)
     model_path = os.path.join(models_dir, f"{NODE_ID}.pt")
     save_model(model, model_path)
@@ -82,7 +88,7 @@ def new_gate() -> MotorStateGate:
 def test_construction_requires_a_commissioned_model(models_dir):
     registry_path = os.path.join(models_dir, "registry_uncommissioned.json")
     registry = Registry(registry_path)
-    registry.add("node-2", sensor_config=frozenset({SensorChannel.MIC}))
+    registry.add("node-2", sensor_config=frozenset({SensorChannel.ACCEL_X}))
     try:
         InferencePipeline(registry, "node-2", new_gate())
         assert False, "expected InferenceError"
@@ -134,7 +140,7 @@ def test_stopped_frames_are_not_scored(registry):
 def test_frames_for_other_node_ignored(registry):
     pipeline = InferencePipeline(registry, NODE_ID, new_gate())
     other = SensorFrame(node_id="node-other", source=FrameSource.SPI, timestamp=0.0,
-                         bins={"mic": HEALTHY.bins["mic"]}, scalars=MIC_SCALARS)
+                         bins={"accel_x": HEALTHY.bins["accel_x"]}, scalars=ACCEL_X_SCALARS)
     assert pipeline.handle_frame(other) is None
     print("frames for a different node_id are ignored: PASS")
 

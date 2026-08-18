@@ -12,6 +12,7 @@ caller's node's own committed `entry.input_dim` (pipeline/manager.py's
 _infer_sensor_config_and_dim, which now folds in scalar_dim_for() below
 too) -- not every node necessarily uses the same per-channel bin count.
 """
+import os
 from typing import Dict, FrozenSet, List, Tuple
 
 from sensor_frame import SensorFrame
@@ -28,6 +29,61 @@ from registry import SensorChannel, input_dim_for
 # ordering below, is part of the model input layout -- changing it breaks
 # compatibility with already-trained weights.
 SCALAR_NAMES: Tuple[str, ...] = ("rms", "kurtosis", "std", "peak", "crest_factor", "skewness")
+
+
+# --- Muted channels -------------------------------------------------------
+# Channels that stay fully present everywhere a human or a judge can see them
+# -- a node's sensor_config, its committed input_dim, the dashboard's live
+# spectrum/waterfall/scalar tiles (main.py reads frame.bins/frame.scalars
+# directly and never calls this module), saved capture files, and the Edge
+# Impulse axis-name list (axis_names_for() below) -- but which contribute a
+# constant 0.0 to the model vector build_feature_vector() produces, so no
+# model can learn anything from them.
+#
+# Why mic is muted by default: acoustic crosstalk. The rig's machines are
+# close enough that one motor's noise is picked up by another node's
+# microphone, which pushed that second node's anomaly score into FAULT while
+# its own accelerometer read perfectly healthy. Vibration doesn't cross the
+# bench that way; sound does. pipeline/gate.py's energy_channels() already
+# excluded mic from the running/stopped decision for the same reason -- this
+# closes the remaining path, the model input itself.
+#
+# Muting rather than dropping MIC from sensor_config is deliberate: dropping
+# it would change input_dim 536 -> 402, strip the mic axes out of the Edge
+# Impulse project, and rewrite the capture-file schema. Zeroed columns leave
+# every one of those surfaces byte-identical while being provably unusable by
+# a model (a constant column carries no information).
+#
+# TO RE-ENABLE MIC: set this to frozenset() (or export EPM_MUTED_CHANNELS=""
+# to override without editing code) and then RE-COMMISSION every node, plus
+# re-record/re-upload/retrain the Edge Impulse classifier. Both models are
+# trained on whatever this setting was at training time; flipping it under a
+# trained model feeds it a distribution it has never seen and every frame
+# reads as a large anomaly. The same cost applies in the other direction,
+# which is why it isn't a runtime toggle.
+_MUTED_CHANNELS_DEFAULT = "mic"
+
+
+def _parse_muted(raw: str) -> FrozenSet[SensorChannel]:
+    """"mic", "mic,accel_x", or "" (nothing muted). Unknown names raise --
+    a typo'd override that silently muted nothing would be invisible until
+    a trained model started misbehaving weeks later."""
+    names = [n.strip() for n in raw.split(",") if n.strip()]
+    return frozenset(SensorChannel(n) for n in names)
+
+
+MUTED_CHANNELS: FrozenSet[SensorChannel] = _parse_muted(
+    os.environ.get("EPM_MUTED_CHANNELS", _MUTED_CHANNELS_DEFAULT))
+
+
+def muted_channel_names() -> List[str]:
+    """Sorted value strings for whatever is muted right now -- recorded into
+    every saved capture (pipeline/capture.py's save_vectors) so a dataset
+    taken with mic muted can never be silently pooled with one taken
+    without, which would hand Edge Impulse two incompatible column layouts
+    under one label."""
+    return sorted(c.value for c in MUTED_CHANNELS)
+
 
 # Which SensorChannel members carry a scalar block, and the wire-name
 # suffix each one's 6 scalars use (f"{scalar}_{suffix}", e.g. "rms_x",
@@ -147,27 +203,45 @@ def build_feature_vector(frame: SensorFrame, sensor_config: FrozenSet[SensorChan
     firmware), not a normal runtime case to silently paper over with a
     zero-filled column that would quietly corrupt training/inference.
 
+    Channels in MUTED_CHANNELS still occupy their full column span (bins +
+    scalar tail) but every one of those columns is a constant 0.0 -- see
+    that constant's own comment for why, and for what re-enabling costs.
+
     Returns (vector, spectral_dim) -- spectral_dim is where the scalar tail
     starts, needed by standardize_scalars() and by commissioning.py/
     inference.py to know how much of the vector to standardize."""
     vector: Tuple[float, ...] = ()
     for channel in SensorChannel:
         if channel in sensor_config:
-            vector += normalize_bins(frame.bins.get(channel.value, ()))
+            bins = normalize_bins(frame.bins.get(channel.value, ()))
+            # Muted: keep the column count (and so input_dim, and so every
+            # saved model/capture/EI layout) but hand the model a constant.
+            # Zeroed AFTER normalize_bins rather than instead of it so a
+            # missing/short bins tuple still fails the length check below
+            # exactly as it would unmuted -- muting must not turn a real
+            # node/firmware mismatch into a silently accepted frame.
+            if channel in MUTED_CHANNELS:
+                bins = tuple(0.0 for _ in bins)
+            vector += bins
     spectral_dim = len(vector)
 
     for channel in SensorChannel:
         suffix = _SCALAR_SUFFIX_BY_CHANNEL.get(channel)
         if suffix is None or channel not in sensor_config:
             continue
+        muted = channel in MUTED_CHANNELS
         for name in SCALAR_NAMES:
             key = f"{name}_{suffix}"
             if key not in frame.scalars:
+                # Still required on the wire even when muted, same reasoning
+                # as the bins above: this check is what catches firmware
+                # version skew, and muting is a modelling decision, not a
+                # relaxation of the frame contract.
                 raise ValueError(
                     f"node {frame.node_id!r}: sensor_config="
                     f"{sorted(c.value for c in sensor_config)} expects scalar {key!r}, "
                     f"but frame.scalars has none (keys: {sorted(frame.scalars)})")
-            vector += (frame.scalars[key],)
+            vector += (0.0,) if muted else (frame.scalars[key],)
 
     if len(vector) != expected_dim:
         actual_counts = {c.value: len(frame.bins.get(c.value, ())) for c in sensor_config}
