@@ -221,13 +221,21 @@ class CommissioningSession:
         altogether until the next start_condition() -- the pause an operator
         needs to change the machine's load between conditions (S2.3).
 
-        Idempotent while already paused. Raises (leaving the condition open,
-        same retry shape as stop_collecting()) if it hasn't got min_frames
-        yet: the "no half conditions in the training batch" rule lives in
-        _close_condition() and is the same rule here."""
+        Idempotent while already paused. Unlike start_condition() and
+        stop_collecting(), this never raises for too few frames: it's the
+        operator's one guaranteed way to stop, including a condition stuck
+        at zero frames because the gate never confirmed RUNNING (a bad load
+        setting, a miswired sensor, ...). Below min_frames the attempt is
+        discarded rather than banked -- the "no half conditions in the
+        training batch" rule from _close_condition() still holds, it's just
+        enforced by throwing the attempt away instead of refusing to stop."""
         if self._paused:
             return
-        self._close_condition()
+        if len(self._collected) >= self._min_frames:
+            self._close_condition()
+        else:
+            self._collected = []
+            self._energies = []
         self._paused = True
 
     def _close_condition(self) -> None:

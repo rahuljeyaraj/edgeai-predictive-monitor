@@ -370,10 +370,9 @@ const Setup = (() => {
     const controls = current
       ? `<p class="setup-step__${current.frames >= step.min_frames ? "ok" : "live"}">${current.frames >= step.min_frames
              ? `Enough recorded for “${escapeHtml(titleCase(current.name))}”. Press Stop before you change the load.`
-             : `Recording “${escapeHtml(titleCase(current.name))}”…`}</p>
+             : `Recording “${escapeHtml(titleCase(current.name))}”… Press Stop to cancel this attempt.`}</p>
          <div class="setup-step__actions">
-           <button type="button" class="btn-label btn-label--save" data-action="setup_stop_condition"
-                   ${current.frames >= step.min_frames ? "" : "disabled"}>Stop</button>
+           <button type="button" class="btn-label btn-label--save" data-action="setup_stop_condition">Stop</button>
            <button type="button" class="btn-label btn-label--ready" data-action="setup_advance"
                    ${enough ? "" : "disabled"}>Train</button>
          </div>`
@@ -685,8 +684,10 @@ const Setup = (() => {
     }
     if (action === "setup_stop_condition") {
       // Ends this condition without starting the next one, so the load can be
-      // changed with nothing being recorded. A 409 (too few readings) comes
-      // back inline on the step, which is why it goes through post().
+      // changed with nothing being recorded. Always succeeds, even at 0
+      // frames (e.g. the gate never confirmed RUNNING) -- below min_frames
+      // the attempt is discarded rather than banked, see
+      // CommissioningSession.stop_condition().
       run(nodeId, async () => {
         await post(nodeId, `/nodes/${nodeId}/setup/condition/stop`);
       });

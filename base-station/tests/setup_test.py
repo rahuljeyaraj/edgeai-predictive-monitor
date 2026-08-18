@@ -315,14 +315,19 @@ def test_collection_stops_between_conditions(h: Harness):
     assert step["collecting"] and not step["paused"], step
     assert step["conditions"][-1] == {"name": "half_load", "frames": 3}, step
 
-    # A condition that hasn't got min_frames can't be banked by Stop either --
-    # the same rule that guards naming the next one, in the same place.
-    try:
-        h.setup.stop_condition(NODE_ID)
-    except SetupError:
-        pass
-    else:
-        raise AssertionError("Stop banked a half-collected condition")
+    # A condition that hasn't got min_frames yet must still be stoppable --
+    # Stop is the operator's one guaranteed way out, including a condition
+    # stuck at 0 frames because the gate never confirmed RUNNING. Below
+    # min_frames the attempt is discarded rather than banked, not left open.
+    h.setup.stop_condition(NODE_ID)
+    step = next(s for s in h.setup.snapshot(NODE_ID)["steps"] if s["id"] == STEP_CONDITIONS)
+    assert step["paused"] and not step["collecting"], step
+    assert [c["name"] for c in step["conditions"]] == ["no_load", "full_load"], \
+        "a half-collected condition was banked instead of discarded"
+
+    # Retrying under the same name (or a fresh recording of it) collects it
+    # from scratch.
+    h.setup.add_condition(NODE_ID, "Half load")
     h.feed(LOUD_BINS, MIN_FRAMES)
     h.setup.stop_condition(NODE_ID)
     step = next(s for s in h.setup.snapshot(NODE_ID)["steps"] if s["id"] == STEP_CONDITIONS)
