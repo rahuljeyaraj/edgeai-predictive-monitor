@@ -17,12 +17,23 @@ plumbing.
 Two responsibilities:
 
 1. A monitor loop (runs for the daemon's whole life, not just at boot):
-   whenever wlan0 isn't genuinely joined to a real network, bring up the
-   open "Hotspot" NM connection profile that provision-wifi.sh creates
+   whenever wlan0 is PERSISTENTLY not joined to a real network, bring up
+   the open "Hotspot" NM connection profile that provision-wifi.sh creates
    once (this daemon only ever activates/deactivates it, never creates
    it) -- so a technician always has a way in, no manual factory reset.
    The same one check covers "no saved credentials yet" (fresh board),
    "join attempt failed", and "was connected, dropped later."
+
+   "Persistently" is load-bearing, and was the subject of a real bug (see
+   _is_busy() and monitor_loop() for the full account): an in-flight
+   activation is not the same thing as a down radio, and treating it as
+   one let the very first monitor tick after boot kill NM's own autoconnect
+   mid-DHCP and strand the board in AP mode -- indistinguishable, from
+   outside, from the board having forgotten its credentials on every
+   reboot. The loop now ignores activations in progress, requires several
+   consecutive genuinely-down ticks (plus a boot grace period while
+   credentials exist) before falling back, and periodically retries the
+   saved network from AP mode so the fallback isn't a one-way door.
 
 2. A one-request-per-connection JSON socket API (same wire-protocol shape
    as spi_bridge.py/gpu_bridge.py -- one line of JSON in, one line of
@@ -97,6 +108,35 @@ HOTSPOT_CON_NAME = "Hotspot"
 # status_payload()'s comment on why the two must not be conflated).
 HOTSPOT_SSID = "EPM-BaseStation"
 MONITOR_INTERVAL_S = 10
+# NM device states (NMDeviceState). 40..90 are the intermediate stages of an
+# activation that is actively in flight (prepare/config/need-auth/ip-config/
+# ip-check/secondaries); 110 is deactivating. None of these are "down" -- see
+# _is_busy() and monitor_loop() for why conflating them with down was the
+# whole bug.
+NM_STATE_ACTIVATED = 100
+NM_STATE_DEACTIVATING = 110
+_NM_ACTIVATING_STATES = range(40, 100)
+# How many CONSECUTIVE monitor ticks must see a genuinely-down radio before
+# the Hotspot is forced up. At MONITOR_INTERVAL_S=10 that is ~30s of real
+# downtime -- long enough that a slow join, a DHCP retry or a momentary
+# roam never costs a technician the network, short enough that a truly
+# unreachable board is back to offering its portal within half a minute.
+DOWN_TICKS_BEFORE_AP = 3
+# Extra headroom at daemon start, and ONLY when credentials are already
+# saved: wlan0 typically isn't even available yet when this daemon starts
+# (systemd brings it up alongside NetworkManager), and NM's own boot
+# autoconnect took ~11s to reach ip-config on this board. Applied on top of
+# the debounce above, so a saved network gets a genuinely fair first
+# attempt. A board with NO saved credentials skips this entirely -- it has
+# nothing to wait for and should offer its portal immediately.
+BOOT_GRACE_S = 60
+# While parked in AP fallback WITH credentials saved, periodically drop the
+# Hotspot and retry the real network. Without this the board could only
+# ever leave AP mode by a technician re-submitting credentials it already
+# had -- e.g. after a power cut where the board finished booting before the
+# router did, it would sit in AP mode indefinitely with a perfectly good
+# network available.
+AP_RETRY_INTERVAL_S = 180
 CONNECT_TIMEOUT_S = 45
 # A real rescan (not just reading nmcli's cached scan cache) takes a few
 # seconds on this radio -- generous headroom over that.
@@ -106,6 +146,9 @@ SCAN_TIMEOUT_S = 15
 RADIO_SETTLE_S = 2
 NMCLI_TIMEOUT_S = 10
 MAX_REQUEST_BYTES = 4096
+# Written by the dnsmasq instance NM spawns for the Hotspot's "shared"
+# ipv4.method -- see _portal_client_connected().
+LEASE_FILE = f"/var/lib/NetworkManager/dnsmasq-{IFACE}.leases"
 
 _nm_lock = threading.Lock()
 
@@ -142,11 +185,72 @@ def _device_state():
 
 
 def _is_connected_to_real_network(state_code, connection):
-    return state_code == 100 and connection is not None and connection != HOTSPOT_CON_NAME
+    return (state_code == NM_STATE_ACTIVATED and connection is not None
+            and connection != HOTSPOT_CON_NAME)
 
 
 def _hotspot_active(state_code, connection):
-    return state_code == 100 and connection == HOTSPOT_CON_NAME
+    return state_code == NM_STATE_ACTIVATED and connection == HOTSPOT_CON_NAME
+
+
+def _is_busy(state_code):
+    """True while an activation is in flight -- NOT down, even though it
+    isn't connected either.
+
+    This distinction is the fix for the bug this whole debounce exists for
+    (confirmed from the board's own boot journal, 2026-08-18): NM
+    auto-activated the saved network 11s into boot, reached ip-config and
+    started its DHCP transaction -- and one second later the monitor tick
+    read "state != 100, therefore down" and forced the Hotspot up, which NM
+    logged as `device (wlan0): disconnecting for new activation request`.
+    The join died mid-DHCP, the Hotspot stayed up (ensure_hotspot_up()
+    returns early once it is), and the board never retried. From outside it
+    looked exactly like the base station had forgotten its WiFi password on
+    every reboot; the credentials were in fact still on disk and perfectly
+    valid the whole time."""
+    return state_code in _NM_ACTIVATING_STATES or state_code == NM_STATE_DEACTIVATING
+
+
+def _saved_sta_profiles():
+    """Names of saved wifi connection profiles other than our own Hotspot,
+    i.e. real networks NM can autoconnect to. Empty means a fresh board
+    that has never been given credentials."""
+    result = _nmcli(["-t", "-f", "NAME,TYPE", "connection", "show"])
+    names = []
+    for line in result.stdout.splitlines():
+        name, _, con_type = line.rpartition(":")
+        if con_type == "802-11-wireless" and name != HOTSPOT_CON_NAME:
+            names.append(name)
+    return names
+
+
+def _portal_client_connected():
+    """True if some device currently holds an unexpired DHCP lease from the
+    Hotspot -- i.e. a technician is plausibly sitting on the setup page
+    right now. Used only to hold off the periodic auto-rejoin retry below,
+    which would otherwise yank the AP out from under them mid-form.
+
+    NM's "shared" ipv4.method spawns its own dnsmasq per interface and
+    writes leases here. Unreadable or absent (never activated, different NM
+    build) is treated as "nobody there": the retry is the whole point of
+    that code path, so an unknown answer must not disable it permanently."""
+    try:
+        with open(LEASE_FILE, "r") as handle:
+            lines = handle.read().splitlines()
+    except OSError:
+        return False
+    now = time.time()
+    for line in lines:
+        # "<expiry-epoch> <mac> <ip> <hostname> <client-id>"
+        parts = line.split()
+        if not parts:
+            continue
+        try:
+            if float(parts[0]) > now:
+                return True
+        except ValueError:
+            continue
+    return False
 
 
 def ensure_hotspot_up():
@@ -352,12 +456,91 @@ def run_captive_portal_redirect():
         server.serve_forever()
 
 
+def try_saved_network():
+    """Drops the Hotspot and hands the radio back to NM so it can
+    autoconnect to a saved network. Called from AP fallback only. Returns
+    True if a real network was joined.
+
+    `connection up` on the saved profile explicitly, rather than merely
+    taking the Hotspot down and hoping NM's autoconnect notices: NM will
+    normally autoconnect on its own, but an explicit activation makes the
+    outcome observable here so the Hotspot can be restored immediately on
+    failure rather than after another whole monitor interval of no network
+    and no portal."""
+    profiles = _saved_sta_profiles()
+    if not profiles:
+        return False
+    with _nm_lock:
+        state_code, connection, _ = _device_state()
+        if not _hotspot_active(state_code, connection):
+            return False  # something changed while we waited on the lock
+        _nmcli(["connection", "down", HOTSPOT_CON_NAME])
+        time.sleep(RADIO_SETTLE_S)
+        for profile in profiles:
+            try:
+                result = _nmcli(["connection", "up", profile, "ifname", IFACE],
+                                 timeout=CONNECT_TIMEOUT_S)
+            except subprocess.TimeoutExpired:
+                continue
+            if result.returncode == 0:
+                print(f"wifi_bridge: rejoined saved network {profile!r} from AP fallback",
+                      flush=True)
+                return True
+    ensure_hotspot_up()  # takes _nm_lock itself, same as handle_connect's call
+    return False
+
+
 def monitor_loop():
+    """Brings the Hotspot up whenever the radio is genuinely, persistently
+    down -- and, crucially, NOT merely whenever it is "not connected right
+    this instant."
+
+    Three guards, each closing a distinct way the old one-line version
+    ("not connected -> force AP") broke a working board:
+
+      1. _is_busy(): never interrupt an activation already in flight. This
+         is the one that made every reboot look like lost credentials.
+      2. A consecutive-tick counter plus a boot grace period: a single
+         unlucky sample, a roam, or a slow DHCP no longer costs the
+         network. The counter resets the moment the radio is up or busy,
+         so only sustained downtime falls back.
+      3. A periodic retry of the saved network while parked in AP mode, so
+         AP fallback is recoverable on its own instead of being a one-way
+         door that needs a technician.
+
+    A board with no saved credentials at all short-circuits every one of
+    these: it has nothing to protect and should offer its portal at once."""
+    down_ticks = 0
+    started_at = time.time()
+    hotspot_since = None
     while True:
         try:
             state_code, connection, _ = _device_state()
-            if not _is_connected_to_real_network(state_code, connection):
-                ensure_hotspot_up()
+            has_saved = bool(_saved_sta_profiles())
+
+            if _is_connected_to_real_network(state_code, connection):
+                down_ticks = 0
+                hotspot_since = None
+            elif _hotspot_active(state_code, connection):
+                down_ticks = 0
+                if hotspot_since is None:
+                    hotspot_since = time.time()
+                elif (has_saved and time.time() - hotspot_since >= AP_RETRY_INTERVAL_S
+                        and not _portal_client_connected()):
+                    if try_saved_network():
+                        hotspot_since = None
+                    else:
+                        hotspot_since = time.time()  # restart the retry clock
+            elif _is_busy(state_code) and has_saved:
+                # A join is in progress -- leave the radio alone entirely.
+                down_ticks = 0
+            else:
+                hotspot_since = None
+                down_ticks += 1
+                grace_over = (not has_saved) or (time.time() - started_at >= BOOT_GRACE_S)
+                threshold = DOWN_TICKS_BEFORE_AP if has_saved else 1
+                if down_ticks >= threshold and grace_over:
+                    ensure_hotspot_up()
         except Exception as exc:  # noqa: BLE001 - deliberately broad, see spi_bridge.py
             print(f"wifi_bridge: monitor tick failed: {exc}", file=sys.stderr, flush=True)
         time.sleep(MONITOR_INTERVAL_S)

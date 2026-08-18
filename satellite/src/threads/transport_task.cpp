@@ -446,19 +446,35 @@ static void transport_task_entry(void *arg)
 			}
 
 			if (!mqtt_client.connected()) {
-				if (mqtt_led != MQTT_LED_DOWN) {
-					hal_display_rgb_set(RGB_MQTT_DOWN, RGB_DISPLAY_CONST, 0);
-					mqtt_led = MQTT_LED_DOWN;
-				}
+				/* Attempt FIRST, paint blue only if it actually
+				 * fails. Painting RGB_MQTT_DOWN before the first
+				 * attempt (as this used to) meant every single boot
+				 * and every WiFi recovery flashed "broker
+				 * unreachable" blue for the few hundred ms the
+				 * normal, successful connect takes - a wrong color,
+				 * shown at exactly the moment an operator is
+				 * looking at a freshly-powered node. The ring stays
+				 * dark until we genuinely know something instead. */
 				connect_mqtt();
 				if (!mqtt_client.connected()) {
+					if (mqtt_led != MQTT_LED_DOWN) {
+						hal_display_rgb_set(RGB_MQTT_DOWN, RGB_DISPLAY_CONST, 0);
+						mqtt_led = MQTT_LED_DOWN;
+					}
 					vTaskDelay(pdMS_TO_TICKS(MQTT_RECONNECT_BACKOFF_MS));
 					break;
 				}
 			}
 
-			/* No dedicated "connected" color here either - MQTT is up, so
-			 * the base station's own STATUS_LED push is seconds away. */
+			/* No dedicated "connected" color here either - MQTT is up,
+			 * and connect_mqtt() has just (re)subscribed to the cmd
+			 * topic, so the base station's RETAINED STATUS_LED (see
+			 * mqtt_publisher.py's publish_status) lands within
+			 * milliseconds with the real NodeStatus color. That
+			 * retained replay is what makes "no connected color of our
+			 * own" safe: before it, a node that reconnected after the
+			 * last status change was never sent anything and sat on a
+			 * stale local color indefinitely. */
 			mqtt_led = MQTT_LED_UP;
 
 			xSemaphoreTake(mqtt_mutex, portMAX_DELAY);

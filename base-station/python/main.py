@@ -49,7 +49,7 @@ from typing import Optional
 from sensor_frame import BASE_STATION_NODE_ID, SensorFrame
 from spi_reader import SpiConsumer
 from registry import NodeNotFoundError, Registry
-from status_color import color_for
+from led_keeper import StatusLedKeeper
 from wire_protocol import LED_MODE_TO_INT
 from gate import (DEFAULT_RUNNING_FRACTION, DEFAULT_RUNNING_HYSTERESIS,
                    DEFAULT_STOPPED_MARGIN, MotorStateGate, StoppedBaseline)
@@ -147,34 +147,42 @@ def run_mqtt(host: str, port: int, on_frame, stop_event: threading.Event,
     subscriber.stop()
 
 
-def wire_status_led_publishing(registry: Registry, host: str, port: int):
-    """Pushes a STATUS_LED command to a node's own `epm/<node_id>/cmd` topic
-    every time Registry.on_status_change fires for it, so a satellite node's
-    status LED always reflects what the dashboard currently shows without
-    ever polling the REST API. Returns the MqttPublisher so callers can
-    stop() it on shutdown."""
+def wire_status_led_publishing(keeper, host: str, port: int):
+    """Registers the satellite-node ring sink on `keeper`: a STATUS_LED
+    command goes to a node's own `epm/<node_id>/cmd` topic whenever that
+    node's status color differs from what was last pushed there, so a
+    satellite's ring always reflects what the dashboard shows without ever
+    polling the REST API. Returns the MqttPublisher so callers can stop()
+    it on shutdown.
+
+    Filters out BASE_STATION_NODE_ID: this board has no MQTT client
+    subscribed to its own cmd topic, so its ring is driven locally instead
+    (wire_local_status_led below)."""
     from mqtt_publisher import MqttPublisher
 
     publisher = MqttPublisher(host, port)
 
-    def on_status_change(node_id: str, status) -> None:
-        led = color_for(status)
+    def push(node_id: str, led) -> None:
         publisher.publish_status(node_id, led.rgb, led.mode, led.period_ms)
 
-    registry.on_status_change(on_status_change)
+    keeper.add_node_sink("mqtt-ring", push, accepts=lambda n: n != BASE_STATION_NODE_ID)
     return publisher
 
 
-def wire_local_status_led(registry: Registry) -> None:
+def wire_local_status_led(keeper) -> None:
     """On-device analog of wire_status_led_publishing for this board's own
     RGB ring: base_station has no MQTT client to receive its own
     epm/base_station/cmd command back, so instead of publishing over MQTT
     this drives the ring directly through the local Bridge RPC link
     (rgb_display.cpp's `set_rgb` provider, the same one spi_reader.py's
-    spi_arm calls prove is reachable from this process). Filters to
-    BASE_STATION_NODE_ID because Registry.on_status_change fires for every
-    node, satellite nodes included, and those already get their LED over
-    MQTT."""
+    spi_arm calls prove is reachable from this process).
+
+    Blocking Bridge.call is correct here even though it waits on
+    BRIDGE_LOCK (the lock the SPI consumer takes on every frame pull):
+    this runs on the keeper's own thread, never on the frame-ingestion
+    thread, and letting the call raise is what tells the keeper to retry --
+    which is what gets the ring lit at all when main.py starts before the
+    MCU has finished booting."""
     try:
         from arduino.app_utils import Bridge
     except ImportError:
@@ -187,30 +195,11 @@ def wire_local_status_led(registry: Registry) -> None:
 
     from bridge_lock import BRIDGE_LOCK
 
-    def on_status_change(node_id: str, status) -> None:
-        if node_id != BASE_STATION_NODE_ID:
-            return
-        led = color_for(status)
+    def push(node_id: str, led) -> None:
+        with BRIDGE_LOCK:
+            Bridge.call("set_rgb", f"{led.rgb.lstrip('#')},{LED_MODE_TO_INT[led.mode]},{led.period_ms}")
 
-        def push() -> None:
-            try:
-                with BRIDGE_LOCK:
-                    Bridge.call("set_rgb", f"{led.rgb.lstrip('#')},{LED_MODE_TO_INT[led.mode]},{led.period_ms}")
-            except Exception:
-                logger.exception("failed to push local status LED for %r", node_id)
-
-        # Off the frame-ingestion thread, same reason telegram_alerts.py's
-        # on_status_change backgrounds its send(): this fires from inside
-        # PipelineManager.route()'s per-node lock, on whichever thread
-        # routed the triggering frame (spi_reader's SPI-consumer thread, or
-        # the MQTT client thread for a satellite node). Bridge.call blocks
-        # on BRIDGE_LOCK -- the same lock the SPI-consumer thread grabs on
-        # every single frame pull -- so a synchronous call here would stall
-        # ingestion (and every dashboard broadcast) fleet-wide, not just
-        # for this node, until it clears.
-        threading.Thread(target=push, daemon=True).start()
-
-    registry.on_status_change(on_status_change)
+    keeper.add_node_sink("local-ring", push, accepts=lambda n: n == BASE_STATION_NODE_ID)
 
 
 # Firmware defaults scroll_speed to 0 = static/no-scroll (matrix_display.cpp),
@@ -220,14 +209,14 @@ def wire_local_status_led(registry: Registry) -> None:
 MATRIX_SCROLL_SPEED_MS = 150
 
 
-def wire_local_matrix_text(registry: Registry) -> None:
+def wire_local_matrix_text(keeper) -> None:
     """Drives this board's own 8x13 LED matrix with a rolling fleet-health
     summary (docs/LED_MATRIX_STATUS_PLAN.md) -- a glanceable, no-app-needed
     readout physically on the base station. Sibling to wire_local_status_led:
     same local-Bridge-RPC push (set_matrix_text instead of set_rgb), same
-    desktop-dev ImportError guard. Unlike the RGB ring (this board's OWN
-    status only), the matrix shows FLEET counts, so it rebuilds on *every*
-    node's status change, not just BASE_STATION_NODE_ID's."""
+    desktop-dev ImportError guard. Registered as a FLEET sink rather than a
+    per-node one because the matrix shows fleet counts, so its text is a
+    function of every node's status at once, not of any single node's."""
     try:
         from arduino.app_utils import Bridge
     except ImportError:
@@ -240,30 +229,18 @@ def wire_local_matrix_text(registry: Registry) -> None:
     from bridge_lock import BRIDGE_LOCK
     from matrix_status import fleet_status_text
 
-    def on_status_change(node_id: str, status) -> None:
-        text = fleet_status_text(registry.list().values())
+    def push(text: str) -> None:
+        with BRIDGE_LOCK:
+            # Scroll speed first, then text: set_matrix_text resets the
+            # scroll position (and any new text restarts the scroll), so
+            # the speed must already be in effect when the text lands --
+            # the same ordering display_matrix_test.py relies on. Both args
+            # go over the wire as strings; integer RPC params fail
+            # Arduino_RPClite's type-check (see matrix_display.cpp).
+            Bridge.call("set_matrix_scroll_speed", str(MATRIX_SCROLL_SPEED_MS))
+            Bridge.call("set_matrix_text", text)
 
-        def push() -> None:
-            try:
-                with BRIDGE_LOCK:
-                    # Scroll speed first, then text: set_matrix_text resets
-                    # the scroll position (and any new text restarts the
-                    # scroll), so the speed must already be in effect when
-                    # the text lands -- the same ordering
-                    # display_matrix_test.py relies on. Both args go over
-                    # the wire as strings; integer RPC params fail
-                    # Arduino_RPClite's type-check (see matrix_display.cpp).
-                    Bridge.call("set_matrix_scroll_speed", str(MATRIX_SCROLL_SPEED_MS))
-                    Bridge.call("set_matrix_text", text)
-            except Exception:
-                logger.exception("failed to push fleet status to LED matrix")
-
-        # See wire_local_status_led's comment above: this fires on the
-        # frame-ingestion thread (for every node's status change, not just
-        # the base station's own) and must never block it on BRIDGE_LOCK.
-        threading.Thread(target=push, daemon=True).start()
-
-    registry.on_status_change(on_status_change)
+    keeper.add_fleet_sink("local-matrix", render=fleet_status_text, push=push)
 
 
 def build_telegram_alerts(registry: Registry, alert_store: AlertStore, on_subscriber_change):
@@ -428,12 +405,17 @@ def main():
     perf_monitor = PerformanceMonitor()
     alert_store = AlertStore(os.path.join(args.data_dir, "alerts.json"))
 
+    # Every physical readout is reconciled against registry state by this
+    # one keeper rather than driven from status-change events alone -- see
+    # led_keeper.py's docstring for the restart bug that motivated it (a
+    # dashboard showing "idle" above a ring that was never lit at all).
+    led_keeper = StatusLedKeeper(registry)
     # Always on, unlike wire_status_led_publishing below (which needs
     # --mqtt-host) -- the local ring is reachable over Bridge regardless of
     # whether MQTT satellite ingestion is enabled for this run.
-    wire_local_status_led(registry)
+    wire_local_status_led(led_keeper)
     # Same story for the board's own LED matrix (fleet-health summary).
-    wire_local_matrix_text(registry)
+    wire_local_matrix_text(led_keeper)
 
     def on_score(node_id: str, timestamp: float, score: float, status) -> None:
         # Mirrors on_frame's "spectrum" broadcast below -- pushes every
@@ -591,7 +573,7 @@ def main():
             target=run_mqtt, args=(args.mqtt_host, args.mqtt_port, on_frame, stop_event,
                                     trip_outputs.announce),
             daemon=True)
-        status_led_publisher = wire_status_led_publishing(registry, args.mqtt_host, args.mqtt_port)
+        status_led_publisher = wire_status_led_publishing(led_keeper, args.mqtt_host, args.mqtt_port)
         # Same publisher, same connection -- MOTOR_STOP and STATUS_LED are
         # both base-station -> node commands on the same topic pattern.
         protection.set_publish_trip(
@@ -608,6 +590,10 @@ def main():
         # broadcast_threadsafe before the loop is ready otherwise.
         spi_consumer.start()
         gpu_perf.start()
+        # Started here rather than at construction so every sink (including
+        # the MQTT one, wired only when --mqtt-host is set) is registered
+        # before the first reconcile tick.
+        led_keeper.start()
         wifi_status.start()
         if mqtt_thread is not None:
             mqtt_thread.start()
@@ -635,6 +621,7 @@ def main():
     finally:
         logger.info("shutting down")
         stop_event.set()
+        led_keeper.stop()
         if status_led_publisher is not None:
             status_led_publisher.stop()
         if telegram_bot is not None:

@@ -3,10 +3,11 @@
 Base station -> node command publishing: the publish-side counterpart to
 mqtt_subscriber.py's subscribe-only client. Two commands today:
 
-  STATUS_LED (0x08) -- pushed whenever Registry.on_status_change fires
-      (main.py wires that up), so a node's own status LED always reflects
-      what the dashboard currently shows without the node ever polling the
-      REST API.
+  STATUS_LED (0x08) -- pushed whenever a node's status color drifts from
+      what was last sent to it (registry/led_keeper.py drives this), so a
+      node's own status LED always reflects what the dashboard currently
+      shows without the node ever polling the REST API. Retained; see
+      publish_status() for why.
   MOTOR_STOP (0x09) -- the machinery-protection trip (protection/), pushed
       to whichever host owns the rig's serial port.
 
@@ -49,10 +50,30 @@ class MqttPublisher:
         self._client.loop_start()
 
     def publish_status(self, node_id: str, rgb: str, mode: str, period_ms: int) -> None:
+        """Published RETAINED, unlike publish_motor_stop() below.
+
+        A satellite's ring has no "connected" color of its own -- once MQTT
+        is up, transport_task.cpp deliberately keeps showing whatever it
+        last showed and waits for this command to tell it the real
+        NodeStatus color. With a plain (non-retained) publish, a node that
+        rebooted or reconnected after the last status change got nothing at
+        all and sat there showing its own boot-time RGB_MQTT_DOWN blue
+        while the dashboard showed it cyan (observed 2026-08-18). Retained
+        means the broker replays the current color to the node the instant
+        it subscribes to its cmd topic on connect -- the color is right on
+        the first thing an operator sees, with no polling and no window
+        where the ring contradicts the dashboard.
+
+        MOTOR_STOP deliberately does NOT get this treatment: replaying a
+        stale trip command at a node that just rebooted would re-stop a
+        motor nobody asked to stop. Only retained publishes update a
+        topic's retained message, so a non-retained MOTOR_STOP passes
+        through without disturbing the retained STATUS_LED sitting behind
+        it."""
         payload = encode_display_rgb_payload(rgb_hex_to_int(rgb), LED_MODE_TO_INT[mode], period_ms)
         message = encode_mqtt_message(MqttMsgType.STATUS_LED, payload)
         topic = CMD_TOPIC_FMT.format(node_id=node_id)
-        self._client.publish(topic, message, qos=1)
+        self._client.publish(topic, message, qos=1, retain=True)
 
     def publish_motor_stop(self, node_id: str, motor_idx: int) -> None:
         """Machinery-protection trip (docs/MOTOR_STOP_PLAN.md): tells whatever
