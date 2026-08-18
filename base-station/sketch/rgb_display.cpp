@@ -302,10 +302,17 @@ static void rgb_pwm_show(uint8_t r, uint8_t g, uint8_t b) {
    * next UPDATE event, whenever that naturally falls. */
 }
 
+/* Overall ring brightness ceiling, independent of the CONST/BREATHE/STROBE
+ * scale_pct above -- full-strength WS2812 pixels overexpose on camera at
+ * close range, so every mode's output is capped here rather than touching
+ * the per-status colors (status_color.py) or the breathe/strobe math. */
+#define RGB_BRIGHTNESS_PCT 75
+
 static void rgb_render(uint8_t r, uint8_t g, uint8_t b, uint8_t scale_pct) {
-  rgb_pwm_show((uint8_t)(((uint16_t)r * scale_pct) / 100),
-               (uint8_t)(((uint16_t)g * scale_pct) / 100),
-               (uint8_t)(((uint16_t)b * scale_pct) / 100));
+  uint16_t combined_pct = (uint16_t)scale_pct * RGB_BRIGHTNESS_PCT / 100;
+  rgb_pwm_show((uint8_t)(((uint16_t)r * combined_pct) / 100),
+               (uint8_t)(((uint16_t)g * combined_pct) / 100),
+               (uint8_t)(((uint16_t)b * combined_pct) / 100));
 }
 
 /* Single Bridge provider - one combined String, see header comment. Runs on

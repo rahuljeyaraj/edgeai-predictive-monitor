@@ -26,6 +26,13 @@
 
 static Adafruit_NeoPixel ring(RING_NUM_PIXELS, PIN_WS2812_DIN, NEO_GRB + NEO_KHZ800);
 
+/* Overall ring brightness ceiling, independent of the CONST/BREATHE/STROBE
+ * scale_pct below -- full-strength WS2812 pixels overexpose on camera at
+ * close range, so every mode's output is capped here rather than touching
+ * the per-status colors (status_color.py) or the breathe/strobe math. Kept
+ * in sync with base-station/sketch/rgb_display.cpp's RGB_BRIGHTNESS_PCT. */
+#define RING_BRIGHTNESS_PCT 75
+
 struct rgb_command {
 	uint32_t rgb;
 	enum rgb_display_mode mode;
@@ -38,9 +45,10 @@ static SemaphoreHandle_t cmd_mutex;
 
 static void set_ring(uint32_t rgb, uint8_t scale_pct)
 {
-	uint8_t r = (uint8_t)((((rgb >> 16) & 0xFF) * scale_pct) / 100);
-	uint8_t g = (uint8_t)((((rgb >> 8) & 0xFF) * scale_pct) / 100);
-	uint8_t b = (uint8_t)(((rgb & 0xFF) * scale_pct) / 100);
+	uint16_t combined_pct = (uint16_t)scale_pct * RING_BRIGHTNESS_PCT / 100;
+	uint8_t r = (uint8_t)((((rgb >> 16) & 0xFF) * combined_pct) / 100);
+	uint8_t g = (uint8_t)((((rgb >> 8) & 0xFF) * combined_pct) / 100);
+	uint8_t b = (uint8_t)(((rgb & 0xFF) * combined_pct) / 100);
 
 	for (int i = 0; i < RING_NUM_PIXELS; i++) {
 		ring.setPixelColor(i, ring.Color(r, g, b));
