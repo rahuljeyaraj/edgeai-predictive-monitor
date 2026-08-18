@@ -282,6 +282,10 @@ let tripped = new Set();   // motors currently held stopped by a protection trip
 let claims = {};           // motor idx -> the asset whose FAULT will stop it
 let serverOK = null;       // null = not asked yet, false = page opened standalone
 let baseStationUrl = null;
+// Set right before a poll whose result must redraw the row even if the
+// installed list comes back unchanged (e.g. going online while it's still
+// empty — see pollState). A value-based diff alone can't catch that case.
+let forceRerender = false;
 // Whether the rig host holds the Uno's serial port. Usually it does NOT: the
 // browser and the USB device are on Windows while the rig host runs in WSL,
 // so this page is the only thing that can reach the Uno. When that's the
@@ -696,7 +700,8 @@ function applyServerState(s) {
   baseStationUrl = s.base_station_url || null;
   rigHasSerial = !!s.rig_serial;
   const next = (s.installed || []).slice().sort((a, b) => a - b);
-  const changed = next.join(",") !== installed.join(",");
+  const changed = forceRerender || next.join(",") !== installed.join(",");
+  forceRerender = false;
   installed = next;
   applyTripped(s.tripped || []);
   if (changed) renderMotors(); else paintFleet();
@@ -745,7 +750,7 @@ async function pollState() {
     serverOK = true;
     if (wasOffline) {
       $("noServer").style.display = "none";
-      installed = [];                // force a rebuild now that slots are real
+      forceRerender = true;          // rebuild now that slots are real, even if installed is []
     }
     applyServerState(await r.json());
   } catch (_) {
