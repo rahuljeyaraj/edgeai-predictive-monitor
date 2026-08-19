@@ -38,6 +38,17 @@ Design rules this library enforces (rather than leaving to each script):
 FONT = "DejaVu Sans, Helvetica, Arial, sans-serif"
 MONO = "DejaVu Sans Mono, Menlo, Consolas, monospace"
 
+# Bumped 2026-08-19: fonts read too small once diagrams were dropped into the
+# Word/PDF report. Scaling happens in exactly two places -- text() (what gets
+# drawn) and text_width() (what gets measured for it) -- so every box, chip,
+# badge and backplate across all 14 diagrams grows its font consistently
+# without any script having to change a box's x/y/w/h.
+FONT_SCALE = 1.3
+
+
+def _s(size):
+    return size * FONT_SCALE
+
 INK = "#16202B"          # primary text
 INK_SOFT = "#4A5A6A"     # secondary text
 HAIRLINE = "#D6DEE6"
@@ -73,6 +84,7 @@ def text_width(s, size=12, weight="normal", family=FONT):
     """Approximate rendered width. DejaVu Sans averages ~0.55em per glyph at
     regular weight; bold and monospace run wider. Only needs to be good
     enough to size a backplate or a legend chip, never exact."""
+    size = _s(size)
     per = 0.545
     if weight in ("bold", "600", "700"):
         per = 0.600
@@ -81,6 +93,24 @@ def text_width(s, size=12, weight="normal", family=FONT):
     narrow = sum(1 for c in str(s) if c in "iljtfrI.,:;'|! ")
     wide = sum(1 for c in str(s) if c in "MWmw@")
     return (len(str(s)) * per - narrow * 0.20 + wide * 0.14) * size
+
+
+def _wrap(s, size, max_width, weight="normal"):
+    """Greedy word-wrap so a prose subtitle/footnote never runs past the
+    frame margin -- a risk FONT_SCALE introduced for the longer sentences,
+    since these were hand-tuned to just fit at the old, smaller size."""
+    words = s.split(" ")
+    lines, cur = [], ""
+    for w in words:
+        trial = f"{cur} {w}".strip()
+        if cur and text_width(trial, size, weight) > max_width:
+            lines.append(cur)
+            cur = w
+        else:
+            cur = trial
+    if cur:
+        lines.append(cur)
+    return lines
 
 
 class Canvas:
@@ -95,24 +125,38 @@ class Canvas:
         self.defs = []
         self.margin = margin
         self.title = title
-        self.subtitle = subtitle
-        self.footnotes = list(footnotes)
         self.legend = legend
         self._defs()
+
+        # 0.9x: text_width() is an approximation, not a measurement -- this
+        # margin is the difference between "estimated to fit" and "actually
+        # fits" once DejaVu Sans renders it for real.
+        avail = (width - 2 * margin) * 0.9
+        self.subtitle_lines = _wrap(subtitle, 12.5, avail) if subtitle else []
+        self.footnotes = [(_wrap(note, 12.5, avail), colour) for note, colour in footnotes]
+
+        # Every script picked its canvas height assuming one line per
+        # subtitle/footnote -- true before FONT_SCALE made some wrap to two.
+        # Grow the canvas downward (below every hand-placed box) to give the
+        # wrapped lines room, rather than let them climb into the diagram.
+        extra_sub = max(0, len(self.subtitle_lines) - 1) if subtitle else 0
+        extra_note = sum(max(0, len(lines) - 1) for lines, _ in self.footnotes)
+        self.h += extra_sub * 20 + extra_note * 21
 
         # Vertical budget: title band, then body, then footnote band.
         self.top = margin
         if title:
             self.top += 30
-            if subtitle:
-                self.top += 20
+            if self.subtitle_lines:
+                self.top += 20 * len(self.subtitle_lines)
             self.top += 14
         if legend:
             self.top += 30
 
-        self.bottom = height - margin
+        self.bottom = self.h - margin
         if self.footnotes:
-            self.bottom -= 16 + 21 * len(self.footnotes)
+            total_lines = sum(len(lines) for lines, _ in self.footnotes)
+            self.bottom -= 16 + 21 * total_lines
 
         self.left = margin
         self.right = width - margin
@@ -141,16 +185,17 @@ class Canvas:
     def text(self, x, y, s, size=12, anchor="start", weight="normal",
              fill=INK, style="normal", family=None, opacity=None):
         fam = family or FONT
+        size = _s(size)
         op = f' opacity="{opacity}"' if opacity is not None else ""
         self.parts.append(
-            f'<text x="{x:.1f}" y="{y:.1f}" font-family="{fam}" font-size="{size}" '
+            f'<text x="{x:.1f}" y="{y:.1f}" font-family="{fam}" font-size="{size:.2f}" '
             f'font-weight="{weight}" font-style="{style}" text-anchor="{anchor}" '
             f'fill="{fill}"{op}>{esc(s)}</text>'
         )
 
     def lines(self, x, y, rows, size=11.5, anchor="middle", fill=INK_SOFT,
               leading=None, family=None):
-        step = leading or (size + 4.5)
+        step = leading or (_s(size) + 4.5)
         for i, row in enumerate(rows):
             self.text(x, y + i * step, row, size=size, anchor=anchor,
                       fill=fill, family=family)
@@ -178,23 +223,24 @@ class Canvas:
         cx = x + w / 2
         rows = list(body)
         if rows:
-            block_h = title_size + 5 + len(rows) * (body_size + 4.5)
-            ty = y + (h - block_h) / 2 + title_size * 0.82
+            block_h = _s(title_size) + 5 + len(rows) * (_s(body_size) + 4.5)
+            ty = y + (h - block_h) / 2 + _s(title_size) * 0.82
             self.text(cx, ty, title, size=title_size, weight="bold",
                       anchor="middle", fill=tcol, family=title_family)
-            self.lines(cx, ty + title_size * 0.42 + 13, rows, size=body_size,
+            self.lines(cx, ty + _s(title_size) * 0.42 + 13, rows, size=body_size,
                        anchor="middle", fill=INK_SOFT)
         else:
-            self.text(cx, y + h / 2 + title_size * 0.34, title, size=title_size,
+            self.text(cx, y + h / 2 + _s(title_size) * 0.34, title, size=title_size,
                       weight="bold", anchor="middle", fill=tcol,
                       family=title_family)
         if badge:
             bw = text_width(badge, 10, "bold") + 14
+            bh = _s(17)
             self.parts.append(
                 f'<rect x="{x + w - bw - 8:.1f}" y="{y + 7:.1f}" width="{bw:.1f}" '
-                f'height="17" rx="8.5" fill="{stroke}" opacity="0.92"/>'
+                f'height="{bh:.1f}" rx="{bh / 2:.1f}" fill="{stroke}" opacity="0.92"/>'
             )
-            self.text(x + w - bw / 2 - 8, y + 19.3, badge, size=10, weight="bold",
+            self.text(x + w - bw / 2 - 8, y + 7 + bh / 2 + 3.7, badge, size=10, weight="bold",
                       anchor="middle", fill="#FFFFFF")
         return Node(x, y, w, h, stroke)
 
@@ -239,7 +285,7 @@ class Canvas:
         """Backplated caption. `x` is the anchor point; the plate is placed to
         match, so callers can hang a label off the side of a line."""
         w = text_width(label, size) + 12
-        h = size + 9
+        h = _s(size) + 9
         if anchor == "middle":
             lx, tx = x - w / 2, x
         elif anchor == "start":
@@ -250,7 +296,7 @@ class Canvas:
             f'<rect x="{lx:.1f}" y="{y - h / 2:.1f}" width="{w:.1f}" height="{h:.1f}" '
             f'rx="4" fill="{PAPER}" opacity="0.94"/>'
         )
-        self.text(tx, y + size * 0.35, label, size=size, anchor=anchor,
+        self.text(tx, y + _s(size) * 0.35, label, size=size, anchor=anchor,
                   fill=colour)
 
     def link(self, pts, label=None, kind="arrow", width=1.7, dashed=False,
@@ -283,7 +329,7 @@ class Canvas:
             (x1, y1), (x2, y2) = pts[best], pts[best + 1]
             lx = x1 + (x2 - x1) * label_at
             ly = y1 + (y2 - y1) * label_at
-            clear = (label_size + 9) / 2 + 4
+            clear = (_s(label_size) + 9) / 2 + 4
             side = label_side
             if abs(x2 - x1) >= abs(y2 - y1):
                 anchor = "middle"
@@ -334,9 +380,9 @@ class Canvas:
         if self.title:
             y += 22
             head.append((self.left, y, self.title, 19, "bold", INK))
-            if self.subtitle:
+            for line in self.subtitle_lines:
                 y += 20
-                head.append((self.left, y, self.subtitle, 12.5, "normal", INK_SOFT))
+                head.append((self.left, y, line, 12.5, "normal", INK_SOFT))
             y += 14
             self.rule(self.left, y, self.right)
         if self.legend:
@@ -346,11 +392,13 @@ class Canvas:
             self.text(x, ty, s, size=size, weight=weight, fill=fill)
 
         if self.footnotes:
-            fy = self.h - self.margin - 21 * (len(self.footnotes) - 1) - 2
+            total_lines = sum(len(lines) for lines, _ in self.footnotes)
+            fy = self.h - self.margin - 21 * (total_lines - 1) - 2
             self.rule(self.left, fy - 24, self.right)
-            for i, (note, colour) in enumerate(self.footnotes):
-                self.text(self.left, fy + i * 21, note, size=12.5,
-                          fill=colour or INK_SOFT)
+            for lines, colour in self.footnotes:
+                for line in lines:
+                    self.text(self.left, fy, line, size=12.5, fill=colour or INK_SOFT)
+                    fy += 21
 
         return (
             f'<svg xmlns="http://www.w3.org/2000/svg" width="{self.w}" '
