@@ -145,10 +145,16 @@ def create_project(jwt_token: str, project_name: str) -> Tuple[int, str]:
     """Returns (project_id, project_api_key) -- the api_key is what every
     later call (impulse config, ingestion, training) uses instead of the
     JWT, since it's scoped + long-lived rather than an account-level
-    session token."""
+    session token.
+
+    projectVisibility="public": this account's private-project quota was
+    exhausted (confirmed live 2026-08-19, "Private projects quota
+    exceeded"), and every project this creates is meant to be visible in
+    Edge Impulse Studio anyway (no end-user-facing content lives there)."""
     resp = _json_post(f"{STUDIO_BASE}/api/projects/create",
                        {"x-jwt-token": jwt_token},
-                       {"projectName": project_name, "createApiKey": True})
+                       {"projectName": project_name, "createApiKey": True,
+                        "projectVisibility": "public"})
     return resp["id"], resp["apiKey"]
 
 
