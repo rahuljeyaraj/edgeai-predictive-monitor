@@ -243,8 +243,18 @@ function tripBannerLine(entry) {
   }
   if (entry.status === "tripped") {
     const when = p.tripped_at ? new Date(p.tripped_at * 1000).toLocaleTimeString() : null;
-    return { kind: "tripped", text: `Tripped — ${name}${when ? ` at ${when}` : ""}, confirmed stopped`,
-             dismissible: true };
+    const text = `Tripped — ${name}${when ? ` at ${when}` : ""}, confirmed stopped`;
+    if (p.needs_ack) {
+      // Unacknowledged: same "still true, still needs a decision" reasoning
+      // as countdown/failed below, so not locally dismissible -- a gate
+      // blip on this asset's own sensor can't be told apart from a real
+      // restart (cross-talk off a neighbouring motor on a shared rig
+      // frame), so nothing auto-recovers this node until a human presses
+      // Acknowledge. Dismissing the banner would hide that it's still
+      // parked at TRIPPED with no way back except this button.
+      return { kind: "tripped", text, ack: true };
+    }
+    return { kind: "tripped", text, dismissible: true };
   }
   if (entry.status === "fault" && !p.armed) {
     // S10 Q4: a faulted asset with nothing wired to stop it still belongs
@@ -277,6 +287,7 @@ function renderTripBanner() {
     return `<div class="trip-banner__line trip-banner__line--${line.kind}" data-node-id="${safeId}">
       <span class="trip-banner__text" data-trip-text data-node-id="${safeId}">${escapeHtml(line.text)}</span>
       ${line.hold ? `<button type="button" class="trip-banner__hold" data-action="protection_hold" data-node-id="${safeId}">Hold</button>` : ""}
+      ${line.ack ? `<button type="button" class="trip-banner__ack" data-action="protection_acknowledge" data-node-id="${safeId}">Acknowledge</button>` : ""}
       ${line.dismissible ? `<button type="button" class="trip-banner__dismiss" data-action="trip_dismiss" data-node-id="${safeId}" aria-label="Dismiss">&times;</button>` : ""}
     </div>`;
   }).join("");
@@ -724,6 +735,7 @@ const ACTION_ENDPOINT = {
   capture_stop: (id) => ["POST", `/nodes/${id}/capture/stop`],
   capture_cancel: (id) => ["POST", `/nodes/${id}/capture/cancel`],
   protection_hold: (id) => ["POST", `/nodes/${id}/protection/hold`],
+  protection_acknowledge: (id) => ["POST", `/nodes/${id}/protection/acknowledge`],
 };
 
 async function api(method, path, body) {

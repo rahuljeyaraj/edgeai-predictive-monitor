@@ -2035,7 +2035,10 @@ a.btn-label {
 
 /* Settled states: the machine is stopped, or it is faulted with nothing
    wired to stop it. Both are acknowledgements rather than alarms, so they
-   are tinted rather than filled. */
+   are tinted rather than filled. An unacknowledged trip (data-action
+   protection_acknowledge present) still needs a decision -- see
+   trip-banner__ack below -- but keeps this same tint: it is a stopped
+   machine either way, not a live countdown. */
 .trip-banner__line--tripped {
   background-color: color-mix(in srgb, var(--color-tripped) 28%, #1e293b);
   color: #fecaca;
@@ -2062,6 +2065,27 @@ a.btn-label {
 }
 
 .trip-banner__hold:hover {
+  background-color: #e2e8f0;
+}
+
+/* Same call-to-action shape as Hold -- this is the only way an
+   unacknowledged trip can move again (docs on ProtectionController.
+   acknowledge_trip). */
+.trip-banner__ack {
+  flex: 0 0 auto;
+  height: 32px;
+  padding: 0 20px;
+  font-family: inherit;
+  font-size: 15px;
+  font-weight: 700;
+  color: #0f172a;
+  background-color: #f8fafc;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.trip-banner__ack:hover {
   background-color: #e2e8f0;
 }
 

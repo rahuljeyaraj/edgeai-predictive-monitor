@@ -116,7 +116,73 @@ def test_fault_trips_after_the_delay_and_confirms():
     assert status(registry) == NodeStatus.TRIPPED, status(registry)
     assert protection.snapshot(NODE_ID)["trip_failed"] is False
     assert protection.snapshot(NODE_ID)["tripped_at"] is not None
-    print("gate-confirmed stop promotes FAULT -> TRIPPED: PASS")
+    # A confirmed trip always needs an operator to acknowledge it before
+    # anything may move this node off TRIPPED again -- see
+    # test_unacknowledged_trip_ignores_gate_flicker below for why.
+    assert protection.snapshot(NODE_ID)["needs_ack"] is True
+    print("gate-confirmed stop promotes FAULT -> TRIPPED, unacknowledged: PASS")
+
+
+def test_unacknowledged_trip_ignores_gate_flicker_and_stays_tripped():
+    """The actual race this module used to lose: this node's own gate cannot
+    tell a real restart apart from cross-talk off a neighbouring motor on a
+    shared rig frame (pipeline/gate.py's own accepted masking case). Before
+    acknowledge_trip existed, a stray RUNNING blip right after a confirmed
+    trip read as a restart (-> HEALTHY), and the matching STOPPED edge that
+    followed read as an unrelated operator stop (-> IDLE) -- TRIPPED ->
+    HEALTHY -> IDLE while the machine never moved. Asserted on set_status
+    *attempts*: neither HEALTHY nor IDLE should even be tried while
+    unacknowledged (a redundant TRIPPED attempt on the matching STOPPED
+    edge is fine -- registry.py has no TRIPPED -> TRIPPED edge, so it's a
+    harmless no-op, swallowed the same way any already-there status is)."""
+    registry, protection, published = build(trip_motor_idx=1)
+    attempted = []
+    real_set_status = registry.set_status
+    registry.set_status = lambda node_id, s: (attempted.append(s),
+                                               real_set_status(node_id, s))[1]
+
+    registry.set_status(NODE_ID, NodeStatus.FAULT)
+    time.sleep(TRIP_DELAY_S + SETTLE_S)
+    protection.on_motor_state(NODE_ID, running=False)
+    assert status(registry) == NodeStatus.TRIPPED, status(registry)
+
+    attempted.clear()
+    protection.on_motor_state(NODE_ID, running=True)   # the blip
+    protection.on_motor_state(NODE_ID, running=False)  # its matching edge
+
+    assert NodeStatus.HEALTHY not in attempted, attempted
+    assert NodeStatus.IDLE not in attempted, attempted
+    assert status(registry) == NodeStatus.TRIPPED, status(registry)
+    print("a gate blip on an unacknowledged trip writes nothing and stays TRIPPED: PASS")
+
+
+def test_acknowledge_re_arms_recovery():
+    registry, protection, published = build(trip_motor_idx=1)
+
+    # Nothing to acknowledge yet.
+    assert protection.acknowledge_trip(NODE_ID) is False
+
+    registry.set_status(NODE_ID, NodeStatus.FAULT)
+    time.sleep(TRIP_DELAY_S + SETTLE_S)
+    protection.on_motor_state(NODE_ID, running=False)
+    assert status(registry) == NodeStatus.TRIPPED, status(registry)
+
+    # A blip before acknowledgement still changes nothing (previous test
+    # covers this in detail; here just confirming TRIPPED holds).
+    protection.on_motor_state(NODE_ID, running=True)
+    protection.on_motor_state(NODE_ID, running=False)
+    assert status(registry) == NodeStatus.TRIPPED, status(registry)
+
+    assert protection.acknowledge_trip(NODE_ID) is True
+    assert protection.snapshot(NODE_ID)["needs_ack"] is False
+    # Second press finds nothing left to acknowledge.
+    assert protection.acknowledge_trip(NODE_ID) is False
+
+    # Now a genuine restart recovers normally, same as the pre-trip IDLE
+    # recovery path.
+    protection.on_motor_state(NODE_ID, running=True)
+    assert status(registry) == NodeStatus.HEALTHY, status(registry)
+    print("acknowledging a trip re-arms normal restart recovery: PASS")
 
 
 def test_unconfirmed_trip_is_reported_failed_and_stays_fault():
@@ -298,7 +364,10 @@ def test_running_blip_mid_trip_does_not_erase_it():
     HEALTHY unconditionally on any such edge -- so that blip alone erased an
     in-flight trip, and the real stop that followed a moment later then read
     as an operator's IDLE, or was simply too late to matter. trip_pending()
-    must make this edge a no-op while a trip is unresolved."""
+    must make this edge a no-op while a trip is unresolved -- and, per
+    test_unacknowledged_trip_ignores_gate_flicker, while it's resolved but
+    not yet acknowledged either, since the same blip can recur any time
+    after confirmation too."""
     registry, protection, published = build(trip_motor_idx=1)
 
     registry.set_status(NODE_ID, NodeStatus.FAULT)
@@ -313,11 +382,18 @@ def test_running_blip_mid_trip_does_not_erase_it():
     assert protection.trip_pending(NODE_ID) is True
     print("a running blip mid-trip does not erase the pending trip: PASS")
 
-    # The real stop, right after, still confirms TRIPPED.
+    # The real stop, right after, still confirms TRIPPED. trip_pending()
+    # stays True past this point too, but now for case 2 (needs_ack) rather
+    # than case 1 (awaiting_confirm) -- it only goes False once acknowledged.
     protection.on_motor_state(NODE_ID, running=False)
     assert status(registry) == NodeStatus.TRIPPED, status(registry)
-    assert protection.trip_pending(NODE_ID) is False
+    assert protection.trip_pending(NODE_ID) is True
+    assert protection.snapshot(NODE_ID)["needs_ack"] is True
     print("the real stop that follows still confirms TRIPPED: PASS")
+
+    assert protection.acknowledge_trip(NODE_ID) is True
+    assert protection.trip_pending(NODE_ID) is False
+    print("acknowledging clears trip_pending: PASS")
 
 
 def test_tripped_node_restarted_without_a_fix_trips_again():
@@ -327,6 +403,11 @@ def test_tripped_node_restarted_without_a_fix_trips_again():
     time.sleep(TRIP_DELAY_S + SETTLE_S)
     protection.on_motor_state(NODE_ID, running=False)
     assert status(registry) == NodeStatus.TRIPPED, status(registry)
+
+    # A restart before acknowledging does nothing -- see
+    # test_unacknowledged_trip_ignores_gate_flicker for why. Acknowledge
+    # first, exactly as an operator pressing the dashboard's button would.
+    assert protection.acknowledge_trip(NODE_ID) is True
 
     # Operator restarts it without fixing anything: back to HEALTHY, then the
     # score re-confirms FAULT and it trips a second time. You cannot restart
@@ -346,6 +427,8 @@ if __name__ == "__main__":
         test_operator_stop_reads_idle_not_tripped()
         test_restart_returns_to_healthy_from_idle()
         test_fault_trips_after_the_delay_and_confirms()
+        test_unacknowledged_trip_ignores_gate_flicker_and_stays_tripped()
+        test_acknowledge_re_arms_recovery()
         test_unconfirmed_trip_is_reported_failed_and_stays_fault()
         test_hold_cancels_a_pending_trip()
         test_recovering_before_the_delay_expires_abandons_the_trip()

@@ -628,6 +628,28 @@ def create_app(registry: Registry, history_store: HistoryStore,
                                     "entry": _node_dict(node_id, entry)})
         return _node_dict(node_id, entry)
 
+    @app.post("/nodes/{node_id}/protection/acknowledge")
+    def acknowledge_protection(node_id: str):
+        """Operator action: 'I've seen this trip.' Required before this node's
+        TRIPPED status can move again -- see ProtectionController.
+        acknowledge_trip's docstring for why a RUNNING edge alone can't be
+        trusted to mean a restart on a shared rig frame."""
+        if app.state.protection is None:
+            raise HTTPException(status_code=503, detail="protection is not enabled")
+        try:
+            app.state.registry.get(node_id)
+        except NodeNotFoundError:
+            raise HTTPException(status_code=404, detail=f"unknown node_id {node_id!r}")
+        if not app.state.protection.acknowledge_trip(node_id):
+            # No unacknowledged trip -- most likely it was already
+            # acknowledged, or this node was never tripped to begin with.
+            raise HTTPException(status_code=409,
+                                 detail="no unacknowledged trip for this node")
+        entry = app.state.registry.get(node_id)
+        broadcast_threadsafe(app, {"type": "registry", "node_id": node_id,
+                                    "entry": _node_dict(node_id, entry)})
+        return _node_dict(node_id, entry)
+
     def _require_stopped_baseline():
         if app.state.stopped_baseline is None:
             raise HTTPException(status_code=503,

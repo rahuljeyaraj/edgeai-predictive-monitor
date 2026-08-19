@@ -93,6 +93,13 @@ class ProtectionState:
         self.awaiting_confirm = False
         self.trip_failed = False
         self.tripped_at: Optional[float] = None      # wall clock, for the UI
+        # True from the moment a trip confirms (TRIPPED) until an operator
+        # calls acknowledge_trip(). See trip_pending()'s docstring for why
+        # this exists: a RUNNING edge on this node's own gate cannot be told
+        # apart, at the sensor level, from cross-talk off a neighbouring
+        # motor on a shared rig frame, so nothing may leave TRIPPED on the
+        # strength of that edge alone until a human has looked.
+        self.needs_ack = False
         # Last running/stopped state on_motor_state actually acted on, or None
         # before the first report. This module has two independent sources for
         # that edge (the ingestion thread and _fire_trip's own re-query), so
@@ -176,7 +183,8 @@ class ProtectionController:
         with self._lock:
             state = self._states.get(node_id)
             if state is None:
-                return {"trip_in_s": None, "trip_failed": False, "tripped_at": None}
+                return {"trip_in_s": None, "trip_failed": False, "tripped_at": None,
+                         "needs_ack": False}
             trip_in_s = None
             if state.trip_deadline is not None:
                 # max(0, ...) rather than letting it go negative: the timer
@@ -187,6 +195,7 @@ class ProtectionController:
                 "trip_in_s": trip_in_s,
                 "trip_failed": state.trip_failed,
                 "tripped_at": state.tripped_at,
+                "needs_ack": state.needs_ack,
             }
 
     def armed(self, node_id: str) -> bool:
@@ -200,23 +209,51 @@ class ProtectionController:
             return False
 
     def trip_pending(self, node_id: str) -> bool:
-        """True from the moment a trip is published until the gate resolves
-        it (TRIPPED) or its confirm window times out and is later resolved
-        (trip_failed, still awaiting a late gate edge -- see on_motor_state's
-        `was_ours`). While true, nothing but the gate itself may decide this
-        node's outcome -- see MotorPipeline's `confirm` plumbing in
-        pipeline/manager.py, which is what this exists for: InferencePipeline
-        keeps scoring frames the gate hasn't yet confirmed STOPPED (spin-down
-        is not instant), and a score computed on decaying vibration can
-        debounce-confirm HEALTHY/WARNING before the gate confirms the stop.
-        Letting that write through would race the gate to a verdict using a
-        signal never trained to recognise 'slowing down', and the loser's
-        write would either be silently swallowed (WARNING/HEALTHY -> TRIPPED
-        is not a legal edge -- registry.py's to_tripped is FAULT-only, on
-        purpose) or, worse, look like a real recovery on the dashboard."""
+        """True whenever nothing but a human, via acknowledge_trip(), may
+        decide this node's next status -- see MotorPipeline's `confirm`
+        plumbing in pipeline/manager.py and on_motor_state's running=True
+        branch, which are what this gates. Covers two different windows that
+        both need the same answer:
+
+        1. Mid-trip (awaiting_confirm or trip_failed): the gate hasn't yet
+           confirmed STOPPED (spin-down is not instant, or the confirm
+           window simply expired first), and a score computed on decaying
+           vibration can debounce-confirm HEALTHY/WARNING before the gate
+           confirms the stop. Letting that write through would race the
+           gate to a verdict using a signal never trained to recognise
+           'slowing down', and the loser's write would either be silently
+           swallowed (WARNING/HEALTHY -> TRIPPED is not a legal edge --
+           registry.py's to_tripped is FAULT-only, on purpose) or, worse,
+           look like a real recovery on the dashboard.
+        2. Unacknowledged (needs_ack): the trip already confirmed TRIPPED,
+           but nobody has acknowledged it yet. A RUNNING edge here cannot be
+           told apart, at the sensor level, from cross-talk off a
+           neighbouring motor on a shared rig frame (pipeline/gate.py's own
+           accepted masking case, gate_test.py's
+           test_crosstalk_above_the_fraction_masks_the_stop) -- no threshold
+           fixes that, only a human who has actually looked at the machine.
+           Before this existed, a stray blip read as a restart and silently
+           walked TRIPPED -> HEALTHY -> IDLE while the machine never moved."""
         with self._lock:
             state = self._states.get(node_id)
-            return bool(state and (state.awaiting_confirm or state.trip_failed))
+            return bool(state and (state.awaiting_confirm or state.trip_failed
+                                    or state.needs_ack))
+
+    def acknowledge_trip(self, node_id: str) -> bool:
+        """Operator action: 'I've seen this trip.' Clears needs_ack so the
+        next genuine gate/inference signal is trusted again -- see
+        trip_pending()'s case 2. Does not itself change status: the machine
+        may still be sitting there stopped, and this only re-arms recovery,
+        it doesn't guess one. Returns whether there was an unacknowledged
+        trip to clear, so the REST layer can 409 a stale button press
+        instead of reporting a success that didn't do anything."""
+        with self._lock:
+            state = self._states.get(node_id)
+            if state is None or not state.needs_ack:
+                return False
+            state.needs_ack = False
+        logger.info("protection: trip on %s acknowledged, recovery re-armed", node_id)
+        return True
 
     # -- inputs --------------------------------------------------------
 
@@ -263,13 +300,14 @@ class ProtectionController:
             state.motor_running = running
         if running:
             if self.trip_pending(node_id):
-                # A trip published against this node hasn't been resolved
-                # yet -- this edge is gate noise (e.g. cross-talk from a
-                # neighbouring motor sharing the frame, docs/
-                # MOTOR_STOP_PLAN.md's flagged open risk), not a restart.
-                # Forcing HEALTHY here would erase an in-flight trip on a
-                # blip; only a clean STOPPED confirmation (or the confirm
-                # timeout) may resolve it.
+                # Either the trip hasn't resolved yet, or it has (TRIPPED)
+                # but nobody has acknowledged it -- either way this edge is
+                # gate noise (e.g. cross-talk from a neighbouring motor
+                # sharing the frame, docs/MOTOR_STOP_PLAN.md's flagged open
+                # risk), not a restart, and cannot be told apart from one at
+                # the sensor level. Forcing HEALTHY here would erase a trip
+                # on a blip; only a clean STOPPED confirmation, the confirm
+                # timeout, or acknowledge_trip() may move this node on.
                 return
             # Started again. This is the entire recovery path -- no
             # acknowledge, no reset button. Land on HEALTHY and let the next
@@ -309,10 +347,21 @@ class ProtectionController:
             # trip routinely confirms just after the window gave up on it.
             # Reading that as IDLE would say an operator stopped a machine
             # this system stopped -- the confirmation was late, not absent.
-            was_ours = bool(state and (state.awaiting_confirm or state.trip_failed))
+            #
+            # needs_ack counts as ours too, and for a different reason: once
+            # a trip has confirmed once, a *repeat* stop report here is a
+            # gate flicker (cross-talk from a neighbouring motor, same as
+            # trip_pending()'s case 2), not a second independent event --
+            # without this, that flicker's matching STOPPED edge would find
+            # awaiting_confirm/trip_failed already cleared from the first
+            # confirmation, read as an operator stop, and downgrade an
+            # unacknowledged trip straight to IDLE.
+            was_ours = bool(state and (state.awaiting_confirm or state.trip_failed
+                                        or state.needs_ack))
             if was_ours:
                 state.awaiting_confirm = False
                 state.trip_failed = False
+                state.needs_ack = True
                 state.tripped_at = time.time()
                 self._cancel_timer_locked(state, "confirm_timer")
 
@@ -496,6 +545,7 @@ class ProtectionController:
             state.trip_failed = False
             state.tripped_at = None
             state.awaiting_confirm = False
+            state.needs_ack = False
             self._cancel_timer_locked(state, "confirm_timer")
 
     def _fire_trip(self, node_id: str) -> None:
