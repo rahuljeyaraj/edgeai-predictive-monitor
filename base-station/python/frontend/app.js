@@ -14,6 +14,39 @@ const NODES_POLL_MS = 5000;
 // "OFFLINE continues to be frontend-computed"). Never pushed by the server.
 const OFFLINE_AFTER_S = 30;
 
+// last_seen is stamped from the *device's* clock, so it can only be compared
+// against the device's clock -- never against Date.now(), which is the
+// browser host's. The two are not synced and need not be close: on an
+// AP-mode/hotspot deployment the device has no upstream NTP at all, so its
+// clock free-runs from whatever it booted with. Measured 131s of skew on a
+// live rig, which put every streaming node past OFFLINE_AFTER_S and rendered
+// the whole fleet "Offline" while frames were in fact arriving 0.6s apart --
+// the giveaway being that Dev/perf still showed a healthy fps, because fps is
+// a delta *between* frames and so is immune to a constant clock offset.
+//
+// Corrected with the HTTP Date header, which every response already carries
+// and which is the device's own clock by definition. That keeps OFFLINE
+// frontend-computed (docs/EPM_Dashboard_Redesign_Spec.md S5.1) and needs no
+// payload/schema change -- notably it also fixes the WS-pushed entries, whose
+// last_seen is in the same device-clock terms, for free. Whole-second
+// resolution is plenty against a 30s threshold. Stays 0 until the first poll
+// lands and if the header is ever missing/unparseable, degrading to exactly
+// the old same-clock behavior rather than to something worse.
+let clockSkewS = 0;
+
+function deviceNowS() {
+  return Date.now() / 1000 + clockSkewS;
+}
+
+// Called with each GET /nodes response -- see clockSkewS above.
+function noteServerClock(res) {
+  const header = res.headers.get("Date");
+  if (!header) return;
+  const serverMs = Date.parse(header);
+  if (Number.isNaN(serverMs)) return;
+  clockSkewS = serverMs / 1000 - Date.now() / 1000;
+}
+
 // "all" isn't a bucketFor() outcome -- it's the unfiltered total, shown
 // as its own tile so a click can reset whatever per-status filter is
 // applied to the fleet listing.
@@ -51,7 +84,7 @@ function bucketFor(entry) {
   // "New", not "Offline": offline implies it *was* online and went quiet,
   // which isn't true for a node that's never connected at all.
   if (entry.last_seen !== null && entry.last_seen !== undefined
-      && Date.now() / 1000 - entry.last_seen > OFFLINE_AFTER_S) {
+      && deviceNowS() - entry.last_seen > OFFLINE_AFTER_S) {
     return "offline";
   }
   if (entry.status === "healthy") return "healthy";
@@ -1546,6 +1579,8 @@ async function pollNodes() {
   const dispatchedAt = Date.now();
   try {
     const res = await fetch("/nodes");
+    // Before the body, so the skew is already corrected for the renders below.
+    noteServerClock(res);
     const nodes = await res.json();
     // Merge, not blind-replace: a REST request that was in flight before a
     // WS "registry"/"removed" push landed for some node can resolve AFTER
