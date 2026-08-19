@@ -59,3 +59,17 @@ int hal_credentials_save(const struct node_credentials *creds)
 
 	return 0;
 }
+
+int hal_credentials_clear(void)
+{
+	Preferences prefs;
+
+	if (!prefs.begin(NVS_NAMESPACE, /*readOnly=*/false)) {
+		return -EIO;
+	}
+
+	prefs.clear();
+	prefs.end();
+
+	return 0;
+}

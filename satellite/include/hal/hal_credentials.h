@@ -32,4 +32,9 @@ bool hal_credentials_load(struct node_credentials *out);
  * negative errno. */
 int hal_credentials_save(const struct node_credentials *creds);
 
+/* Erases whatever's saved, so the next hal_credentials_load() returns
+ * false exactly like a never-provisioned node. Safe to call when nothing
+ * is saved. Returns 0 or a negative errno. */
+int hal_credentials_clear(void);
+
 #endif /* HAL_CREDENTIALS_H_ */

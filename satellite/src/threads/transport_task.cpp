@@ -376,10 +376,12 @@ static void transport_task_entry(void *arg)
 
 	while (1) {
 		if (boot_button_force_requested() && state != TRANSPORT_STATE_FORCED_PROVISIONING) {
-			Serial.println("[transport] BOOT button held - forcing re-provisioning");
+			Serial.println("[transport] BOOT button held - erasing saved credentials, forcing re-provisioning");
+			hal_credentials_clear();
+			memset(&creds, 0, sizeof(creds));
 			hal_provisioning_stop(); /* no-op if not already active */
 			WiFi.mode(WIFI_AP_STA);
-			hal_provisioning_start(ap_ssid, creds.mqtt_broker_host);
+			hal_provisioning_start(ap_ssid, MQTT_BROKER_HOST);
 			hal_display_rgb_set(RGB_PROVISIONING, RGB_DISPLAY_CONST, 0);
 			mqtt_led = MQTT_LED_UNKNOWN;
 			state = TRANSPORT_STATE_FORCED_PROVISIONING;
