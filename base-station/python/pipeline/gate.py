@@ -96,9 +96,23 @@ silently dropped from whatever is collecting. The last layer is therefore to
 average consecutive frames' spectra before measuring them at all
 (SpectrumAverager / DEFAULT_SMOOTHING_FRAMES), which shrinks the noise that
 does not repeat frame to frame while leaving the motor lines that do.
+
+And a floor that is only constant on average is not constant over hours.
+Averaging fixes the jitter this floor has frame to frame; it does nothing
+about the floor moving as a whole, which it does -- measured an hour after
+a capture, on a genuinely stopped machine, every bin of all three accel
+channels sat at a flat 1.11-1.13x its own stopped_spectrum_ref. Because
+stopped_energy_ref is only ~8% of the floor it was subtracted from, a
+uniform drift of ~14% is enough to hold the gate at RUNNING forever, which
+is what it did: 290 of 290 stopped frames read RUNNING, and the trip that
+had actually stopped that machine was reported as failed. So the floor is
+scaled to the frame before it is subtracted (floor_gain), which measures
+the drift from the ~380 bins the motor never reaches and leaves the handful
+it does. Full numbers in floor_gain's own docstring.
 """
 import logging
 import math
+import statistics
 from collections import deque
 from dataclasses import dataclass
 from enum import Enum
@@ -219,6 +233,34 @@ DEFAULT_RUNNING_HYSTERESIS = 0.5
 # against the delay already there by design.
 DEFAULT_SMOOTHING_FRAMES = 6
 
+# The most floor drift floor_gain() will scale away, in either direction.
+# Above this the frame is measured against the unscaled floor instead, which
+# is what every node did before the gain existed.
+#
+# This bound is what keeps the gain a DRIFT correction rather than a general
+# normalization, and that distinction is the whole safety argument. An
+# unbounded median-of-ratios cannot tell "the floor rose 12%" from "the
+# machine came on and lifted every bin equally" -- it would divide both out
+# and report silence for a running machine, which is the one error this
+# module must never make. Bounding it means the most the gate can ever
+# subtract is MAX_FLOOR_GAIN x the commissioned floor, so a machine whose
+# signature clears that survives no matter what the estimator does.
+#
+# 1.5 against a measured drift of 1.12 (floor_gain's docstring) is ~4x the
+# headroom actually needed, while a real running machine on this rig sits
+# far outside it -- pooled over its bins, node 194584's running spectrum
+# measured 6.7x its stopped floor. There is a wide gap between the two
+# populations and this sits in it, so the exact value is not delicate.
+MAX_FLOOR_GAIN = 1.5
+
+# Fewest bins floor_gain() will estimate a gain from. Below this it returns
+# 1.0 (the old, unscaled behaviour) rather than a number it cannot support:
+# the estimator's premise is that most bins carry floor and only a few carry
+# machine, and a handful of bins cannot establish "most". Real frames are
+# nowhere near this line -- a mic-only node carries 128 bins and an
+# accel-only one 384 -- so this only ever catches the degenerate case.
+MIN_FLOOR_GAIN_BINS = 32
+
 
 class BinsFrame:
     """The two attributes excess_over_stopped()/energy_channels() actually
@@ -338,11 +380,86 @@ def energy_channels(frame: SensorFrame) -> List[str]:
     return accel or list(frame.bins)
 
 
+def floor_gain(frame: SensorFrame,
+                stopped: StoppedBaseline) -> Optional[float]:
+    """How much this frame's noise floor has drifted since `stopped` was
+    captured, as a single multiplier: the median of bin/ref over every bin
+    of every energy channel. 1.0 means the floor sits exactly where it was
+    commissioned. None when the baseline doesn't fit this frame (same rule
+    as excess_over_stopped below, which is its only caller).
+
+    Why a gain and not a fresh baseline
+    -----------------------------------
+    Subtracting the floor (excess_over_stopped) assumes the floor stays put.
+    It does not. Measured live on node 194584 an hour after its baseline was
+    captured, machine genuinely stopped: every bin of all three accel
+    channels read a FLAT 1.11-1.13x its stopped_spectrum_ref -- low bins and
+    high bins alike, no peak anywhere in 0-6.4kHz. That is the KX134's own
+    broadband floor drifting, not the machine moving.
+
+    A uniform drift is exactly the thing a fixed subtraction cannot absorb,
+    and the tolerance is far thinner than it looks. On that node
+    stopped_energy_ref was 397 against a floor whose RMS is 5102, i.e. the
+    residual the threshold scales from is 7.8% of the floor itself; at
+    DEFAULT_STOPPED_MARGIN the gate trips RUNNING at 13.6% of the floor. So
+    a floor gain above ~1.14 pins the gate to RUNNING permanently, and 1.12
+    already put the median stopped frame at 929 against a 695 threshold --
+    290 of 290 stopped frames read RUNNING.
+
+    That is not a slow gate, it is a blind one, and it fails in the worst
+    direction: protection/protection.py confirms a trip by watching this
+    gate go quiet, so a machine this system had genuinely stopped kept
+    reading RUNNING and the trip was reported as failed. Confirmation
+    arrived only when three consecutive frames happened to jitter under the
+    line -- measured live at one such run per 30-180s, which is what
+    produced the ~75s "confirm latency" that no confirm-window value could
+    have fixed (see protection.py's DEFAULT_CONFIRM_WINDOW_S).
+
+    Why the median over every bin is safe
+    -------------------------------------
+    It assumes the machine's signature is NARROW -- that most bins carry
+    floor and only a few carry motor. That holds here and is the same fact
+    the module docstring's bin table already establishes: the motor is "a
+    handful of narrow lines below ~600Hz", under 10 of the 384 bins an
+    accel-only frame carries, so a median over all 384 lands on the floor
+    even at full speed. Measured on the same node with motor 3 running, the
+    low bins lifted to 1.64x/1.23x/1.35x while the bins above ~2.5kHz stayed
+    at 1.15x -- the median tracked the floor, not the motor.
+
+    Taking the median over only the high bins (which by that same table
+    carry no motor signature at all) measured within 1% of this on both
+    states, so the extra tuning knob of "which bins are floor" is not worth
+    it -- but a machine with genuinely BROADBAND vibration would defeat
+    this, because there would be no bins left for the median to find the
+    floor in. Such a machine already defeats the running_fraction path for
+    the same reason (its running and stopped spectra differ by a scale
+    factor, which is all this measures), so it is not a regression -- but it
+    is the assumption to check first if a new device type gates badly.
+    """
+    ratios: List[float] = []
+    for chan in energy_channels(frame):
+        ref = stopped.spectrum.get(chan)
+        chan_bins = frame.bins[chan]
+        if ref is None or len(ref) != len(chan_bins):
+            return None
+        ratios.extend(b / r for b, r in zip(chan_bins, ref) if r > 0)
+    if len(ratios) < MIN_FLOOR_GAIN_BINS:
+        # Too few bins to support the "most bins are floor" premise, or a
+        # reference that is entirely zero -- leave the subtraction exactly as
+        # it was rather than inventing a scale from nothing.
+        return 1.0
+    return min(max(statistics.median(ratios), 1.0 / MAX_FLOOR_GAIN), MAX_FLOOR_GAIN)
+
+
 def excess_over_stopped(frame: SensorFrame,
                          stopped: Optional[StoppedBaseline]) -> Optional[List[float]]:
     """Per-bin magnitude above `stopped`'s noise floor, clamped at zero
     (a bin below the floor carries no evidence of motion, and letting it go
     negative would let a quiet bin cancel out a real line elsewhere).
+
+    The floor subtracted is `stopped.spectrum` scaled by floor_gain() above,
+    not `stopped.spectrum` itself -- see that function for why a fixed floor
+    goes blind within an hour on real hardware.
 
     None when the baseline can't be applied to this frame -- no baseline at
     all, or one that doesn't cover exactly the channels/bin counts this
@@ -352,8 +469,21 @@ def excess_over_stopped(frame: SensorFrame,
     (see the module docstring) this function exists to end. A node whose
     sensor_config or bin count changed since its baseline was captured
     re-reads as "no baseline" and falls back, until it captures a new one.
+
+    An existing stopped_energy_ref stays valid across this change and no
+    node needs re-commissioning for it, which is why the gain is applied
+    here rather than at capture time. The two ends agree by construction:
+    pipeline/stopped_baseline.py measures stopped_energy_ref through
+    compute_energy() -> this function, on the same frames the floor was just
+    fitted from, so its gain is ~1.0 and the number it records is unchanged.
+    Live, the gain is what keeps a drifted frame on that same scale -- on
+    the node above, the stopped machine measured 490 against a
+    commissioned 397, where the unscaled subtraction measured 929.
     """
     if stopped is None:
+        return None
+    gain = floor_gain(frame, stopped)
+    if gain is None:
         return None
     out: List[float] = []
     for chan in energy_channels(frame):
@@ -361,7 +491,7 @@ def excess_over_stopped(frame: SensorFrame,
         chan_bins = frame.bins[chan]
         if ref is None or len(ref) != len(chan_bins):
             return None
-        out.extend(max(b - r, 0.0) for b, r in zip(chan_bins, ref))
+        out.extend(max(b - gain * r, 0.0) for b, r in zip(chan_bins, ref))
     return out
 
 

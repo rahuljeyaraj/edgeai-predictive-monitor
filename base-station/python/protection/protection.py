@@ -62,20 +62,29 @@ logger = logging.getLogger(__name__)
 DEFAULT_TRIP_DELAY_S = 10.0
 
 # How long to wait for the vibration gate to confirm the machine actually
-# stopped before calling the trip failed. In principle this only needs to
-# cover the gate's own debounce (a few frames) plus the mechanical spin-down
-# of an unpowered stepper, which is close to instant -- but in practice the
-# path from "motor physically stopped" to "on_motor_state sees it" also
-# includes the SPI bridge's own multi-second stalls
-# (docs/BRIDGE_SPI_ARM_STREAM_STALL_INVESTIGATION.md) and whatever the
-# node's live frame rate happens to be. A real trip on this rig has been
-# observed to confirm ~10s after publish, well past the old 3s default --
-# on_motor_state's was_ours handling means a late confirmation still lands
-# TRIPPED correctly (see its docstring), but the dashboard shows "trip
-# failed" for the gap in between, which reads as a false alarm on a trip
-# that actually succeeded. Set with real headroom above the observed worst
-# case rather than the theoretical best case.
-DEFAULT_CONFIRM_WINDOW_S = 15.0
+# stopped before calling the trip failed. This needs to cover the gate's own
+# debounce (debounce_frames at the node's live frame rate), the spectrum
+# averaging ahead of it (DEFAULT_SMOOTHING_FRAMES, ~1.2s at a satellite's
+# ~4.9fps), the mechanical spin-down of an unpowered stepper (close to
+# instant), and headroom for the SPI bridge's own multi-second stalls
+# (docs/BRIDGE_SPI_ARM_STREAM_STALL_INVESTIGATION.md). That budget comes to
+# ~2.5s; 8s is roughly 3x it.
+#
+# This was briefly 15s, fitted to a real trip on this rig observed to
+# confirm ~75s after publish. That observation was real but the inference
+# from it was wrong, and the correction is worth recording because it is the
+# reason not to reach for this constant again. The gate was not slow, it was
+# blind: its node's noise floor had drifted ~12% since its stopped baseline
+# was captured, which pinned it to RUNNING on a machine that was genuinely
+# stopped (pipeline/gate.py's floor_gain, now fixed). Confirmation arrived
+# only when three consecutive frames happened to jitter under the threshold
+# -- measured live at one such run per 30-180s. That is an unbounded wait
+# with no worst case to size a window against, so no value here would have
+# fixed it, and every increase made a genuinely FAILED trip slower to report
+# while a faulted machine kept turning. If this window starts expiring on
+# real trips again, the gate has gone blind again -- measure what it sees
+# before touching this number.
+DEFAULT_CONFIRM_WINDOW_S = 8.0
 
 # The same wait, for the commissioning-time "does this output actually stop
 # this machine" test (docs/UNIFIED_COMMISSIONING_PLAN.md S3.3). Longer than

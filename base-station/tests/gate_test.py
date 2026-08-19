@@ -12,8 +12,9 @@ import sys
 
 from sensor_frame import FrameSource, SensorFrame
 from gate import (DEFAULT_STOPPED_MARGIN, BinsFrame, MotorState, MotorStateGate,
-                   SpectrumAverager, StoppedBaseline, compute_energy,
-                   excess_over_stopped)
+                   MAX_FLOOR_GAIN, MIN_FLOOR_GAIN_BINS, SpectrumAverager,
+                   StoppedBaseline, compute_energy, excess_over_stopped,
+                   floor_gain)
 
 THRESHOLD = 1.0
 DEBOUNCE = 3
@@ -425,7 +426,16 @@ def measured_energies(gate, frames):
 def test_averaging_shrinks_the_floor_jitter_it_is_there_for():
     """Same frames, same baseline, K=1 vs K=6: the spread of what the gate
     measures on a stopped machine has to come down, because that spread is
-    the whole reason a baseline gets rejected."""
+    the whole reason a baseline gets rejected.
+
+    Measured as excess over 1.0, not as a ratio of ratios. A spread is a
+    max/min, so "no spread at all" is 1.0 rather than 0 -- halving the ratio
+    itself is only even expressible while it exceeds 2.0, and it no longer
+    does: JITTER scales every bin of a frame by one factor, which is
+    precisely the uniform drift floor_gain() now takes out, so the K=1 case
+    starts at 1.77x here instead of the 6.50x it measured before the gain
+    existed. Averaging still cuts what is left by an order of magnitude,
+    which is the claim this test is actually making."""
     unsmoothed = MotorStateGate(threshold=THRESHOLD, debounce_frames=1,
                                  stopped_provider=lambda: REAL_BASELINE)
     smoothed = MotorStateGate(
@@ -437,7 +447,7 @@ def test_averaging_shrinks_the_floor_jitter_it_is_there_for():
     avg = measured_energies(smoothed, jittered_stopped_frames())[6:]
     raw_spread = max(raw) / min(raw)
     avg_spread = max(avg) / min(avg)
-    assert avg_spread < raw_spread / 2, (raw_spread, avg_spread)
+    assert avg_spread - 1.0 < (raw_spread - 1.0) / 2, (raw_spread, avg_spread)
     print(f"averaging 6 frames cuts the stopped floor's spread {raw_spread:.2f}x -> "
            f"{avg_spread:.2f}x: PASS")
 
@@ -508,6 +518,113 @@ def test_changing_k_to_one_drops_the_buffered_history():
     print("dropping to K=1 clears the window instead of averaging across the change: PASS")
 
 
+# --- floor drift (gate.py's floor_gain) -----------------------------------
+
+# A uniform floor drift, the shape measured live on node 194584 an hour
+# after its baseline was captured with the machine genuinely stopped: every
+# bin up by the same factor, no peak anywhere.
+#
+# 1.30 rather than the 1.12 that node actually measured, because how much
+# drift it takes to break a gate depends on how tight its baseline is, and
+# this fixture's is far looser than that node's. Its stopped_energy_ref is
+# 20.4% of the floor it was subtracted from, putting its threshold at 35.7%
+# of the floor and needing ~1.21x to cross; node 194584's was 7.8%, putting
+# its threshold at 13.6% and needing only ~1.14x. That ratio is the real
+# lesson -- the tighter the baseline, the less drift it survives -- so this
+# picks a drift that crosses THIS fixture's line rather than replaying a
+# number that would not.
+LIVE_DRIFT = 1.30
+
+
+def drifted(bins, gain=LIVE_DRIFT):
+    return tuple(b * gain for b in bins)
+
+
+def test_a_drifted_floor_no_longer_reads_running_on_a_stopped_machine():
+    """The bug this exists for, on the shape that actually caused it.
+
+    A stopped machine whose noise floor has crept up 12% since commissioning
+    was reading RUNNING on 290 of 290 frames live, which held protection/'s
+    trip confirmation open on a machine it had genuinely stopped and got the
+    trip reported as failed."""
+    gate = baseline_gate(REAL_BASELINE)
+    frame_ = accel_x_frame(drifted(STOPPED_FRAME_X))
+
+    unscaled = _rms_excess_without_gain(frame_, REAL_BASELINE)
+    assert unscaled > gate_threshold(REAL_BASELINE), unscaled
+
+    assert settle(gate, frame_) == MotorState.STOPPED, (gate.state, gate.last_energy)
+    print(f"a {LIVE_DRIFT:.2f}x drifted floor measures {gate.last_energy:.0f} against a "
+           f"{gate.last_threshold:.0f} threshold and still reads STOPPED "
+           f"(unscaled it measured {unscaled:.0f}): PASS")
+
+
+def test_a_drifted_floor_does_not_hide_a_running_machine():
+    """The half that makes it a fix rather than a way to blind the gate:
+    the same drift applied to a genuinely running machine must still read
+    RUNNING, because the motor's lines are narrow and the median that
+    estimates the drift lands on the floor between them."""
+    gate = baseline_gate(REAL_BASELINE)
+    assert settle(gate, accel_x_frame(drifted(RUNNING_FRAME_X))) == MotorState.RUNNING, \
+        (gate.state, gate.last_energy, gate.last_threshold)
+    print(f"a running machine seen through the same drift measures "
+           f"{gate.last_energy:.0f} over {gate.last_threshold:.0f} and still reads "
+           "RUNNING: PASS")
+
+
+def test_the_gain_is_bounded_so_it_cannot_normalize_a_machine_away():
+    """MAX_FLOOR_GAIN's whole job. An unbounded median-of-ratios cannot tell
+    a floor that rose from a machine that lifted every bin equally, and
+    would report silence for a running machine -- the one error this module
+    must never make. Bounded, the most it can ever subtract is
+    MAX_FLOOR_GAIN x the floor, so a machine louder than that survives no
+    matter what the estimator does."""
+    huge = accel_x_frame(tuple(b * 50 for b in STOPPED_REF_X))
+    gate = baseline_gate(REAL_BASELINE)
+    assert settle(gate, huge) == MotorState.RUNNING, (gate.state, gate.last_energy)
+    assert floor_gain(huge, REAL_BASELINE) == MAX_FLOOR_GAIN, floor_gain(huge, REAL_BASELINE)
+    print(f"a uniform 50x lift is capped at a {MAX_FLOOR_GAIN}x gain and still reads "
+           "RUNNING: PASS")
+
+
+def test_too_few_bins_falls_back_to_the_unscaled_floor():
+    """Below MIN_FLOOR_GAIN_BINS the estimator's premise -- most bins carry
+    floor, a few carry machine -- cannot be established at all, so it
+    reproduces the old behaviour exactly rather than scaling on a number it
+    cannot support. Real frames carry 128 bins per channel and never reach
+    this path."""
+    baseline = StoppedBaseline(spectrum={"accel_x": (100.0, 100.0)}, energy=1.0)
+    tiny = accel_x_frame((0.0, 300.0))
+    assert floor_gain(tiny, baseline) == 1.0, floor_gain(tiny, baseline)
+    assert excess_over_stopped(tiny, baseline) == [0.0, 200.0]
+    print(f"a frame with fewer than {MIN_FLOOR_GAIN_BINS} bins is measured against the "
+           "unscaled floor: PASS")
+
+
+def test_an_undrifted_frame_is_measured_exactly_as_before():
+    """No drift, no change: the gain is ~1.0 on a frame taken against its own
+    baseline, which is why an existing stopped_energy_ref stays valid and no
+    node needs re-commissioning for this."""
+    gain = floor_gain(REAL_STOPPED_FRAME, REAL_BASELINE)
+    assert 0.95 < gain < 1.05, gain
+    scaled = compute_energy(REAL_STOPPED_FRAME, REAL_BASELINE)
+    assert abs(scaled - REAL_STOPPED_ENERGY) < 0.25 * REAL_STOPPED_ENERGY, \
+        (scaled, REAL_STOPPED_ENERGY)
+    print(f"an undrifted frame estimates a {gain:.3f}x gain and still measures "
+           f"{scaled:.0f} against a commissioned {REAL_STOPPED_ENERGY:.0f}: PASS")
+
+
+def gate_threshold(baseline):
+    return baseline.energy * DEFAULT_STOPPED_MARGIN
+
+
+def _rms_excess_without_gain(frame_, baseline):
+    """What excess_over_stopped() measured before floor_gain existed."""
+    ref = baseline.spectrum["accel_x"]
+    excess = [max(b - r, 0.0) for b, r in zip(frame_.bins["accel_x"], ref)]
+    return (sum(v * v for v in excess) / len(excess)) ** 0.5
+
+
 if __name__ == "__main__":
     try:
         main()
@@ -538,6 +655,13 @@ if __name__ == "__main__":
         test_changing_k_to_one_drops_the_buffered_history()
         print("RESULT: PASS - frame averaging cuts floor jitter without erasing a "
                "running signature")
+        test_a_drifted_floor_no_longer_reads_running_on_a_stopped_machine()
+        test_a_drifted_floor_does_not_hide_a_running_machine()
+        test_the_gain_is_bounded_so_it_cannot_normalize_a_machine_away()
+        test_too_few_bins_falls_back_to_the_unscaled_floor()
+        test_an_undrifted_frame_is_measured_exactly_as_before()
+        print("RESULT: PASS - a drifted noise floor is scaled out without hiding a "
+               "running machine")
     except AssertionError as e:
         print(f"RESULT: FAIL - {e}")
         sys.exit(1)
