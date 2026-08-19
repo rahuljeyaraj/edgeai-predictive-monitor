@@ -70,7 +70,13 @@ logger = logging.getLogger(__name__)
 # a way no threshold can. Note this only became true once the spread became
 # a percentile (SPREAD_PERCENTILE): under the old max/median it got strictly
 # WORSE with length, which is why the old default had to be short.
-DEFAULT_MIN_FRAMES = 150
+#
+# 50 for demo pacing (~10s): NOT one of the three measured lengths above --
+# interpolated between 30's 71% (32/45) accept rate and 100's 97% (30/31),
+# so treat it as untested. If a capture fails the MAX_STOPPED_SPREAD check
+# during the demo, that is this tradeoff showing up, not a bug -- the fix is
+# either to retry (capture is fast now) or bump this back toward 100.
+DEFAULT_MIN_FRAMES = 50
 
 # Reject a baseline whose own frame-to-frame spread leaves no room for a
 # threshold: if a stopped frame is already past where
@@ -155,7 +161,7 @@ class StoppedBaselineSession:
             # of 1, 2, ... frames, which carry the jitter of a short average
             # while being measured as though they were full ones, and the
             # spread check reads them as a machine that never stopped. Two
-            # full windows is the floor; the shipped defaults are 150 and 6.
+            # full windows is the floor; the shipped defaults are 50 and 6.
             raise ValueError(
                 f"min_frames ({min_frames}) must be at least twice smoothing_frames "
                 f"({smoothing_frames}) -- a capture that short is mostly partial "

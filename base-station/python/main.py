@@ -63,6 +63,7 @@ from wifi import WifiStatusPoller
 from app import create_app, broadcast_threadsafe
 from commissioning_controller import CommissioningController
 from capture_controller import CaptureController
+from stopped_baseline import DEFAULT_MIN_FRAMES as DEFAULT_MIN_STOPPED_FRAMES
 from stopped_baseline_controller import StoppedBaselineController
 from setup_controller import SetupController
 from protection import DEFAULT_TRIP_DELAY_S, ProtectionController
@@ -399,6 +400,11 @@ def main():
     parser.add_argument("--gate-debounce-frames", type=int, default=3)
     parser.add_argument("--status-debounce-frames", type=int, default=3)
     parser.add_argument("--min-commission-frames", type=int, default=50)
+    parser.add_argument("--min-stopped-frames", type=int, default=DEFAULT_MIN_STOPPED_FRAMES,
+                         help="How many frames a stopped-baseline capture needs before it "
+                              "can be fitted (pipeline/stopped_baseline.py). Lower is "
+                              "faster but less reliable -- see that module's docstring "
+                              "for the accept-rate tradeoff before changing this.")
 
     parser.add_argument("--trip-host-node-id", default="motor_rig",
                          help="MQTT topic identity of the host that owns the rig's "
@@ -511,7 +517,8 @@ def main():
         captures_dir=captures_dir)
     capture = CaptureController(registry, captures_dir, collection_gate_factory)
     stopped_baseline = StoppedBaselineController(
-        registry, smoothing_frames=args.gate_smoothing_frames)
+        registry, min_frames=args.min_stopped_frames,
+        smoothing_frames=args.gate_smoothing_frames)
     # The guided flow itself owns no collection of its own -- it sequences
     # the three controllers above plus protection (see setup_controller.py).
     setup = SetupController(registry, commissioning, stopped_baseline=stopped_baseline,
