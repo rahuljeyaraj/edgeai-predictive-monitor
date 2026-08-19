@@ -102,6 +102,15 @@ def _request(method: str, url: str, headers: Dict[str, str],
             status, raw = resp.status, resp.read()
     except urllib.error.HTTPError as e:
         status, raw = e.code, e.read()
+    except urllib.error.URLError as e:
+        # DNS failure, connection refused, TLS error, timeout -- anything
+        # that never got as far as an HTTP response. Previously uncaught
+        # here, which surfaced all the way up as a raw Python exception
+        # instead of the EIClientError every other failure in this module
+        # produces (api/app.py's ei_link route now has a catch-all too, but
+        # a device offline/flaky-WiFi is the single most likely way link()
+        # fails on real hardware, so it deserves an actual message here).
+        raise EIClientError(f"{url}: could not reach Edge Impulse ({e.reason})")
 
     try:
         parsed = json.loads(raw) if raw else {}

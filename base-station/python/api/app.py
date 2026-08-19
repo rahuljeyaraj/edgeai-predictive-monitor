@@ -1148,6 +1148,16 @@ def create_app(registry: Registry, history_store: HistoryStore,
             raise HTTPException(status_code=400, detail={"totp_required": True})
         except (EIClientError, EIControllerError) as e:
             raise HTTPException(status_code=400, detail=str(e))
+        except Exception as e:
+            # Broad on purpose, same reasoning as _run_ei_job's own catch-all
+            # below: link() runs synchronously in the request thread, and
+            # anything not already an EIClientError/EIControllerError (a
+            # network failure reaching Edge Impulse, an unexpected response
+            # shape, ...) would otherwise fall through to FastAPI's default
+            # 500 handler, which returns no body at all -- the login form
+            # then has nothing to show but a bare "500".
+            logger.exception("EI link failed for device_type %r", body.device_type)
+            raise HTTPException(status_code=400, detail=str(e))
 
     @app.post("/classifier/ei/unlink")
     def ei_unlink(body: EIUnlinkBody):
