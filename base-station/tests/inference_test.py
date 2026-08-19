@@ -137,6 +137,24 @@ def test_stopped_frames_are_not_scored(registry):
     print("stopped frames are not scored and confirmed status is left untouched: PASS")
 
 
+def test_confirm_false_scores_but_does_not_write_status(registry):
+    # protection.trip_pending()'s scenario: a trip is in flight and the gate
+    # hasn't confirmed STOPPED yet, so MotorPipeline calls with confirm=False.
+    # The frame must still be scored (chart/telemetry, and self.motor_state
+    # must keep tracking the gate) but the confirmed status must not move,
+    # even across enough consecutive frames to normally debounce a flip --
+    # this is exactly the race that used to let a spin-down score race the
+    # gate to FAULT -> HEALTHY before the gate ever confirmed the stop.
+    pipeline = InferencePipeline(registry, NODE_ID, new_gate(), debounce_frames=3)
+    assert pipeline.status == NodeStatus.HEALTHY, pipeline.status
+    for _ in range(5):
+        score = pipeline.handle_frame(FAULT, confirm=False)
+        assert score is not None
+    assert pipeline.status == NodeStatus.HEALTHY, pipeline.status
+    assert registry.get(NODE_ID).status == NodeStatus.HEALTHY, registry.get(NODE_ID).status
+    print("confirm=False scores frames without ever writing a status: PASS")
+
+
 def test_frames_for_other_node_ignored(registry):
     pipeline = InferencePipeline(registry, NODE_ID, new_gate())
     other = SensorFrame(node_id="node-other", source=FrameSource.SPI, timestamp=0.0,
@@ -161,6 +179,9 @@ def main():
 
     registry = new_registry_with_model(tmp_dir)
     test_stopped_frames_are_not_scored(registry)
+
+    registry = new_registry_with_model(tmp_dir)
+    test_confirm_false_scores_but_does_not_write_status(registry)
 
     registry = new_registry_with_model(tmp_dir)
     test_frames_for_other_node_ignored(registry)

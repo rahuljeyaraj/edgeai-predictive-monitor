@@ -199,6 +199,25 @@ class ProtectionController:
         except KeyError:
             return False
 
+    def trip_pending(self, node_id: str) -> bool:
+        """True from the moment a trip is published until the gate resolves
+        it (TRIPPED) or its confirm window times out and is later resolved
+        (trip_failed, still awaiting a late gate edge -- see on_motor_state's
+        `was_ours`). While true, nothing but the gate itself may decide this
+        node's outcome -- see MotorPipeline's `confirm` plumbing in
+        pipeline/manager.py, which is what this exists for: InferencePipeline
+        keeps scoring frames the gate hasn't yet confirmed STOPPED (spin-down
+        is not instant), and a score computed on decaying vibration can
+        debounce-confirm HEALTHY/WARNING before the gate confirms the stop.
+        Letting that write through would race the gate to a verdict using a
+        signal never trained to recognise 'slowing down', and the loser's
+        write would either be silently swallowed (WARNING/HEALTHY -> TRIPPED
+        is not a legal edge -- registry.py's to_tripped is FAULT-only, on
+        purpose) or, worse, look like a real recovery on the dashboard."""
+        with self._lock:
+            state = self._states.get(node_id)
+            return bool(state and (state.awaiting_confirm or state.trip_failed))
+
     # -- inputs --------------------------------------------------------
 
     def on_status_change(self, node_id: str, status: NodeStatus) -> None:
@@ -243,6 +262,15 @@ class ProtectionController:
                 return
             state.motor_running = running
         if running:
+            if self.trip_pending(node_id):
+                # A trip published against this node hasn't been resolved
+                # yet -- this edge is gate noise (e.g. cross-talk from a
+                # neighbouring motor sharing the frame, docs/
+                # MOTOR_STOP_PLAN.md's flagged open risk), not a restart.
+                # Forcing HEALTHY here would erase an in-flight trip on a
+                # blip; only a clean STOPPED confirmation (or the confirm
+                # timeout) may resolve it.
+                return
             # Started again. This is the entire recovery path -- no
             # acknowledge, no reset button. Land on HEALTHY and let the next
             # few scored frames re-diagnose, exactly as Registry.resume() does

@@ -501,7 +501,8 @@ def main():
         registry, gate_factory, perf_monitor=perf_monitor, history_store=history,
         status_debounce_frames=args.status_debounce_frames, on_score=on_score,
         classifier_registry=classifier_registry, scaling_path=ei_scaling_path,
-        on_classification=on_classification, on_motor_state=protection.on_motor_state)
+        on_classification=on_classification, on_motor_state=protection.on_motor_state,
+        trip_pending=protection.trip_pending)
     # Lets protection ask "is it stopped right now" instead of only ever
     # hearing about it via the on_motor_state edge above -- see
     # protection.py's _fire_trip for why the edge alone isn't enough.

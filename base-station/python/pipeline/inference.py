@@ -115,12 +115,22 @@ class InferencePipeline:
         self._candidate_status = None
         self._candidate_count = 0
 
-    def handle_frame(self, frame: SensorFrame) -> Optional[float]:
+    def handle_frame(self, frame: SensorFrame, confirm: bool = True) -> Optional[float]:
         """Returns the reconstruction error for this frame, or None if it
         was skipped (a different node_id, or the gate reports anything but
         confirmed RUNNING -- S3.2). A status change is only confirmed (and
         pushed to the registry) once debounce_frames consecutive frames
-        agree on it (S3.6)."""
+        agree on it (S3.6).
+
+        confirm=False still scores the frame (for the chart/telemetry, and
+        so self.motor_state keeps tracking the gate) but never writes a
+        status. Set by MotorPipeline while protection/ has a trip in flight
+        for this node: spin-down is not instant, so the gate can still read
+        RUNNING for several frames after a trip fires, and this pipeline has
+        no way to tell "coasting to a stop" from a real recovery -- both
+        look like a falling score. Racing that guess against the gate's own
+        stop confirmation is exactly the bug protection.trip_pending()'s
+        docstring describes; this is the other half of that fix."""
         if frame.node_id != self._node_id:
             return None
         if self._gate.update(frame) != MotorState.RUNNING:
@@ -131,6 +141,9 @@ class InferencePipeline:
             vector = standardize_scalars(vector, spectral_dim, self._scalar_mu, self._scalar_sigma)
         score = reconstruction_error(self._model, vector)
         self._last_score = score
+
+        if not confirm:
+            return score
 
         raw_status = self._status_for_score(score)
         if raw_status == self._status:

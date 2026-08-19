@@ -126,7 +126,8 @@ class MotorPipeline:
                  classifier_registry: Optional["ClassifierRegistry"] = None,
                  scaling_path: Optional[str] = None,
                  on_classification: Optional[Callable[[str, float, dict], None]] = None,
-                 on_motor_state: Optional[Callable[[str, bool], None]] = None):
+                 on_motor_state: Optional[Callable[[str, bool], None]] = None,
+                 trip_pending: Optional[Callable[[str], bool]] = None):
         self.node_id = node_id
         self.frame_count = 0
         self._registry = registry
@@ -137,6 +138,7 @@ class MotorPipeline:
         self._classifier_registry = classifier_registry
         self._scaling_path = scaling_path
         self._on_classification = on_classification
+        self._trip_pending = trip_pending
         # Independent of self._inference's own internal gate below --
         # the classifier runs "in parallel with the autoencoder ... both
         # always-on independently whenever a model exists for that node's
@@ -226,7 +228,8 @@ class MotorPipeline:
 
         self._paused_since_last_frame = False
 
-        score = self._inference.handle_frame(frame)
+        confirm = not (self._trip_pending is not None and self._trip_pending(self.node_id))
+        score = self._inference.handle_frame(frame, confirm=confirm)
         self._report_motor_state(self._inference.motor_state)
         if score is not None:
             self._registry.record_anomaly_score(self.node_id, score)
@@ -344,7 +347,8 @@ class PipelineManager:
                  classifier_registry: Optional["ClassifierRegistry"] = None,
                  scaling_path: Optional[str] = None,
                  on_classification: Optional[Callable[[str, float, dict], None]] = None,
-                 on_motor_state: Optional[Callable[[str, bool], None]] = None):
+                 on_motor_state: Optional[Callable[[str, bool], None]] = None,
+                 trip_pending: Optional[Callable[[str], bool]] = None):
         self._registry = registry
         self._gate_factory = gate_factory
         self._perf_monitor = perf_monitor
@@ -355,6 +359,7 @@ class PipelineManager:
         self._scaling_path = scaling_path
         self._on_classification = on_classification
         self._on_motor_state = on_motor_state
+        self._trip_pending = trip_pending
         self._pipelines: Dict[str, MotorPipeline] = {}
 
     def route(self, frame: SensorFrame) -> Optional[MotorPipeline]:
@@ -366,7 +371,7 @@ class PipelineManager:
                     self._status_debounce_frames, self._history_store,
                     on_score=self._on_score, classifier_registry=self._classifier_registry,
                     scaling_path=self._scaling_path, on_classification=self._on_classification,
-                    on_motor_state=self._on_motor_state)
+                    on_motor_state=self._on_motor_state, trip_pending=self._trip_pending)
                 self._pipelines[frame.node_id] = pipeline
                 sensor_config, input_dim = _infer_sensor_config_and_dim(frame)
                 self._registry.add(frame.node_id, sensor_config=sensor_config, input_dim=input_dim)

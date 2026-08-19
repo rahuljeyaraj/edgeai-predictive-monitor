@@ -290,6 +290,36 @@ def test_confirmation_arriving_after_the_window_still_reads_tripped():
     print("a stop confirmed after the window closed reads TRIPPED, not IDLE: PASS")
 
 
+def test_running_blip_mid_trip_does_not_erase_it():
+    """Regression: motors 2/3 sharing a frame can shake it enough that a
+    just-tripped motor 1 flickers back over the gate's RUNNING threshold for
+    an instant (the open risk flagged in docs/MOTOR_STOP_PLAN.md) before
+    settling stopped. The on_motor_state(running=True) branch used to force
+    HEALTHY unconditionally on any such edge -- so that blip alone erased an
+    in-flight trip, and the real stop that followed a moment later then read
+    as an operator's IDLE, or was simply too late to matter. trip_pending()
+    must make this edge a no-op while a trip is unresolved."""
+    registry, protection, published = build(trip_motor_idx=1)
+
+    registry.set_status(NODE_ID, NodeStatus.FAULT)
+    time.sleep(TRIP_DELAY_S + SETTLE_S)
+    assert published == [1], published
+    assert protection.trip_pending(NODE_ID) is True
+
+    # Cross-talk blip: gate reads RUNNING again for one edge before the
+    # motor actually settles stopped.
+    protection.on_motor_state(NODE_ID, running=True)
+    assert status(registry) == NodeStatus.FAULT, status(registry)
+    assert protection.trip_pending(NODE_ID) is True
+    print("a running blip mid-trip does not erase the pending trip: PASS")
+
+    # The real stop, right after, still confirms TRIPPED.
+    protection.on_motor_state(NODE_ID, running=False)
+    assert status(registry) == NodeStatus.TRIPPED, status(registry)
+    assert protection.trip_pending(NODE_ID) is False
+    print("the real stop that follows still confirms TRIPPED: PASS")
+
+
 def test_tripped_node_restarted_without_a_fix_trips_again():
     registry, protection, published = build(trip_motor_idx=1)
 
@@ -325,6 +355,7 @@ if __name__ == "__main__":
         test_already_stopped_machine_confirms_instantly_via_query()
         test_one_stop_reported_twice_is_decided_once()
         test_confirmation_arriving_after_the_window_still_reads_tripped()
+        test_running_blip_mid_trip_does_not_erase_it()
         test_tripped_node_restarted_without_a_fix_trips_again()
         print("RESULT: PASS - protection ladder, IDLE/TRIPPED split, Hold and "
               "failed-trip handling all behave")
