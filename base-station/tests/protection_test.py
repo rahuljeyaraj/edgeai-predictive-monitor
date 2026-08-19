@@ -185,6 +185,40 @@ def test_acknowledge_re_arms_recovery():
     print("acknowledging a trip re-arms normal restart recovery: PASS")
 
 
+def test_acknowledge_recovers_instantly_if_restarted_while_unacknowledged():
+    """The actual reported symptom: pressing Acknowledge after a genuine
+    restart took 10-15s to reflect HEALTHY. Cause -- the restart's
+    on_motor_state edge arrives *before* acknowledge_trip() (trip_pending()
+    was still True, so it's dropped by design), and on_motor_state only
+    fires again on the *next* change -- there isn't one, the machine just
+    keeps running. Left alone, recovery had to wait on
+    InferencePipeline's slower per-frame score debounce instead. Fixed by
+    having acknowledge_trip() ask the live gate state and replay the
+    edge itself -- this asserts that happens with no sleep at all, i.e.
+    synchronously within the acknowledge_trip() call."""
+    live_running = {"value": False}
+    registry, protection, published = build(
+        trip_motor_idx=1, motor_state_query=lambda node_id: live_running["value"])
+
+    registry.set_status(NODE_ID, NodeStatus.FAULT)
+    time.sleep(TRIP_DELAY_S + SETTLE_S)
+    protection.on_motor_state(NODE_ID, running=False)
+    assert status(registry) == NodeStatus.TRIPPED, status(registry)
+
+    # Operator restarts the machine before acknowledging -- the edge is
+    # dropped, exactly like test_unacknowledged_trip_ignores_gate_flicker.
+    live_running["value"] = True
+    protection.on_motor_state(NODE_ID, running=True)
+    assert status(registry) == NodeStatus.TRIPPED, status(registry)
+
+    protection.acknowledge_trip(NODE_ID)
+    # No time.sleep() anywhere above this line -- if this passes, recovery
+    # happened synchronously inside acknowledge_trip(), not after waiting
+    # on a future frame.
+    assert status(registry) == NodeStatus.HEALTHY, status(registry)
+    print("acknowledging after a masked restart recovers instantly, no wait: PASS")
+
+
 def test_unconfirmed_trip_is_reported_failed_and_stays_fault():
     registry, protection, published = build(
         trip_motor_idx=1, confirm_window_s=SHORT_CONFIRM_WINDOW_S)
@@ -429,6 +463,7 @@ if __name__ == "__main__":
         test_fault_trips_after_the_delay_and_confirms()
         test_unacknowledged_trip_ignores_gate_flicker_and_stays_tripped()
         test_acknowledge_re_arms_recovery()
+        test_acknowledge_recovers_instantly_if_restarted_while_unacknowledged()
         test_unconfirmed_trip_is_reported_failed_and_stays_fault()
         test_hold_cancels_a_pending_trip()
         test_recovering_before_the_delay_expires_abandons_the_trip()

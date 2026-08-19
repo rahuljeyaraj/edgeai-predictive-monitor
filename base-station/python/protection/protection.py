@@ -242,17 +242,42 @@ class ProtectionController:
     def acknowledge_trip(self, node_id: str) -> bool:
         """Operator action: 'I've seen this trip.' Clears needs_ack so the
         next genuine gate/inference signal is trusted again -- see
-        trip_pending()'s case 2. Does not itself change status: the machine
-        may still be sitting there stopped, and this only re-arms recovery,
-        it doesn't guess one. Returns whether there was an unacknowledged
+        trip_pending()'s case 2. Returns whether there was an unacknowledged
         trip to clear, so the REST layer can 409 a stale button press
-        instead of reporting a success that didn't do anything."""
+        instead of reporting a success that didn't do anything.
+
+        If the machine is still stopped, that's it -- nothing else to do,
+        TRIPPED stands untouched, exactly as if this had never been called.
+        But if it was genuinely restarted *while* unacknowledged, that
+        restart's on_motor_state edge already happened and was dropped by
+        trip_pending()'s guard -- on_motor_state only fires again on the
+        *next* change, and there won't be one while the machine just keeps
+        running. Left alone, this node would silently wait on
+        InferencePipeline's much slower per-frame score debounce instead of
+        the instant edge-triggered path a normal restart gets (or, at low
+        frame rates, look stuck for a long time). So ask the live gate state
+        directly -- same pattern _fire_trip uses for "already stopped before
+        we asked" -- and replay the edge now that it can actually be acted
+        on. Safe to replay: manager.py's _report_motor_state already called
+        InferencePipeline.reset_to_healthy() unconditionally at the time of
+        the original edge (it doesn't know about trip_pending at all), so
+        that side was never stale -- only this module's own record of the
+        edge, and the registry write, were the parts trip_pending dropped."""
         with self._lock:
             state = self._states.get(node_id)
             if state is None or not state.needs_ack:
                 return False
             state.needs_ack = False
         logger.info("protection: trip on %s acknowledged, recovery re-armed", node_id)
+        if self._motor_state_query is not None and self._motor_state_query(node_id) is True:
+            with self._lock:
+                state = self._states.get(node_id)
+                if state is not None:
+                    # Let on_motor_state see this as a fresh observation --
+                    # its own idempotency dedup already latched True on the
+                    # dropped edge above.
+                    state.motor_running = None
+            self.on_motor_state(node_id, running=True)
         return True
 
     # -- inputs --------------------------------------------------------
