@@ -688,14 +688,14 @@ def main() -> None:
                          "received on every asset's topic and routed by the "
                          "motor index in the payload, so this no longer decides "
                          "which trips arrive.")
-    p.add_argument("--motors", default="1",
+    p.add_argument("--motors", default=",".join(str(i) for i in MOTOR_IDS),
                     help="Comma-separated motor indices installed on this rig at "
-                         "startup (default: 1). This is both what the control page "
-                         "shows and what the base station is offered as trip "
-                         "outputs. Defaults to one motor because that is where a "
-                         "real floor starts; add the rest on the control page, "
-                         "which re-announces live. Does not change which motors "
-                         "the rig is wired for (see MOTOR_IDS).")
+                         "startup (default: all of MOTOR_IDS). This is both what "
+                         "the control page shows and what the base station is "
+                         "offered as trip outputs. Drop any not actually wired on "
+                         "the control page, which re-announces live. Does not "
+                         "change which motors the rig is wired for (see "
+                         "MOTOR_IDS).")
     p.add_argument("--http-port", type=int, default=8000,
                     help="Port for the control page and its JSON API "
                          "(default: 8000). Bound to localhost only.")
