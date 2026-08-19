@@ -285,18 +285,26 @@ static bool boot_button_force_requested(void)
 	return true;
 }
 
+/* Default regulatory domain excludes channels 12-14; routers outside the US
+ * (ours included) commonly put their 2.4GHz AP there. Left unset, a join
+ * silently stalls forever with no disconnect event, AND a scan just omits
+ * the network entirely with no error either - both handle_scan() (the
+ * portal's "Scan for networks" button) and attempt_sta_join() below hit
+ * this, so every WiFi.mode() call site in transport_task_entry() calls this
+ * right after, before any scan or join can happen on that radio session. */
+static void set_wifi_regulatory_domain(void)
+{
+	wifi_country_t country = { .cc = "JP", .schan = 1, .nchan = 14,
+				    .policy = WIFI_COUNTRY_POLICY_MANUAL };
+	esp_wifi_set_country(&country);
+}
+
 /* Blocks up to STA_JOIN_TIMEOUT_MS waiting for WiFi.begin() to resolve one
  * way or the other - unlike the old connect_wifi(), never blocks
  * indefinitely, since an unprovisioned/mis-provisioned node has the
  * provisioning portal to fall back on instead of just hanging. */
 static bool attempt_sta_join(const char *ssid, const char *password)
 {
-	/* Default regulatory domain excludes channel 13; routers outside the US
-	 * (ours included) commonly put their 2.4GHz AP there, which silently
-	 * stalls WiFi.begin() forever with no disconnect event. */
-	wifi_country_t country = { .cc = "JP", .schan = 1, .nchan = 14,
-				    .policy = WIFI_COUNTRY_POLICY_MANUAL };
-	esp_wifi_set_country(&country);
 	Serial.printf("[transport] attempting WiFi join to \"%s\"...\n", ssid);
 	WiFi.begin(ssid, password);
 
@@ -391,8 +399,10 @@ static void transport_task_entry(void *arg)
 
 	if (state == TRANSPORT_STATE_BOOT_STA_ATTEMPT) {
 		WiFi.mode(WIFI_STA);
+		set_wifi_regulatory_domain();
 	} else {
 		WiFi.mode(WIFI_AP_STA);
+		set_wifi_regulatory_domain();
 		start_provisioning_ap(ap_ssid, MQTT_BROKER_HOST);
 		hal_display_rgb_set(RGB_PROVISIONING, RGB_DISPLAY_CONST, 0);
 	}
@@ -407,6 +417,7 @@ static void transport_task_entry(void *arg)
 			memset(&creds, 0, sizeof(creds));
 			hal_provisioning_stop(); /* no-op if not already active */
 			WiFi.mode(WIFI_AP_STA);
+			set_wifi_regulatory_domain();
 			start_provisioning_ap(ap_ssid, MQTT_BROKER_HOST);
 			hal_display_rgb_set(RGB_PROVISIONING, RGB_DISPLAY_CONST, 0);
 			mqtt_led = MQTT_LED_UNKNOWN;
@@ -419,6 +430,7 @@ static void transport_task_entry(void *arg)
 				state = TRANSPORT_STATE_CONNECTED;
 			} else {
 				WiFi.mode(WIFI_AP_STA);
+				set_wifi_regulatory_domain();
 				start_provisioning_ap(ap_ssid, creds.mqtt_broker_host);
 				hal_display_rgb_set(RGB_PROVISIONING, RGB_DISPLAY_CONST, 0);
 				state = TRANSPORT_STATE_PROVISIONING;
@@ -450,6 +462,7 @@ static void transport_task_entry(void *arg)
 				vTaskDelay(pdMS_TO_TICKS(PROVISIONING_AP_TEARDOWN_GRACE_MS));
 				hal_provisioning_stop();
 				WiFi.mode(WIFI_STA);
+				set_wifi_regulatory_domain();
 				mqtt_led = MQTT_LED_UNKNOWN; /* force a real MQTT check next tick, not an assumed "up" */
 				state = TRANSPORT_STATE_CONNECTED;
 			} else {
@@ -520,6 +533,7 @@ static void transport_task_entry(void *arg)
 			if ((int32_t)(millis() - recovery_deadline) >= 0) {
 				Serial.println("[transport] recovery window expired, reopening provisioning AP");
 				WiFi.mode(WIFI_AP_STA);
+				set_wifi_regulatory_domain();
 				start_provisioning_ap(ap_ssid, creds.mqtt_broker_host);
 				hal_display_rgb_set(RGB_PROVISIONING, RGB_DISPLAY_CONST, 0);
 				state = TRANSPORT_STATE_PROVISIONING;
@@ -551,6 +565,7 @@ static void transport_task_entry(void *arg)
 			vTaskDelay(pdMS_TO_TICKS(PROVISIONING_AP_TEARDOWN_GRACE_MS));
 			hal_provisioning_stop();
 			WiFi.mode(WIFI_STA);
+			set_wifi_regulatory_domain();
 			state = TRANSPORT_STATE_CONNECTED;
 		}
 
