@@ -164,19 +164,20 @@ body {
      has learned the ring's colors should read the same colors on these
      tiles. Change one, change both.
 
-     PAUSED and TRIPPED reuse WARNING's and FAULT's hue respectively on the
-     LED, disambiguated there by blink pattern (const vs strobe, strobe vs
-     breathe). A static tile has no blink to fall back on, so they stay a
-     distinguishable *shade* of that same hue here instead of the identical
-     hex -- deeper/darker, same family, still readable side by side in a
-     fleet list. --color-offline has no LED equivalent at all (a genuinely
-     offline node has no channel to receive an LED command), so it keeps its
-     own grey purely for on-screen legibility. */
+     PAUSED is WARNING's exact amber, same as the LED (2026-08-19, user's
+     call): a paused node is not a state to sit in, so it should read as a
+     warning, and an operator seeing amber on the ring must see amber here.
+     TRIPPED still reuses FAULT's hue as a darker shade -- the LED
+     disambiguates those two by blink pattern (strobe vs breathe) and a
+     static tile has no blink to fall back on. --color-offline has no LED
+     equivalent at all (a genuinely offline node has no channel to receive
+     an LED command), so it keeps its own grey purely for on-screen
+     legibility. */
   --color-healthy: #00ff00;
   --color-warning: #f59e0b;
   --color-fault: #ff0000;
   --color-new: #00ffff;
-  --color-paused: #92400e;
+  --color-paused: #f59e0b;  /* same as --color-warning, and same as the LED */
   --color-offline: #4d4d4d;
   --color-tripped: #b91c1c;
   --color-idle: #ffffff;
