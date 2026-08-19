@@ -336,6 +336,35 @@ def test_already_stopped_machine_confirms_instantly_via_query():
     print("a machine already stopped before the trip fires confirms instantly via the live query: PASS")
 
 
+def test_already_stopped_before_fault_still_confirms_not_failed():
+    """Same gap as the test above, but state.motor_running was already
+    latched False by an earlier, unrelated on_motor_state(False) report (a
+    stray gate blip while HEALTHY, or a sensor that reads quiet from the
+    start) -- before this FAULT/trip cycle even began. _fire_trip's live
+    re-query at publish time calls on_motor_state(running=False) again to
+    catch "already stopped", but on_motor_state's own idempotency dedup
+    (`motor_running is running`) would swallow that identical repeat and
+    never touch awaiting_confirm, leaving it stuck true. The confirm window
+    then expires with the machine genuinely stopped -- trip succeeded -- and
+    misreports it as trip_failed forever, since no future edge will ever
+    arrive to correct it."""
+    registry, protection, published = build(
+        trip_motor_idx=1, confirm_window_s=SHORT_CONFIRM_WINDOW_S,
+        motor_state_query=lambda node_id: False)
+
+    # Latch motor_running=False before the fault even starts.
+    protection.on_motor_state(NODE_ID, running=False)
+
+    registry.set_status(NODE_ID, NodeStatus.FAULT)
+    time.sleep(TRIP_DELAY_S + SETTLE_S)
+
+    assert published == [1], published
+    assert status(registry) == NodeStatus.TRIPPED, status(registry)
+    assert protection.snapshot(NODE_ID)["trip_failed"] is False
+    print("a machine already stopped before FAULT still confirms instead of "
+          "sticking on trip_failed: PASS")
+
+
 def test_one_stop_reported_twice_is_decided_once():
     """The IDLE-vs-TRIPPED race. A single stop reaches on_motor_state from two
     threads -- the ingestion thread one frame after the gate flips, and
@@ -471,6 +500,7 @@ if __name__ == "__main__":
         test_unarmed_node_never_trips()
         test_no_publisher_still_reports_idle_but_cannot_trip()
         test_already_stopped_machine_confirms_instantly_via_query()
+        test_already_stopped_before_fault_still_confirms_not_failed()
         test_one_stop_reported_twice_is_decided_once()
         test_confirmation_arriving_after_the_window_still_reads_tripped()
         test_running_blip_mid_trip_does_not_erase_it()

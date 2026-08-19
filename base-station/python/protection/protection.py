@@ -616,6 +616,20 @@ class ProtectionController:
         # out for a machine that is, in fact, stopped. Ask the live gate
         # state directly to catch that case immediately instead.
         if self._motor_state_query is not None and self._motor_state_query(node_id) is False:
+            with self._lock:
+                state = self._states.get(node_id)
+                if state is not None:
+                    # Same trick acknowledge_trip uses: motor_running may
+                    # already be latched False from a report that predates
+                    # this trip (e.g. a stray gate blip during the countdown),
+                    # which would make on_motor_state's own idempotency guard
+                    # silently drop this confirmation -- leaving
+                    # awaiting_confirm stuck true and the trip permanently
+                    # misreported as failed once the confirm window expires,
+                    # even though the machine genuinely is stopped. Clearing
+                    # it here forces on_motor_state to treat this as a fresh
+                    # observation instead of a no-op repeat.
+                    state.motor_running = None
             self.on_motor_state(node_id, running=False)
 
     def _confirm_timeout(self, node_id: str) -> None:
