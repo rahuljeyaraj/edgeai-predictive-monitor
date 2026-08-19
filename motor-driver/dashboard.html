@@ -123,10 +123,6 @@
   .fleet b { color: var(--text); font-weight: 600; }
   .fleet .dot { color: var(--line); }
   .fleet .prot b { color: var(--accent2); }
-  /* Amber while the page holds the only link to the Uno; red once it isn't
-     even connected, because protection is then genuinely off. */
-  .fleet .viapage { color: var(--warn); }
-  .fleet .viapage.off { color: var(--danger); font-weight: 600; }
 
   /* ---- empty slot: "+ Add motor" ---------------------------------------- */
   /* A dashed placeholder rather than a hidden card, so an un-installed motor
@@ -593,17 +589,10 @@ function paintAll(idx) {
 function paintFleet() {
   const n = installed.length;
   const protectedCount = installed.filter(idx => claims[idx]).length;
-  let html =
+  const html =
     `<span><b>${n}</b> motor${n === 1 ? "" : "s"}</span>` +
     `<span class="dot">·</span>` +
     `<span class="prot"><b>${protectedCount}</b> protected</span>`;
-  // Standing state, not a hint: in this mode protection only reaches the Uno
-  // through this page, so closing the tab disarms it. Worth one chip.
-  if (serverOK && !rigHasSerial) {
-    html += `<span class="dot">·</span>` +
-            `<span class="viapage${port ? "" : " off"}">` +
-            `trip via this page${port ? "" : " — not connected"}</span>`;
-  }
   $("fleet").innerHTML = html;
 }
 // Sync only means something once there are two motors to sync, and the leader

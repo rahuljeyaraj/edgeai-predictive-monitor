@@ -109,14 +109,12 @@ they do the ramping.
 ```bash
 cd motor-driver
 ./start_motor_driver.sh                          # everything defaulted
-./start_motor_driver.sh --mqtt-host uno-q.local  # broker over the LAN
+./start_motor_driver.sh --mqtt-host uno-q.local  # broker at a different host
 ./start_motor_driver.sh --mqtt-host ''           # no broker at all
 ```
 
 Nothing needs to be typed in the normal case. The broker defaults to
-`localhost`, and the port to **11883** when something is listening there (the
-`adb forward tcp:11883 tcp:1883` case, which is most of the time on this
-bench) and **1883** otherwise.
+`epm-base.local` (the base station's LAN hostname), port **1883**.
 
 > Watch for `ANNOUNCED outputs [1] on epm/motor_rig/outputs`. If the broker
 > can't be reached, the rig says so after 6 seconds and tells you nothing was

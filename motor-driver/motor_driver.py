@@ -23,8 +23,8 @@ Requires pyserial (and paho-mqtt for --mqtt-host):
     pip install pyserial paho-mqtt
 
 Examples:
-    ./start_motor_driver.sh                        # everything defaulted
-    ./start_motor_driver.sh --mqtt-host uno-q.local  # broker over the LAN
+    ./start_motor_driver.sh                          # everything defaulted (broker at epm-base.local)
+    ./start_motor_driver.sh --mqtt-host uno-q.local  # broker at a different host
     ./start_motor_driver.sh --mqtt-host ''           # no broker at all
     python3 motor_driver.py --port COM5 --profile --baseline-rpm 90
 """
@@ -669,9 +669,9 @@ def main() -> None:
     p.add_argument("--fault-rpm", type=float, default=220.0)
     p.add_argument("--fault-s", type=float, default=30.0)
 
-    p.add_argument("--mqtt-host", default="localhost",
-                    help="Base station's broker address (default: localhost, which is "
-                         "where `adb forward` puts it). Listens for machinery-"
+    p.add_argument("--mqtt-host", default="epm-base.local",
+                    help="Base station's broker address (default: epm-base.local, the "
+                         "base station's LAN hostname). Listens for machinery-"
                          "protection trips and stops the named motor when one arrives "
                          "-- one-way: trips only, never speeds. Pass an empty string "
                          "(--mqtt-host '') to run the rig completely standalone, with "

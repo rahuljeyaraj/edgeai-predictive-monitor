@@ -16,9 +16,9 @@
 #   ./start_motor_driver.sh --mqtt-host uno-q.local
 #   ./start_motor_driver.sh --port /dev/ttyACM0 --http-port 8001 --motors 1,2
 #
-# The broker defaults to localhost, and its port to 11883 when something is
-# listening there (`adb forward tcp:11883 tcp:1883`) or 1883 otherwise. So the
-# no-argument form is the normal one. --mqtt-host '' disables the broker.
+# The broker defaults to epm-base.local (the base station's LAN hostname),
+# port 1883. So the no-argument form is the normal one. --mqtt-host '' disables
+# the broker.
 #
 # By default the CONTROL PAGE holds the Uno's serial port over Web Serial and
 # this process never opens it -- which is the only thing that works when the
