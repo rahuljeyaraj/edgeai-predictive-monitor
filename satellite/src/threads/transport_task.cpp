@@ -344,6 +344,32 @@ static bool attempt_sta_join(const char *ssid, const char *password)
 	return true;
 }
 
+/* hal_provisioning_start()'s return value used to be discarded at every call
+ * site below - a WiFi.softAP() failure (radio not ready yet, bad SSID, etc.)
+ * was then invisible on the serial console, indistinguishable from a
+ * genuinely-up AP the technician's phone just hadn't found yet. */
+static void start_provisioning_ap(const char *ap_ssid, const char *broker)
+{
+	if (hal_provisioning_start(ap_ssid, broker) < 0) {
+		Serial.printf("[transport] hal_provisioning_start FAILED for AP \"%s\" - softAP() rejected it\n",
+			      ap_ssid);
+		return;
+	}
+	Serial.printf("[transport] provisioning AP \"%s\" up, IP=%s\n", ap_ssid,
+		      WiFi.softAPIP().toString().c_str());
+
+	/* Temporary radio-health diagnostic: if this board's RX side can't see
+	 * ANY nearby 2.4GHz network either, that points at an antenna/RF
+	 * hardware fault on this unit rather than a phone/scanning problem. */
+	int n = WiFi.scanNetworks();
+
+	Serial.printf("[transport] diagnostic scan: %d network(s) seen\n", n);
+	for (int i = 0; i < n && i < 5; i++) {
+		Serial.printf("[transport]   %s (rssi=%d)\n", WiFi.SSID(i).c_str(), WiFi.RSSI(i));
+	}
+	WiFi.scanDelete();
+}
+
 static void transport_task_entry(void *arg)
 {
 	(void)arg;
@@ -367,7 +393,7 @@ static void transport_task_entry(void *arg)
 		WiFi.mode(WIFI_STA);
 	} else {
 		WiFi.mode(WIFI_AP_STA);
-		hal_provisioning_start(ap_ssid, MQTT_BROKER_HOST);
+		start_provisioning_ap(ap_ssid, MQTT_BROKER_HOST);
 		hal_display_rgb_set(RGB_PROVISIONING, RGB_DISPLAY_CONST, 0);
 	}
 
@@ -381,7 +407,7 @@ static void transport_task_entry(void *arg)
 			memset(&creds, 0, sizeof(creds));
 			hal_provisioning_stop(); /* no-op if not already active */
 			WiFi.mode(WIFI_AP_STA);
-			hal_provisioning_start(ap_ssid, MQTT_BROKER_HOST);
+			start_provisioning_ap(ap_ssid, MQTT_BROKER_HOST);
 			hal_display_rgb_set(RGB_PROVISIONING, RGB_DISPLAY_CONST, 0);
 			mqtt_led = MQTT_LED_UNKNOWN;
 			state = TRANSPORT_STATE_FORCED_PROVISIONING;
@@ -393,7 +419,7 @@ static void transport_task_entry(void *arg)
 				state = TRANSPORT_STATE_CONNECTED;
 			} else {
 				WiFi.mode(WIFI_AP_STA);
-				hal_provisioning_start(ap_ssid, creds.mqtt_broker_host);
+				start_provisioning_ap(ap_ssid, creds.mqtt_broker_host);
 				hal_display_rgb_set(RGB_PROVISIONING, RGB_DISPLAY_CONST, 0);
 				state = TRANSPORT_STATE_PROVISIONING;
 			}
@@ -494,7 +520,7 @@ static void transport_task_entry(void *arg)
 			if ((int32_t)(millis() - recovery_deadline) >= 0) {
 				Serial.println("[transport] recovery window expired, reopening provisioning AP");
 				WiFi.mode(WIFI_AP_STA);
-				hal_provisioning_start(ap_ssid, creds.mqtt_broker_host);
+				start_provisioning_ap(ap_ssid, creds.mqtt_broker_host);
 				hal_display_rgb_set(RGB_PROVISIONING, RGB_DISPLAY_CONST, 0);
 				state = TRANSPORT_STATE_PROVISIONING;
 				break;
