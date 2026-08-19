@@ -62,10 +62,20 @@ logger = logging.getLogger(__name__)
 DEFAULT_TRIP_DELAY_S = 10.0
 
 # How long to wait for the vibration gate to confirm the machine actually
-# stopped before calling the trip failed. Needs to cover the gate's own
-# debounce (a few frames) plus the mechanical spin-down of an unpowered
-# stepper, which is close to instant.
-DEFAULT_CONFIRM_WINDOW_S = 3.0
+# stopped before calling the trip failed. In principle this only needs to
+# cover the gate's own debounce (a few frames) plus the mechanical spin-down
+# of an unpowered stepper, which is close to instant -- but in practice the
+# path from "motor physically stopped" to "on_motor_state sees it" also
+# includes the SPI bridge's own multi-second stalls
+# (docs/BRIDGE_SPI_ARM_STREAM_STALL_INVESTIGATION.md) and whatever the
+# node's live frame rate happens to be. A real trip on this rig has been
+# observed to confirm ~10s after publish, well past the old 3s default --
+# on_motor_state's was_ours handling means a late confirmation still lands
+# TRIPPED correctly (see its docstring), but the dashboard shows "trip
+# failed" for the gap in between, which reads as a false alarm on a trip
+# that actually succeeded. Set with real headroom above the observed worst
+# case rather than the theoretical best case.
+DEFAULT_CONFIRM_WINDOW_S = 15.0
 
 # The same wait, for the commissioning-time "does this output actually stop
 # this machine" test (docs/UNIFIED_COMMISSIONING_PLAN.md S3.3). Longer than

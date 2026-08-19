@@ -66,7 +66,7 @@ from capture_controller import CaptureController
 from stopped_baseline import DEFAULT_MIN_FRAMES as DEFAULT_MIN_STOPPED_FRAMES
 from stopped_baseline_controller import StoppedBaselineController
 from setup_controller import SetupController
-from protection import DEFAULT_TRIP_DELAY_S, ProtectionController
+from protection import DEFAULT_CONFIRM_WINDOW_S, DEFAULT_TRIP_DELAY_S, ProtectionController
 from trip_outputs import TripOutputStore
 from ei_controller import EIController
 from alert_store import AlertStore
@@ -416,6 +416,13 @@ def main():
                               "output fires. A protection trip with no delay is a "
                               "nuisance trip; this is also the window an operator has "
                               "to Hold it.")
+    parser.add_argument("--trip-confirm-window-s", type=float, default=DEFAULT_CONFIRM_WINDOW_S,
+                         help="How long to wait, after a trip publishes, for the "
+                              "vibration gate to confirm the machine actually stopped "
+                              "before reporting the trip failed. Too short and a real "
+                              "trip that's just slow to confirm (SPI bridge stalls, "
+                              "low frame rate) shows as a false 'trip failed' for a "
+                              "few seconds before self-correcting to TRIPPED.")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
@@ -494,7 +501,8 @@ def main():
     # later if --mqtt-host is set. Deliberately always constructed: deciding
     # whether a stopped machine reads IDLE or TRIPPED needs no broker, and
     # IDLE closes a gap that predates the trip feature.
-    protection = ProtectionController(registry, trip_delay_s=args.trip_delay_s)
+    protection = ProtectionController(registry, trip_delay_s=args.trip_delay_s,
+                                       confirm_window_s=args.trip_confirm_window_s)
     registry.on_status_change(protection.on_status_change)
 
     manager = PipelineManager(
