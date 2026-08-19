@@ -746,7 +746,7 @@ def test_rename_device_type_moves_project_scaling_and_model():
     # baseline, and its already-fetched model instead of stranding them
     # under a name nothing points to anymore.
     registry, projects_path, captures_dir, models_dir, scaling_path = new_env()
-    registry.add(NODE_A, sensor_config=frozenset({SensorChannel.MIC}))
+    registry.add(NODE_A, sensor_config=frozenset({SensorChannel.ACCEL_X}))
     registry.set_device_type(NODE_A, "motor001")
     save_capture(registry, captures_dir, NODE_A, "bearing")
     save_capture(registry, captures_dir, NODE_A, "healthy")
@@ -785,7 +785,7 @@ def test_known_device_types_includes_project_scaling_and_model_only_entries():
     # even if no node currently carries it -- e.g. its only node was
     # reassigned/decommissioned but the Studio project is still linked.
     registry, projects_path, captures_dir, models_dir, scaling_path = new_env()
-    registry.add(NODE_A, sensor_config=frozenset({SensorChannel.MIC}))
+    registry.add(NODE_A, sensor_config=frozenset({SensorChannel.ACCEL_X}))
     registry.set_device_type(NODE_A, "motor001")
     save_capture(registry, captures_dir, NODE_A, "bearing")
     client = FakeEiClient()
