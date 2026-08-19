@@ -292,6 +292,7 @@ const Setup = (() => {
       <div class="setup-step__actions">
         <button type="button" class="btn-label btn-label--ready" data-action="setup_advance"
                 ${entry.trip_motor_idx ? "" : "disabled"}>Continue</button>
+        ${entry.trip_motor_idx ? `<button type="button" class="btn-label" data-action="setup_unpair_output">Unpair</button>` : ""}
         <button type="button" class="btn-label" data-action="setup_skip">Nothing wired — skip</button>
       </div>`;
   }
@@ -630,11 +631,18 @@ const Setup = (() => {
       readInputs(root, nodeId);
       const raw = button.dataset.idx !== undefined ? button.dataset.idx : d.manualOutput;
       const motorIdx = raw && Number(raw) > 0 ? Math.floor(Number(raw)) : null;
-      if (motorIdx === null) return true;
       run(nodeId, async () => {
         await post(nodeId, `/nodes/${nodeId}/trip_motor`, { motor_idx: motorIdx });
         await refresh(nodeId);
-        bridge.toast(`Output ${motorIdx} saved untested`);
+        bridge.toast(motorIdx ? `Output ${motorIdx} saved untested` : "Unpaired");
+      });
+      return true;
+    }
+    if (action === "setup_unpair_output") {
+      run(nodeId, async () => {
+        await post(nodeId, `/nodes/${nodeId}/trip_motor`, { motor_idx: null });
+        await refresh(nodeId);
+        bridge.toast("Unpaired");
       });
       return true;
     }

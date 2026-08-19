@@ -407,6 +407,10 @@ class SetupController:
         state = self._require(node_id)
         if state.step not in SKIPPABLE_STEPS:
             raise SetupError(f"the {state.step!r} step can't be skipped")
+        if state.step == STEP_TRIP_OUTPUT:
+            # "Nothing wired" means no pairing, so drop any motor claimed
+            # earlier in this step instead of leaving it stuck armed.
+            self._registry.set_trip_motor(node_id, None)
         state.skipped.add(state.step)
         self._move_to(state, self._next_step(state.step))
         self._notify(node_id)
