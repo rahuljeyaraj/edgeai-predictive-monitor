@@ -69,7 +69,18 @@ static void mic_sampler_task_entry(void *arg)
 
 	while (1) {
 		if (consecutive_failures >= MIC_SAMPLER_MAX_RECOVERY_ATTEMPTS) {
+			/* Back off, then allow the recovery attempts to run again
+			 * rather than parking here forever - the same fix
+			 * accel_sampler_task.cpp got (4ddb009) but which was never
+			 * mirrored here. Without the reset below this branch is a
+			 * one-way door: after five transient i2s_read() failures the
+			 * task loops on this delay forever, never calling
+			 * hal_audio_read_block() again, so mic_spectrum_queue keeps
+			 * whatever it last held (all zeros if the failures happened
+			 * before the first successful window) with no further log
+			 * output to explain the silence. */
 			vTaskDelay(pdMS_TO_TICKS(1000));
+			consecutive_failures = 0;
 			continue;
 		}
 

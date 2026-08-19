@@ -134,12 +134,22 @@ static void fuser_task_entry(void *arg)
 		      ACCEL_SENSOR_ENABLED ? MODEL_SPECTRUM_BINS : 0);
 
 	while (1) {
+		/* Queue handles are NULL when that sampler never got as far as
+		 * creating one (its *_task_start() failed). That is a survivable
+		 * state now that main.cpp keeps booting past a sensor failure, so
+		 * check rather than hand xQueueReceive() a NULL handle - the
+		 * held_* sample stays zero-initialized and the channel goes out
+		 * zero-filled, which is exactly the intended degraded shape. */
 		if (MIC_SENSOR_ENABLED) {
-			xQueueReceive(mic_spectrum_queue, &held_mic, 0);
+			if (mic_spectrum_queue != NULL) {
+				xQueueReceive(mic_spectrum_queue, &held_mic, 0);
+			}
 			pool_spectrum(held_mic.mag, MIC_POOL_FACTOR, pooled_mic);
 		}
 		if (ACCEL_SENSOR_ENABLED) {
-			xQueueReceive(accel_spectrum_queue, &held_accel, 0);
+			if (accel_spectrum_queue != NULL) {
+				xQueueReceive(accel_spectrum_queue, &held_accel, 0);
+			}
 			pool_spectrum(held_accel.x.mag, ACCEL_POOL_FACTOR, pooled_accel_x);
 			pool_spectrum(held_accel.y.mag, ACCEL_POOL_FACTOR, pooled_accel_y);
 			pool_spectrum(held_accel.z.mag, ACCEL_POOL_FACTOR, pooled_accel_z);

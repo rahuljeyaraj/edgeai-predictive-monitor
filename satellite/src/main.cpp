@@ -89,14 +89,24 @@ void setup(void)
 		return;
 	}
 
+	/* A sensor that fails to come up is NOT fatal to the node. It used to
+	 * be (plain `return`), which meant one unresponsive sensor took the
+	 * fuser down with it: transport and the ring were already up, so the
+	 * node still joined WiFi/MQTT and still answered STATUS_LED - it was
+	 * "discovered" and looked alive - while publishing no telemetry frame
+	 * at all. Degrading to "publish the channels that do work" makes the
+	 * failure visible as a flat channel on the dashboard instead of as a
+	 * silent node, and keeps the working sensor usable meanwhile. The
+	 * fuser already emits a zero-filled SPECTRUM section for a channel it
+	 * has no data for (SENSOR_TELEMETRY_FRAME_PLAN.md S4 zero-fill), so
+	 * the frame shape the base station commits to is unchanged either
+	 * way. */
 	if (mic_sampler_task_start() < 0) {
-		Serial.println("mic_sampler_task_start failed");
-		return;
+		Serial.println("mic_sampler_task_start failed - continuing without mic");
 	}
 
 	if (accel_sampler_task_start() < 0) {
-		Serial.println("accel_sampler_task_start failed");
-		return;
+		Serial.println("accel_sampler_task_start failed - continuing without accel");
 	}
 
 	if (fuser_task_start() < 0) {
