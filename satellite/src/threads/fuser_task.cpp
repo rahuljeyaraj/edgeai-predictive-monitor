@@ -49,6 +49,10 @@
 #define ACCEL_POOL_FACTOR (ACCEL_FFT_BIN_COUNT / MODEL_SPECTRUM_BINS)
 #define MIC_POOL_FACTOR   (MIC_FFT_BIN_COUNT / MODEL_SPECTRUM_BINS)
 
+/* Halves every accel bin's amplitude on the wire, all three axes, applied
+ * after pooling so it lands on exactly what gets sent. Mic is untouched. */
+#define ACCEL_SPECTRUM_SEND_SCALE 0.5f
+
 /* Worst case: mic + all 3 accel axes present, all 24 scalars present. */
 #define FUSER_NUM_SPECTRUM_CHANNELS 4
 #define FUSER_NUM_SCALARS           24
@@ -70,6 +74,13 @@ static void pool_spectrum(const float *in, int factor, float *out)
 			sum += in[b * factor + i];
 		}
 		out[b] = sum / (float)factor;
+	}
+}
+
+static void scale_spectrum(float *buf, int n, float scale)
+{
+	for (int b = 0; b < n; b++) {
+		buf[b] *= scale;
 	}
 }
 
@@ -132,6 +143,9 @@ static void fuser_task_entry(void *arg)
 			pool_spectrum(held_accel.x.mag, ACCEL_POOL_FACTOR, pooled_accel_x);
 			pool_spectrum(held_accel.y.mag, ACCEL_POOL_FACTOR, pooled_accel_y);
 			pool_spectrum(held_accel.z.mag, ACCEL_POOL_FACTOR, pooled_accel_z);
+			scale_spectrum(pooled_accel_x, MODEL_SPECTRUM_BINS, ACCEL_SPECTRUM_SEND_SCALE);
+			scale_spectrum(pooled_accel_y, MODEL_SPECTRUM_BINS, ACCEL_SPECTRUM_SEND_SCALE);
+			scale_spectrum(pooled_accel_z, MODEL_SPECTRUM_BINS, ACCEL_SPECTRUM_SEND_SCALE);
 		}
 
 		/* One SPECTRUM section per enabled channel - a sensor this
