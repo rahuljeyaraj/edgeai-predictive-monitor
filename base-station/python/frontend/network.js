@@ -65,7 +65,9 @@ const Network = (() => {
     const forgetBlock = s.mode === "sta" ? `
       <div class="perf-chart__caption">Switches the base station back to its own
         EPM-BaseStation hotspot and forgets "${escapeHtml(s.ssid || "")}" -- this page will
-        likely lose connection right away since it's reachable through that network too.</div>
+        likely lose connection right away since it's reachable through that network too.
+        The sensors do <strong>not</strong> follow: they stay on "${escapeHtml(s.ssid || "")}"
+        and fall back to their own setup pages after a few minutes.</div>
       <button type="button" class="btn-label btn-label--danger" data-action="network_forget" ${fg.busy ? "disabled" : ""}>
         ${fg.busy ? "Switching to hotspot…" : "Back to hotspot mode"}
       </button>

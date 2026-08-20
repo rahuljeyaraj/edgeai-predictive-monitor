@@ -443,6 +443,27 @@ broker field has to move with the SSID, not separately.
 | The same network is re-pushed | The node takes the (possibly new) broker address but does not bounce a working radio link. |
 | No `--mqtt-host` / no fleet | The route reports `available: false` and the Network tab goes straight to the base station's own join, exactly as before this feature. |
 
+### Known gap: the reverse direction (2026-08-20, deliberately not built)
+
+"Back to hotspot mode" (`POST /network/wifi/forget`) does **not** take the
+fleet with it. Nodes stay on the factory network, lose the broker, and fall
+back to their own portals after `ROAM_RENDEZVOUS_TIMEOUT_MS`.
+
+It is not symmetric with connect, which is why it wasn't just wired up the
+same way: when the fleet is told to move to the factory network, that network
+*already exists*, so they join immediately. The base station's own hotspot
+does not exist until the base station switches -- i.e. after the push -- so a
+node told to move there would fail its join and roll back before the target
+AP ever appeared.
+
+The fix, if this is wanted later, is one firmware change plus one route: make
+`perform_roam()` retry its join for ~60s instead of giving up after a single
+`STA_JOIN_TIMEOUT_MS` attempt (which also hardens the forward direction
+against a target AP that is briefly out of range), and push
+`BASE_STATION_HOTSPOT_SSID` + the fixed `10.42.0.1` broker address ahead of
+the forget. Deferred because it costs a fleet reflash and lengthens the
+wrong-password rollback to ~60s.
+
 ### Where it lives
 
 - `base-station/python/network/fleet_roam.py` -- `FleetRoamer.push()`: opens
@@ -475,6 +496,22 @@ broker field has to move with the SSID, not separately.
   mock backend: all-acked auto-continues to the join; one silent node stops
   with "Connect anyway" and does not re-push on the second tap.
 
-**Still to do on hardware:** a real two-satellite roam (base station on its
-hotspot, both nodes joined to it, factory credentials entered once), a
-wrong-password rollback, and a blocked-mDNS rendezvous timeout.
+### Live on hardware (2026-08-20)
+
+Deployed to the real UNO Q + satellite `e36428` and run for real: the base
+station moved from its own hotspot to a factory network (`FTTH-F05C`) and the
+satellite followed it, reconnecting to the broker on the new network with no
+per-device portal visit. Notably `epm-base.local` **did** resolve for the
+ESP32 on that network, so the mDNS path this design leans on (S4) works there
+rather than needing the manual-IP fallback.
+
+One real bug only this run could find: the base station's own node
+(`BASE_STATION_NODE_ID`, its SPI-attached sensors, shown as an ordinary asset
+in the fleet list) was in the push list. Nothing subscribes to its cmd topic
+and it cannot roam anywhere -- it *is* the device about to switch -- so it
+answered with silence, and that silence stopped its own switch to ask the
+technician to confirm it. Fixed by excluding it from the target list.
+
+**Still to do on hardware:** a wrong-password rollback, a blocked-mDNS
+rendezvous timeout, and a second real satellite (`194584` is still on the old
+firmware).
