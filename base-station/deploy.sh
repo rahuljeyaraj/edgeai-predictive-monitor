@@ -39,12 +39,30 @@ if [ "$(adb get-state 2>/dev/null || true)" != "device" ]; then
     exit 1
 fi
 
-step "Removing previous copy on device (preserving build/venv cache)"
+step "Protecting the device's app.yaml (holds the Telegram brick token)"
+# App Lab writes brick secrets INLINE into the device's app.yaml, and there is
+# no separate secret store. Shipping the repo's copy over it deletes the token,
+# and the next `app start` hard-fails on the brick check before main.py runs --
+# which leaves the MCU sketch un-reflashed and makes the board's own
+# base_station node disappear from the dashboard. So the device's copy is
+# authoritative; the repo's is only a seed for a fresh board.
+if adb shell "test -f '${REMOTE_DIR}/app.yaml'" 2>/dev/null; then
+    echo "Keeping the device's copy (the repo's app.yaml will NOT be shipped)."
+else
+    echo "Device has no app.yaml yet -- seeding it from the repo's copy."
+    adb shell "mkdir -p '${REMOTE_DIR}'"
+    adb push "${LOCAL_DIR}/app.yaml" "${REMOTE_DIR}/app.yaml"
+    echo "NOTE: if app.yaml declares a brick, set its secret in App Lab's GUI"
+    echo "      before the build, or it will fail on the brick check."
+fi
+
+step "Removing previous copy on device (preserving build/venv cache and app.yaml)"
 # Only clear app source files, not ${REMOTE_DIR}/.cache — that's where the
 # device keeps the Python venv (uv) and sketch build cache. Wiping it every
 # deploy forces a full venv rebuild + package re-download and a full sketch
 # recompile even when nothing changed, which is what made deploys slow.
-adb shell "test -d '${REMOTE_DIR}' && find '${REMOTE_DIR}' -mindepth 1 -maxdepth 1 -not -name '.cache' -exec rm -rf {} + || true"
+# app.yaml is spared for the reason above.
+adb shell "test -d '${REMOTE_DIR}' && find '${REMOTE_DIR}' -mindepth 1 -maxdepth 1 -not -name '.cache' -not -name 'app.yaml' -exec rm -rf {} + || true"
 
 step "Pushing app to ${REMOTE_DIR}"
 # Build the tar locally, then `adb push` it as a real file and extract it
@@ -72,6 +90,7 @@ tar -C "${LOCAL_DIR}" \
     --exclude='.pytest_cache' \
     --exclude='captures' \
     --exclude='captures_*' \
+    --exclude='./app.yaml' \
     -cf "${TAR_PATH}" .
 adb shell "mkdir -p '${REMOTE_DIR}'"
 adb push "${TAR_PATH}" /tmp/deploy.tar

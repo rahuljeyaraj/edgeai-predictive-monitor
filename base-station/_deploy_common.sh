@@ -20,6 +20,10 @@ APP_CONFIG="${LOCAL_DIR}/sketch/app_config.h"
 REMOTE_TMP_TARBALL="/tmp/${APP_NAME}_deploy_payload.tar.gz"
 BUILD_LOG="/tmp/${APP_NAME}_app_start.log"
 
+# The device's app.yaml is the SOURCE OF TRUTH, and the repo's copy is only a
+# seed for a board that has never been deployed to. See preserve_device_app_yaml().
+DEVICE_APP_YAML="${REMOTE_DIR}/app.yaml"
+
 step() { echo; echo "==> $1"; }
 
 wait_for_device() {
@@ -62,6 +66,63 @@ set_raw_capture_mode() {
     fi
 }
 
+# App Lab stores brick secrets (the Telegram bot token) by writing them INLINE
+# into the deployed app.yaml on the device. There is no separate secret store --
+# that has been checked: /var/lib/arduino-app-cli, ~/.arduino15,
+# ~/.arduino-bricks, /etc/arduino-app-cli all hold nothing.
+#
+# So a deploy that ships the repo's app.yaml over the device's copy DELETES the
+# token, and the next `arduino-app-cli app start` hard-fails with
+#   Variable "Telegram_bot_token" Is Required By Brick "Arduino:telegram_bot"
+# before main.py ever runs. The container then never comes up with fresh
+# firmware, the MCU sketch never re-registers spi_arm_stream, and the board's
+# own base_station node silently vanishes from the dashboard. That bug has cost
+# multiple sessions, each time diagnosed as an SPI/firmware fault when it was a
+# config fault.
+#
+# The fix is to treat the DEVICE's app.yaml as authoritative and never ship the
+# repo's copy over it. The repo's copy is a seed, used only when the device has
+# none. Real app.yaml changes (a new port, a new brick) are therefore deliberate:
+# this warns when the two have drifted instead of silently clobbering secrets.
+#
+# Call BEFORE the wipe/extract. Pairs with the -not -name 'app.yaml' guard in
+# the wipe and the --exclude='./app.yaml' in the tar.
+preserve_device_app_yaml() {
+    step "Protecting the device's app.yaml (holds the Telegram brick token)"
+
+    if ! adb_retry 15 shell "test -f '${DEVICE_APP_YAML}'" 2>/dev/null; then
+        echo "Device has no app.yaml yet -- seeding it from the repo's copy."
+        adb_retry 20 shell "mkdir -p '${REMOTE_DIR}'" >/dev/null || true
+        adb_retry 20 push "${LOCAL_DIR}/app.yaml" "${DEVICE_APP_YAML}" >/dev/null \
+            || { echo "Could not seed app.yaml onto the device." >&2; exit 1; }
+        if grep -qE '^\s*bricks:\s*\[?\s*arduino:' "${LOCAL_DIR}/app.yaml"; then
+            echo
+            echo "WARNING: the seeded app.yaml declares a brick but carries no token." >&2
+            echo "  The build will fail until you set the secret in App Lab's GUI," >&2
+            echo "  or restore /home/arduino/app.yaml.telegram-backup over it." >&2
+        fi
+        return 0
+    fi
+
+    echo "Keeping the device's copy (the repo's app.yaml will NOT be shipped)."
+
+    # Drift check, ignoring the secret-bearing lines so the token never reaches
+    # this machine's terminal, logs, or scrollback.
+    local device_shape repo_shape
+    device_shape="$(adb_retry 15 shell "grep -vE '^\s*(#|TELEGRAM_BOT_TOKEN|variables:|-?\s*arduino:)' '${DEVICE_APP_YAML}' | grep -vE '^\s*$' | tr -d ' \r' | sort" 2>/dev/null)"
+    repo_shape="$(grep -vE '^\s*(#|TELEGRAM_BOT_TOKEN|variables:|-?\s*arduino:)' "${LOCAL_DIR}/app.yaml" | grep -vE '^\s*$' | tr -d ' ' | sort)"
+
+    if [ "${device_shape}" != "${repo_shape}" ]; then
+        echo
+        echo "NOTE: the repo's app.yaml and the device's differ (ignoring secrets)."
+        echo "  The device's copy wins, so any new port/brick you added in the repo"
+        echo "  is NOT being deployed. To adopt the repo's version deliberately:"
+        echo "    1. adb shell \"cp ${DEVICE_APP_YAML} /home/arduino/app.yaml.telegram-backup\""
+        echo "    2. adb push base-station/app.yaml ${DEVICE_APP_YAML}"
+        echo "    3. re-add the token via App Lab's GUI, then re-run this script."
+    fi
+}
+
 # Checks app.yaml lists the given port under ports:.
 require_port() {
     local port="$1"
@@ -86,13 +147,17 @@ deploy_app() {
     step "Stopping existing app (if running) -- best effort"
     adb_retry 20 shell "arduino-app-cli app stop ${REMOTE_DIR}" || true
 
+    preserve_device_app_yaml
+
     step "Building local payload (compressed, excludes .venv/__pycache__/.pytest_cache)"
     local local_tarball
     local_tarball="$(mktemp "/tmp/${APP_NAME}_payload.XXXXXX.tar.gz")"
+    # app.yaml is deliberately excluded -- see preserve_device_app_yaml().
     tar -C "${LOCAL_DIR}" \
         --exclude='.venv' \
         --exclude='__pycache__' \
         --exclude='.pytest_cache' \
+        --exclude='./app.yaml' \
         -czf "${local_tarball}" .
     echo "Payload: $(du -h "${local_tarball}" | cut -f1)"
 
@@ -104,9 +169,11 @@ deploy_app() {
     fi
     rm -f "${local_tarball}"
 
-    step "Clearing previous app source (preserving .cache) and extracting payload"
+    step "Clearing previous app source (preserving .cache and app.yaml) and extracting payload"
+    # app.yaml is spared by name here as well as excluded from the tar -- both
+    # halves are needed, or the wipe deletes the token before the extract runs.
     local extract_cmd="mkdir -p '${REMOTE_DIR}' && \
-find '${REMOTE_DIR}' -mindepth 1 -maxdepth 1 -not -name '.cache' -exec rm -rf {} + ; \
+find '${REMOTE_DIR}' -mindepth 1 -maxdepth 1 -not -name '.cache' -not -name 'app.yaml' -exec rm -rf {} + ; \
 tar -xzf '${REMOTE_TMP_TARBALL}' -C '${REMOTE_DIR}' && \
 rm -f '${REMOTE_TMP_TARBALL}'"
     if ! adb_retry 30 shell "${extract_cmd}"; then
