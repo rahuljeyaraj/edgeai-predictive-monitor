@@ -38,9 +38,9 @@ tools/satellite_node_sim.py, or mosquitto_pub with raw bytes) against a
 running Mosquitto broker; confirm a new pipeline is created and routed
 exactly as SPI frames are.
 """
+import collections
 import json
 import logging
-import queue
 import threading
 import time
 from typing import Callable, Optional
@@ -64,12 +64,89 @@ DATA_TOPIC_FILTER = "epm/+/data"
 # variable-length and self-describing by nature, and is never on a hot path.
 OUTPUTS_TOPIC_FILTER = "epm/+/outputs"
 
-# Bounds the handoff queue between paho's network thread and the frame-
-# processing worker (see MqttSubscriber's class docstring) -- a safety net
-# against unbounded memory growth if processing ever falls consistently
-# behind arrival rate, not a normal operating condition at today's frame
-# rates. A few seconds' worth of frames across every satellite node combined.
-_QUEUE_MAXSIZE = 500
+# Bounds the *reliable* half of the handoff queue between paho's network
+# thread and the frame-processing worker (see MqttSubscriber's class
+# docstring). Only /outputs announces land here -- telemetry coalesces (see
+# _IngestQueue) and so cannot grow -- and those arrive at human speed, so
+# reaching this many outstanding means the worker is not running at all.
+_MAX_RELIABLE_BACKLOG = 128
+
+
+class _IngestQueue:
+    """Handoff from paho's network thread to the frame worker: latest-wins
+    per node for telemetry, reliable FIFO for /outputs announces.
+
+    This used to be a plain 500-deep queue.Queue that dropped the NEWEST
+    frame once full. That is backwards for a live dashboard, and measurably
+    so: with 12 nodes publishing 5fps (~64 frames/s) against a worker that
+    sustains ~47/s (inference + classification + history write, single
+    threaded), the queue sat permanently full and every frame reaching the
+    browser was ~500/47 = 10s old. Toggling a node in the sim panel took ten
+    seconds to show up, because the frame proving it had come back was
+    queued behind ten seconds of history.
+
+    Dropping the newest is what makes that permanent: the worker is fed the
+    stalest frame available at all times, so the backlog never clears and the
+    lag never recovers. Coalescing instead means a node with a frame already
+    pending has that frame *replaced* rather than joining the queue -- so
+    pending work is bounded by the node count, not by time, and overload
+    degrades to a lower per-node frame rate showing current data rather than
+    a growing lag showing old data.
+
+    Exactly the tradeoff api/connection_manager.py's _Outbox already makes
+    for the socket on the other side of this pipeline, for the same reason;
+    this is the same fix applied one stage upstream.
+    """
+
+    def __init__(self, max_reliable: int = _MAX_RELIABLE_BACKLOG):
+        self._max_reliable = max_reliable
+        self._reliable = collections.deque()
+        self._latest = {}                      # coalescing key -> newest item
+        self._order = collections.deque()      # keys, in first-arrival order
+        self._cv = threading.Condition()
+        self.coalesced = 0                     # telemetry superseded before processing
+        self.overflowed = 0                    # /outputs dropped (worker wedged)
+
+    def put(self, item, key=None) -> None:
+        """key=None means deliver reliably (an /outputs announce, which no
+        later message repeats). A non-None key coalesces: one pending item
+        per key, newest wins."""
+        with self._cv:
+            if key is None:
+                if len(self._reliable) >= self._max_reliable:
+                    self.overflowed += 1
+                    return
+                self._reliable.append(item)
+            else:
+                if key in self._latest:
+                    # Worker has not reached this node's previous frame yet --
+                    # supersede it in place, keeping its slot in _order so a
+                    # continuously-behind worker still visits every node in
+                    # turn rather than starving the quietest ones.
+                    self.coalesced += 1
+                else:
+                    self._order.append(key)
+                self._latest[key] = item
+            self._cv.notify()
+
+    def get(self, timeout: float):
+        """Blocks up to `timeout` for the next item; None if none arrived."""
+        with self._cv:
+            if not self._reliable and not self._order:
+                self._cv.wait(timeout)
+            # Reliable first: an /outputs announce should not sit behind a
+            # round of telemetry, and there are never many outstanding.
+            if self._reliable:
+                return self._reliable.popleft()
+            while self._order:
+                item = self._latest.pop(self._order.popleft(), None)
+                if item is not None:
+                    return item
+            return None
+
+    def pending(self) -> int:
+        with self._cv:
+            return len(self._reliable) + len(self._order)
 
 
 class MalformedMessageError(Exception):
@@ -210,7 +287,7 @@ class MqttSubscriber:
         self._on_outputs = on_outputs
         self._dropped = 0
         self._routing_errors = 0
-        self._queue: "queue.Queue" = queue.Queue(maxsize=_QUEUE_MAXSIZE)
+        self._queue = _IngestQueue()
         self._worker: Optional[threading.Thread] = None
         self._stop_worker = threading.Event()
         self._client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=client_id)
@@ -231,6 +308,15 @@ class MqttSubscriber:
     def routing_errors(self) -> int:
         return self._routing_errors
 
+    @property
+    def coalesced_frames(self) -> int:
+        """Telemetry frames superseded by a newer one for the same node
+        before the worker reached them. Distinct from dropped_frames (a
+        parse failure): nothing is lost here that a fresher frame did not
+        already replace, but a persistently climbing count is the signal
+        that the fleet is out-producing what this board can process."""
+        return self._queue.coalesced
+
     def _handle_connect(self, client, userdata, flags, reason_code, properties=None):
         client.subscribe(DATA_TOPIC_FILTER, qos=0)
         if self._on_outputs is not None:
@@ -248,14 +334,18 @@ class MqttSubscriber:
         network thread (see class docstring), so this must stay cheap and
         never call self._on_frame directly. Queues the raw callback args
         for _process_loop's worker thread to fully handle via
-        _handle_message. A full queue means the worker is falling behind
-        (not a normal condition at today's frame rates) -- drop the newest
-        message rather than block paho's thread with a blocking put(),
-        which would recreate the exact stall this split exists to avoid."""
-        try:
-            self._queue.put_nowait((client, userdata, msg))
-        except queue.Full:
-            self._dropped += 1
+        _handle_message.
+
+        Telemetry is keyed by topic (i.e. per node) so a node whose previous
+        frame the worker has not reached yet has it superseded rather than
+        queued behind -- see _IngestQueue for why coalescing here, not
+        dropping the newest, is what keeps dashboard latency bounded when the
+        fleet out-produces the worker. /outputs announces are never coalesced:
+        one retained message per rig, which no later message repeats."""
+        if msg.topic.endswith("/outputs"):
+            self._queue.put((client, userdata, msg))
+        else:
+            self._queue.put((client, userdata, msg), key=msg.topic)
 
     def _handle_message(self, client, userdata, msg) -> None:
         """Fully parse + route one message -- called from _process_loop's
@@ -312,10 +402,10 @@ class MqttSubscriber:
         history.db write) happens here, so it can never delay reading the
         next node's message off the socket."""
         while not self._stop_worker.is_set():
-            try:
-                client, userdata, msg = self._queue.get(timeout=0.5)
-            except queue.Empty:
+            item = self._queue.get(timeout=0.5)
+            if item is None:
                 continue
+            client, userdata, msg = item
             self._handle_message(client, userdata, msg)
 
     def start(self) -> None:

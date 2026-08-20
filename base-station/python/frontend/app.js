@@ -1690,8 +1690,15 @@ Charts.init((msg) => {
     if (!entry) return;
     const wasBucket = bucketFor(entry);
     entry.last_seen = msg.timestamp;
-    lastWsTouchAt[msg.node_id] = Date.now();
     if (bucketFor(entry) === wasBucket) return;
+    // Only stamp lastWsTouchAt on an actual bucket flip, never on plain
+    // last_seen advancement: this fires per frame, and stamping it every
+    // time would leave it permanently newer than any poll's dispatch time,
+    // so pollNodes()'s merge would skip every streaming node forever and
+    // silently disable the REST fallback for exactly the nodes that are
+    // live. A superseded last_seen is self-correcting anyway -- the next
+    // frame is 200ms behind it.
+    lastWsTouchAt[msg.node_id] = Date.now();
   } else if (msg.type === "removed") {
     lastWsTouchAt[msg.node_id] = Date.now();
     delete state.lastNodes[msg.node_id];
