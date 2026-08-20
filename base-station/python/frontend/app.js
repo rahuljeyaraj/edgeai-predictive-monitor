@@ -236,9 +236,12 @@ function tripSecondsLeft(nodeId) {
 
 const tripBanner = document.getElementById("trip-banner");
 
-// Acknowledged post-trip lines, so a resolved event stops shouting. Only
-// the *settled* states are dismissible: a live countdown and a failed trip
-// are not, because both are still true and still need a decision.
+// Acknowledged post-trip lines, so a resolved event stops shouting. A live
+// countdown is the one line that stays un-dismissible -- it's still counting
+// toward a decision. A failed trip has nothing server-side to acknowledge
+// (there's no equivalent of acknowledge_trip for it), so without this it
+// would sit at the top of every tab forever; letting the operator dismiss it
+// locally, same as a settled tripped line, is the only way it ever closes.
 const dismissedTripNodes = new Set();
 
 function tripBannerLine(entry) {
@@ -250,8 +253,10 @@ function tripBannerLine(entry) {
   }
   if (p.trip_failed) {
     // The most severe state this system can report, and it used to be
-    // buried in a collapsed panel. Persistent until acknowledged.
-    return { kind: "failed", text: `${name} — trip failed, machine still running` };
+    // buried in a collapsed panel. Dismissible like any other settled
+    // line -- there's no server-side "acknowledge" for a failed trip, so
+    // without this it could never be closed at all.
+    return { kind: "failed", text: `${name} — trip failed, machine still running`, dismissible: true };
   }
   if (entry.status === "tripped") {
     const when = p.tripped_at ? new Date(p.tripped_at * 1000).toLocaleTimeString() : null;
@@ -358,6 +363,14 @@ tripBanner.addEventListener("click", (e) => {
     dismissedTripNodes.add(nodeId);
     renderTripBanner();
     return;
+  }
+  if (button.dataset.action === "protection_acknowledge") {
+    // Acknowledge IS the operator's decision on this trip -- once pressed
+    // the banner should just close, not linger as a second, separately
+    // dismissible line waiting on an X click too. The line still shows
+    // Ack until the poll below confirms needs_ack cleared server-side; this
+    // just keeps it from reappearing as "tripped, dismissible" afterward.
+    dismissedTripNodes.add(nodeId);
   }
   runAction(button.dataset.action, nodeId);
 });

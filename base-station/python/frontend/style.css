@@ -2084,8 +2084,9 @@ a.btn-label {
 
 /* "We tried to stop this machine and it did not stop" -- the most severe
    thing this system can report. Deeper red, no animation (it is not
-   counting toward anything; it is a standing fact), and no dismiss until
-   the operator acknowledges it. */
+   counting toward anything; it is a standing fact). Dismissible (X) like
+   any other settled line -- there's no server-side acknowledge for this
+   state, so an X is the only way it ever closes. */
 .trip-banner__line--failed {
   background-color: var(--color-tripped);
   border-bottom: 2px solid #7f1d1d;
