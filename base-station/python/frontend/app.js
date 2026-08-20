@@ -906,10 +906,23 @@ const ICON_RECORD = '<svg viewBox="0 0 24 24" width="15" height="15" fill="curre
 // trip output, not that anything is happening.
 const ICON_SHIELD = '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M12 3l7 3v6c0 4-3 7-7 9-4-2-7-5-7-9V6z"/></svg>';
 
+// Drag-to-rearrange handle on each row. Six dots is the near-universal
+// "grab me" affordance (list rows in phone settings, kanban cards, table
+// column reorder) and, unlike an up/down arrow pair, says the whole row
+// moves rather than that it swaps one place per click.
+const ICON_GRIP = '<svg viewBox="0 0 24 24" width="18" height="22" fill="currentColor"><circle cx="9" cy="5" r="2"/><circle cx="15" cy="5" r="2"/><circle cx="9" cy="12" r="2"/><circle cx="15" cy="12" r="2"/><circle cx="9" cy="19" r="2"/><circle cx="15" cy="19" r="2"/></svg>';
+
 // Suppresses re-render of the list while a rename input is open, so an
 // in-flight edit isn't wiped out by the next 5s poll (same guard the old
 // dashboard used for this exact race).
 let editingNodeId = null;
+
+// node_id of the row currently being dragged by its grip, or null. Same
+// idea as editingNodeId above -- it suppresses the automatic re-render --
+// but it has to be checked inside renderFleetList() itself rather than at
+// each call site, because a drag must survive EVERY render path (poll, WS,
+// offline tick, expand), not just the 5s poll.
+let draggingNodeId = null;
 
 // Same guard as editingNodeId above, for the device-type pill's edit mode
 // (motorRowHtml(), startDeviceTypeEdit()) -- each recording belongs to a
@@ -1170,7 +1183,14 @@ function motorRowHtml(entry) {
     ? `<span class="motor-row__classification-chip" title="Fault classifier's current read -- an independent signal from the status above">${escapeHtml(titleCase(entry.last_classification.label))}</span>`
     : "";
 
+  // The grip is the ONLY drag surface -- the row body stays a plain
+  // click-to-expand target. Making the whole row draggable would put a
+  // press-and-hold gesture on top of the row's primary action and turn
+  // every slightly-dragged tap into an accidental reorder.
+  const gripHtml = `<span class="motor-row__grip" data-role="grip" role="button" tabindex="0" title="Drag to move this asset up or down" aria-label="Drag to reorder ${escapeHtml(entry.device_name)}">${ICON_GRIP}</span>`;
+
   const rowHtml = `<div class="motor-row${isExpanded ? " motor-row--expanded" : ""}" title="Click to expand">
+    ${gripHtml}
     <div class="motor-row__main">
       ${identityHtml}
       <div class="motor-row__device-type-group">${deviceTypePillHtml}</div>
@@ -1214,9 +1234,38 @@ function motorRowHtml(entry) {
   return `<div class="motor-row-group motor-row-group--${bucket}" data-node-id="${escapeHtml(entry.node_id)}">${rowHtml}${detailHtml}</div>`;
 }
 
+// The Assets list is in an order the operator chose by dragging rows
+// (entry.sort_index, persisted server-side by POST /nodes/order) -- NOT
+// sorted by status or name. A fleet is a physical layout an operator holds
+// in their head ("the two pumps, then the line motors"), and a list that
+// re-sorts itself the moment a machine changes state is one where the row
+// you were about to click moves out from under you.
+//
+// sort_index is null for any node never dragged, which is the whole fleet
+// until someone starts arranging: those keep discovery order and sit after
+// the placed ones, so this is a no-op until first used.
+function orderedEntries(nodes) {
+  return Object.values(nodes)
+    .map((entry, i) => ({ entry, i }))
+    .sort((a, b) => {
+      const ai = a.entry.sort_index, bi = b.entry.sort_index;
+      if (ai == null && bi == null) return a.i - b.i;
+      if (ai == null) return 1;
+      if (bi == null) return -1;
+      return ai - bi || a.i - b.i;
+    })
+    .map((x) => x.entry);
+}
+
 function renderFleetList(nodes) {
+  // A drag physically moves .motor-row-group elements around inside the
+  // list, so any rebuild mid-drag would destroy the element under the
+  // operator's finger. Every caller is either the 5s poll, a WS message or
+  // the 1s offline tick -- none of them are worth interrupting a drag for,
+  // and finishDrag() re-renders once the drop lands.
+  if (draggingNodeId !== null) return;
   const list = document.getElementById("fleet-list");
-  const entries = Object.values(nodes);
+  const entries = orderedEntries(nodes);
   // Filtered-to-zero is left blank, no "no results" message of its own
   // (docs/STATUS_FILTER_PLAN.md S4) -- the placeholder below is only for
   // the genuinely-empty fleet (no assets registered at all).
@@ -1230,6 +1279,141 @@ function renderFleetList(nodes) {
   // charts.js, not by this markup) back into the fresh slots.
   Charts.attachExpanded(expandedNodeIds, openScalarsIds, openWaterfallIds);
 }
+
+// ---------------------------------------------------------------------
+// Drag to rearrange (grip handle on each row)
+//
+// Rows are moved directly in the DOM as the pointer passes their midpoint,
+// with no floating ghost element: the row an operator is dragging is often
+// an expanded one carrying live Plotly charts, and cloning that for a ghost
+// would either duplicate the charts or show an empty box. Moving the real
+// element keeps the charts mounted and mounted-once -- charts.js holds the
+// <div>s by reference, so reparenting the group never detaches them.
+// ---------------------------------------------------------------------
+
+let dragGroupEl = null;
+// The full fleet order as it stood when the drag began -- captured up front
+// because renderFleetList() is suppressed mid-drag, so state.lastNodes'
+// sort_index values are the pre-drag ones the whole time.
+let dragOrderBefore = [];
+
+// A status filter can hide rows, so the row dragged past is not necessarily
+// the neighbour in the full fleet. Hidden nodes keep their absolute
+// positions and the visible ones are re-dealt into the slots they already
+// occupied -- which is exactly what "put this one above that one" means
+// when you can only see some of them.
+function mergeVisibleOrder(fullOrder, visibleAfter) {
+  const visibleSet = new Set(visibleAfter);
+  let next = 0;
+  return fullOrder.map((nodeId) => (visibleSet.has(nodeId) ? visibleAfter[next++] : nodeId));
+}
+
+// Applies an ordering everywhere: locally first (so the row stays where it
+// was dropped even if the request is slow), then to the server.
+async function commitOrder(order, refocusNodeId) {
+  order.forEach((nodeId, i) => {
+    if (state.lastNodes[nodeId]) state.lastNodes[nodeId].sort_index = i;
+  });
+  renderFleetList(state.lastNodes);
+  if (refocusNodeId) {
+    document.querySelector(`.motor-row-group[data-node-id="${refocusNodeId}"] [data-role="grip"]`)?.focus();
+  }
+  try {
+    await api("POST", "/nodes/order", { node_ids: order });
+  } catch (err) {
+    console.error("Saving the asset order failed", err);
+    showToast("Could not save the new order", "error");
+    // Server is the authority -- pull the real order back rather than
+    // leaving the optimistic one on screen as if it had stuck.
+    await pollNodes();
+  }
+}
+
+function beginDrag(grip, e) {
+  const group = grip.closest(".motor-row-group");
+  if (!group) return;
+  dragOrderBefore = orderedEntries(state.lastNodes).map((entry) => entry.node_id);
+  draggingNodeId = group.dataset.nodeId;
+  dragGroupEl = group;
+  group.classList.add("motor-row-group--dragging");
+  document.body.classList.add("is-reordering");
+  e.preventDefault();
+}
+
+function onDragMove(e) {
+  if (draggingNodeId === null) return;
+  e.preventDefault();
+  const list = document.getElementById("fleet-list");
+  const groups = Array.from(list.querySelectorAll(".motor-row-group"));
+  // First row whose midpoint is still below the pointer -- insert above it.
+  // Comparing against midpoints (not edges) is what makes the swap happen
+  // once, at the halfway mark, instead of flickering back and forth while
+  // the pointer sits over the boundary between two rows.
+  const target = groups.find((g) => g !== dragGroupEl
+    && e.clientY < g.getBoundingClientRect().top + g.getBoundingClientRect().height / 2);
+  if (target) {
+    if (target.previousElementSibling !== dragGroupEl) list.insertBefore(dragGroupEl, target);
+  } else if (list.lastElementChild !== dragGroupEl) {
+    list.appendChild(dragGroupEl);
+  }
+}
+
+function endDrag() {
+  if (draggingNodeId === null) return;
+  const list = document.getElementById("fleet-list");
+  const droppedNodeId = draggingNodeId;
+  dragGroupEl.classList.remove("motor-row-group--dragging");
+  document.body.classList.remove("is-reordering");
+  const visibleAfter = Array.from(list.querySelectorAll(".motor-row-group"))
+    .map((g) => g.dataset.nodeId);
+  // Cleared before commitOrder(), whose renderFleetList() is the whole
+  // point of the call and would no-op against the guard otherwise.
+  draggingNodeId = null;
+  dragGroupEl = null;
+  commitOrder(mergeVisibleOrder(dragOrderBefore, visibleAfter), droppedNodeId);
+}
+
+// Moves one row by one visible slot -- the keyboard (and shaky-hand) route
+// to the same result as a drag, from the grip's arrow keys.
+function nudgeOrder(nodeId, delta) {
+  const ordered = orderedEntries(state.lastNodes);
+  const full = ordered.map((entry) => entry.node_id);
+  const visible = ordered.filter((entry) => selectedBuckets.has(bucketFor(entry)))
+    .map((entry) => entry.node_id);
+  const from = visible.indexOf(nodeId);
+  const to = from + delta;
+  if (from < 0 || to < 0 || to >= visible.length) return;
+  visible.splice(from, 1);
+  visible.splice(to, 0, nodeId);
+  commitOrder(mergeVisibleOrder(full, visible), nodeId);
+}
+
+document.getElementById("fleet-list").addEventListener("pointerdown", (e) => {
+  const grip = e.target.closest('[data-role="grip"]');
+  // Left button / touch / pen only -- a right-click on the grip should open
+  // the context menu, not start a drag nothing can cancel.
+  if (grip && e.button === 0) beginDrag(grip, e);
+});
+
+// On document, not on the grip: the grip lives inside the element being
+// moved, and moving an element that holds pointer capture drops the capture
+// mid-drag. Listening on document means the drag survives the pointer
+// leaving the row (or the list) entirely.
+document.addEventListener("pointermove", onDragMove, { passive: false });
+document.addEventListener("pointerup", endDrag);
+// A cancelled pointer (touch turned into a system gesture, window blur)
+// still commits wherever the row currently sits rather than snapping it
+// back -- the row is already visibly there, and silently undoing it would
+// read as the drag having been lost.
+document.addEventListener("pointercancel", endDrag);
+
+document.getElementById("fleet-list").addEventListener("keydown", (e) => {
+  const grip = e.target.closest('[data-role="grip"]');
+  if (!grip) return;
+  const nodeId = grip.closest(".motor-row-group").dataset.nodeId;
+  if (e.key === "ArrowUp") { e.preventDefault(); nudgeOrder(nodeId, -1); }
+  else if (e.key === "ArrowDown") { e.preventDefault(); nudgeOrder(nodeId, 1); }
+});
 
 function toggleExpand(nodeId) {
   if (expandedNodeIds.has(nodeId)) {
@@ -1398,6 +1582,9 @@ document.getElementById("fleet-list").addEventListener("click", (e) => {
     return;
   }
   if (e.target.closest('[data-role="name"]')) return;
+  // The grip is a drag handle, not a button -- a click that ends on it is
+  // the tail of a drag (or a mis-aimed tap), never a request to expand.
+  if (e.target.closest('[data-role="grip"]')) return;
   const suggestion = e.target.closest(".device-type-suggestion");
   if (suggestion) {
     // Commit directly rather than writing suggestion.dataset.value into
@@ -1747,6 +1934,16 @@ Charts.init((msg) => {
     openScalarsIds.delete(msg.node_id);
     openWaterfallIds.delete(msg.node_id);
     if (openRecordNodeId === msg.node_id) closeRecordDrawer();
+  } else if (msg.type === "node_order") {
+    // Another browser (or phone) rearranged the list -- POST /nodes/order
+    // is fleet-wide, so this carries every node's new index at once rather
+    // than one "registry" message per row. The tab that did the dragging
+    // has already applied the same mapping optimistically (commitOrder),
+    // so this is a no-op there.
+    for (const [nodeId, index] of Object.entries(msg.order || {})) {
+      if (state.lastNodes[nodeId]) state.lastNodes[nodeId].sort_index = index;
+    }
+    renderFleetList(state.lastNodes);
   } else if (msg.type === "registry") {
     lastWsTouchAt[msg.node_id] = Date.now();
     // The WS broadcast now sends the same _node_dict() shape GET /nodes

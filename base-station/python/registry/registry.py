@@ -100,6 +100,20 @@ class RegistryEntry:
     # S1. None until an operator sets it; a node with no device_type just
     # shows the anomaly score, no classification attempted.
     device_type: Optional[str] = None
+    # Where this asset sits in the dashboard's Assets list, low first --
+    # an operator-chosen order (drag the grip handle on a row), not a
+    # derived one. Deliberately explicit rather than relying on this
+    # registry's own dict order: the fleet list is keyed by node_id in
+    # JSON, and a JS object reorders integer-like keys (a node_id such as
+    # "194584") ahead of the rest regardless of insertion order, so dict
+    # order alone would silently scramble on the way to the browser.
+    #
+    # None until this node has ever been dragged, which is the normal
+    # state for most of the fleet -- Registry.reorder() only writes an
+    # index for the nodes it's given, and the frontend sorts the None ones
+    # after them by discovery order, so a never-dragged fleet keeps
+    # exactly the order it had before this field existed.
+    sort_index: Optional[int] = None
     model_path: Optional[str] = None
     status: NodeStatus = NodeStatus.UNCOMMISSIONED
     last_seen: Optional[float] = None
@@ -530,6 +544,41 @@ class Registry:
             entry.device_name = device_name
             self._save()
             return entry
+
+    def reorder(self, node_ids: List[str]) -> Dict[str, int]:
+        """Assigns sort_index 0..n-1 to `node_ids`, in the order given, and
+        pushes every other known node after them (keeping their existing
+        relative order). Returns the full node_id -> sort_index mapping.
+
+        Takes the whole desired ordering in one call rather than a
+        move-this-node-to-position delta: the dashboard can have a status
+        filter active, so the row an operator drags past is not necessarily
+        its neighbour in the full fleet. The frontend resolves the drag
+        against the complete list it already holds and sends the result,
+        which also makes this call idempotent and free of any
+        index-arithmetic that both ends would have to agree on.
+
+        Unknown node_ids are ignored rather than raising -- a node can be
+        decommissioned from another browser tab mid-drag, and dropping it
+        from the ordering is exactly the right outcome.
+        """
+        # Not per-node _lock_for(): this rewrites indices across the whole
+        # fleet at once, so there is no single node to lock on.
+        ordered = [n for n in node_ids if n in self._entries]
+        seen = set(ordered)
+        # Everything the caller left out, in its current order -- so a
+        # concurrently-added node lands at the end instead of at 0.
+        rest = sorted(
+            (n for n in self._entries if n not in seen),
+            key=lambda n: (self._entries[n].sort_index is None,
+                           self._entries[n].sort_index or 0),
+        )
+        mapping = {}
+        for i, node_id in enumerate(ordered + rest):
+            self._entries[node_id].sort_index = i
+            mapping[node_id] = i
+        self._save()
+        return mapping
 
     def set_device_type(self, node_id: str, device_type: Optional[str]) -> RegistryEntry:
         """device_type is the scoping key for capture/label grouping (docs/

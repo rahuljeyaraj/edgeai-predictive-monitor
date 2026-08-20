@@ -88,6 +88,14 @@ class RenameBody(BaseModel):
     device_name: Optional[str] = None
 
 
+class NodeOrderBody(BaseModel):
+    # The complete desired ordering of the Assets list, first row first.
+    # Whole-list rather than a move-this-node delta -- see
+    # Registry.reorder()'s docstring for why the frontend, not this route,
+    # is the one that resolves a drag into an ordering.
+    node_ids: List[str] = []
+
+
 class DeviceTypeBody(BaseModel):
     # Empty string means "clear it back to unassigned" -- normalized to
     # None before hitting Registry.set_device_type() (see the route below),
@@ -579,6 +587,17 @@ def create_app(registry: Registry, history_store: HistoryStore,
             raise HTTPException(status_code=404, detail=f"unknown node_id {node_id!r}")
         broadcast_threadsafe(app, {"type": "registry", "node_id": node_id, "entry": entry.to_dict()})
         return entry.to_dict()
+
+    @app.post("/nodes/order")
+    def reorder_nodes(body: NodeOrderBody = NodeOrderBody()):
+        """Persists the operator's drag-to-rearrange order for the Assets
+        list. Registered before /nodes/{node_id}/... routes is irrelevant
+        here (this path has no node_id segment), but note it is a fleet-wide
+        write, so unlike its neighbours it can't 404 on one node -- unknown
+        ids are simply dropped."""
+        order = app.state.registry.reorder(body.node_ids)
+        broadcast_threadsafe(app, {"type": "node_order", "order": order})
+        return {"order": order}
 
     @app.post("/nodes/{node_id}/device_type")
     def set_device_type(node_id: str, body: DeviceTypeBody = DeviceTypeBody()):

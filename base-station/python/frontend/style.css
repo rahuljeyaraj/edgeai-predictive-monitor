@@ -275,6 +275,64 @@ body {
   border-bottom-right-radius: 0;
 }
 
+/* Drag-to-rearrange handle (app.js's ICON_GRIP). Low-contrast at rest so a
+   handle on every row doesn't compete with the status colours that are the
+   list's actual signal -- it brightens on hover/focus, the moment it's
+   being looked for. touch-action:none is what lets a finger drag the row
+   instead of scrolling the page. */
+.motor-row__grip {
+  display: flex;
+  align-items: center;
+  align-self: stretch;
+  flex: 0 0 auto;
+  padding: 0 4px;
+  margin: -14px 2px -14px -10px; /* full-height grab strip, not just the glyph */
+  color: #64748b;
+  cursor: grab;
+  touch-action: none;
+  border-radius: 6px;
+}
+
+.motor-row__grip:hover,
+.motor-row__grip:focus-visible {
+  color: #cbd5e1;
+  background-color: #0f172a;
+}
+
+.motor-row__grip:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+/* The row being dragged: lifted off the list, and deliberately still fully
+   readable -- an operator arranging a fleet is reading the names as they
+   go, so this dims the row's SURROUNDINGS rather than the row itself. */
+.motor-row-group--dragging {
+  position: relative;
+  z-index: 5;
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.65);
+}
+
+.motor-row-group--dragging .motor-row {
+  background-color: #2a3a52;
+}
+
+body.is-reordering .motor-row-group:not(.motor-row-group--dragging) {
+  opacity: 0.45;
+}
+
+.motor-row-group--dragging .motor-row {
+  cursor: grabbing;
+}
+
+/* While a drag is live: one cursor everywhere, and no text selection
+   sweeping across the rows the pointer passes over. */
+body.is-reordering,
+body.is-reordering .motor-row {
+  cursor: grabbing;
+  user-select: none;
+}
+
 .motor-row__main {
   display: grid;
   /* Third column added 2026-07-24 for the asset-class pill, next to the

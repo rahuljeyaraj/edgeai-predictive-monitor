@@ -231,6 +231,46 @@ def test_rename_updates_registry_and_broadcasts(tmp_dir):
         api.stop()
 
 
+def test_node_order_persists_and_broadcasts(tmp_dir):
+    api = ApiUnderTest(tmp_dir)
+    try:
+        api.registry.add("node-2")
+        api.registry.add("node-3")
+        with api.client.websocket_connect("/ws") as ws:
+            status, body = api.request("POST", "/nodes/order",
+                                        {"node_ids": ["node-3", NODE_ID, "node-2"]})
+            assert status == 200, (status, body)
+            assert body["order"] == {"node-3": 0, NODE_ID: 1, "node-2": 2}, body
+
+            # The order rides on the entries themselves, so the dashboard's
+            # own GET /nodes is enough to render it -- no second fetch.
+            status, nodes = api.request("GET", "/nodes")
+            assert {n: d["sort_index"] for n, d in nodes.items()} == body["order"], nodes
+
+            # One fleet-wide message, not one "registry" message per row.
+            message = ws.receive_json()
+            assert message["type"] == "node_order", message
+            assert message["order"] == body["order"], message
+
+        # A node the caller left out is pushed after the ones it named,
+        # rather than silently landing at index 0.
+        api.registry.add("node-4")
+        status, body = api.request("POST", "/nodes/order", {"node_ids": ["node-2"]})
+        assert body["order"]["node-2"] == 0, body
+        assert body["order"]["node-4"] == max(body["order"].values()), body
+
+        # An id that vanished mid-drag (decommissioned in another tab) is
+        # dropped, not a 404 that would lose the whole rearrangement.
+        status, body = api.request("POST", "/nodes/order",
+                                    {"node_ids": ["ghost-node", NODE_ID]})
+        assert status == 200, (status, body)
+        assert body["order"][NODE_ID] == 0 and "ghost-node" not in body["order"], body
+        print("POST /nodes/order persists sort_index, broadcasts once, and tolerates "
+              "missing/extra ids: PASS")
+    finally:
+        api.stop()
+
+
 def test_device_type_updates_registry_and_broadcasts(tmp_dir):
     api = ApiUnderTest(tmp_dir)
     try:
@@ -1172,6 +1212,7 @@ def main():
     test_get_nodes_lists_registry_entries(tempfile.mkdtemp(dir=tmp_dir))
     test_get_node_404_for_unknown(tempfile.mkdtemp(dir=tmp_dir))
     test_rename_updates_registry_and_broadcasts(tempfile.mkdtemp(dir=tmp_dir))
+    test_node_order_persists_and_broadcasts(tempfile.mkdtemp(dir=tmp_dir))
     test_device_type_updates_registry_and_broadcasts(tempfile.mkdtemp(dir=tmp_dir))
     test_device_type_rename_cascades_and_broadcasts(tempfile.mkdtemp(dir=tmp_dir))
     test_device_type_rename_rejects_collision_with_existing_class(tempfile.mkdtemp(dir=tmp_dir))
