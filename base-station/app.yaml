@@ -19,8 +19,11 @@ ports: [8080, 8081]
 # Telegram's own getMe API (main.py), no second env var needed. Telegram
 # alerts code paths no-op safely if TELEGRAM_BOT_TOKEN is left unset
 # (main.py only wires the bot then).
-# NOTE: the brick hard-fails the on-device build with
+# Temporarily disabled: the brick hard-fails the on-device build with
 # `Variable "Telegram_bot_token" Is Required` if that brick variable isn't
 # set in App Lab's GUI -- that check runs before main.py, so main.py's own
-# unset-token guard can't save it. Set the token in App Lab first, then deploy.
-bricks: [arduino:telegram_bot]
+# unset-token guard can't save it. A deploy wiped the device's app.yaml
+# (and the token with it) after 87193e9 re-enabled this, taking the whole
+# app down. Re-add arduino:telegram_bot once the token is set again via
+# App Lab.
+bricks: []
