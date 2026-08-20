@@ -27,6 +27,14 @@ def gen_healthy(rng: np.random.Generator, num_windows: int, samples: int) -> np.
     return rng.normal(0.0, 1.0, size=(num_windows, samples)).astype(np.float32)
 
 
+def gen_idle(rng: np.random.Generator, num_windows: int, samples: int) -> np.ndarray:
+    """Motor stopped -- just sensor noise floor, ~20x lower amplitude than
+    gen_healthy's running signal. For the commissioning wizard's stopped-
+    baseline step (api/stopped_baseline_controller.py), which needs a
+    capture file that reads as genuinely stopped, not just "healthy"."""
+    return rng.normal(0.0, 0.05, size=(num_windows, samples)).astype(np.float32)
+
+
 def gen_fault(rng: np.random.Generator, num_windows: int, samples: int,
               period: int = 37, spike: float = 8.0) -> np.ndarray:
     signal = rng.normal(0.0, 1.0, size=(num_windows, samples)).astype(np.float32)
@@ -60,6 +68,7 @@ def main():
     targets = {
         "healthy.npz": (gen_healthy, "healthy"),
         "fault.npz": (gen_fault, "fault"),
+        "idle.npz": (gen_idle, "idle"),
     }
     for name, (gen_fn, label) in targets.items():
         path = os.path.join(args.out_dir, name)

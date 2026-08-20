@@ -135,7 +135,6 @@ from raw_features import (  # noqa: E402
     kurtosis,
     mic_useful_magnitude,
     peak,
-    peak_normalize,
     rms,
     skewness,
     std,
@@ -305,7 +304,19 @@ def build_frame(windows: dict, *, accel_fused: bool, accel_per_axis: bool, mic: 
                 continue
             window, fs = windows[name]
             mag = downsample(fft_magnitude(window), axis_bin_count)
-            bins = tuple(float(v) for v in peak_normalize(mag))
+            # Raw magnitude on the wire, NOT peak-normalized -- matches real
+            # firmware (fuser.cpp sends raw FFT magnitude, no normalization
+            # step anywhere in it). pipeline/features.py's normalize_bins()
+            # is where peak-normalization is meant to happen, downstream,
+            # only for the model's feature vector. Normalizing here as well
+            # destroyed the absolute-amplitude information gate.py's
+            # stopped-baseline/excess-over-floor math depends on: a flat
+            # broadband-noise "stopped" capture normalizes to a mid-range
+            # value on every bin, while a genuinely running capture's real
+            # peak squashes its own non-peak bins down near zero -- so the
+            # running capture reads as quieter than the stopped one on
+            # almost every bin, and MotorStateGate never confirms RUNNING.
+            bins = tuple(float(v) for v in mag)
             axis_name = _AXIS_SPECTRUM_NAME[name]
             channel_id = schema.CHANNEL_ID_BY_NAME[axis_name]
             sections.append(encode_section(source_id, channel_id, _KIND_SPECTRUM,
@@ -320,7 +331,7 @@ def build_frame(windows: dict, *, accel_fused: bool, accel_per_axis: bool, mic: 
     if accel_fused and present_axes:
         fs = windows[present_axes[0]][1]
         combined = sum(downsample(fft_magnitude(windows[name][0]), bin_count) for name in present_axes)
-        accel_bins = tuple(float(v) for v in peak_normalize(combined))
+        accel_bins = tuple(float(v) for v in combined)  # raw magnitude -- see per-axis comment above
     else:
         fs = NOMINAL_ACCEL_FS_HZ
         accel_bins = tuple(0.0 for _ in range(bin_count))
@@ -335,7 +346,7 @@ def build_frame(windows: dict, *, accel_fused: bool, accel_per_axis: bool, mic: 
         # and offline_experiment.py apply; otherwise this simulated node
         # publishes an alias image as if it were real audio above 24kHz.
         mag = downsample(mic_useful_magnitude(fft_magnitude(window)), mic_bin_count)
-        mic_bins = tuple(float(v) for v in peak_normalize(mag))
+        mic_bins = tuple(float(v) for v in mag)  # raw magnitude -- see per-axis comment above
         if scalars:
             for scalar_name in scalars:
                 scalar_values[f"{scalar_name}_mic"] = _SCALAR_FUNCS[scalar_name](window)
