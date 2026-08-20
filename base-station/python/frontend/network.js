@@ -18,12 +18,6 @@ const Network = (() => {
     form: { ssid: "", password: "", busy: false, error: null, notice: null, success: null },
     networks: { list: [], scanning: false, error: null },
     forget: { busy: false, error: null, notice: null },
-    // Fleet roaming (docs/WIFI_ONBOARDING_PLAN.md S6): the sensors are told
-    // to move to the new network BEFORE this device leaves the one they
-    // reach it on. `results` holds the last push's per-node answers;
-    // `confirmNeeded` is set when at least one sensor stayed silent, which
-    // is the only case that stops and waits for a human decision.
-    fleet: { busy: false, results: null, confirmNeeded: false, pushedSsid: null },
   };
 
   function escapeHtml(str) {
@@ -65,9 +59,7 @@ const Network = (() => {
     const forgetBlock = s.mode === "sta" ? `
       <div class="perf-chart__caption">Switches the base station back to its own
         EPM-BaseStation hotspot and forgets "${escapeHtml(s.ssid || "")}" -- this page will
-        likely lose connection right away since it's reachable through that network too.
-        The sensors do <strong>not</strong> follow: they stay on "${escapeHtml(s.ssid || "")}"
-        and fall back to their own setup pages after a few minutes.</div>
+        likely lose connection right away since it's reachable through that network too.</div>
       <button type="button" class="btn-label btn-label--danger" data-action="network_forget" ${fg.busy ? "disabled" : ""}>
         ${fg.busy ? "Switching to hotspot…" : "Back to hotspot mode"}
       </button>
@@ -81,34 +73,6 @@ const Network = (() => {
       ${s.mode === "sta" ? `<div class="perf-chart__caption">Reachable at epm-base.local on this network.</div>` : ""}
       ${forgetBlock}
     </div>`;
-  }
-
-  // Per-sensor outcome of the credential push. Deliberately worded as
-  // "moving", never "moved": a sensor acks when it has TAKEN the settings,
-  // not when it has joined -- joining is what kills the link the ack would
-  // have travelled on (python/network/fleet_roam.py's module docstring).
-  const FLEET_STATUS_TEXT = {
-    accepted: "moving to the new network",
-    simulated: "no radio -- nothing to move",
-    rejected: "didn't take the settings",
-    no_answer: "no answer",
-  };
-
-  function renderFleet() {
-    const fl = state.fleet;
-    if (fl.busy) {
-      return `<div class="perf-chart__caption">Telling the sensors to move first…</div>`;
-    }
-    if (!fl.results || fl.results.length === 0) return "";
-    const rows = fl.results.map((n) => `<div class="network-status__row">
-      <span class="perf-chart__label">${escapeHtml(n.device_name || n.node_id)}</span>
-      <span class="network-status__value">${FLEET_STATUS_TEXT[n.status] || n.status}</span>
-    </div>`).join("");
-    const warn = fl.confirmNeeded
-      ? `<div class="perf-chart__caption">Sensors that didn't answer will lose this
-          device and need their own setup (hold their BOOT button for 3s).</div>`
-      : "";
-    return `${rows}${warn}`;
   }
 
   function renderConnect() {
@@ -143,25 +107,17 @@ const Network = (() => {
                data-action="network_ssid" value="${escapeAttr(f.ssid)}" autocomplete="off" ${f.busy ? "disabled" : ""}>
         <input type="password" class="classifier-table__rename-input" placeholder="Password"
                data-action="network_password" value="${escapeAttr(f.password)}" autocomplete="off" ${f.busy ? "disabled" : ""}>
-        <button type="button" class="btn-primary" data-action="network_connect_submit" ${(f.busy || state.fleet.busy) ? "disabled" : ""}>
-          ${connectLabel()}
+        <button type="button" class="btn-primary" data-action="network_connect_submit" ${f.busy ? "disabled" : ""}>
+          ${f.busy ? "Connecting…" : "Connect"}
         </button>
         <button type="button" class="btn-label" data-action="network_rescan" ${(f.busy || n.scanning) ? "disabled" : ""}>
           ${n.scanning ? "Scanning…" : "Scan for networks"}
         </button>
-        ${renderFleet()}
         ${f.error ? `<div class="classifier-ei__error">${escapeHtml(f.error)}</div>` : ""}
         ${f.notice ? `<div class="network-connect__notice">${escapeHtml(f.notice)}</div>` : ""}
         ${f.success ? `<div class="network-connect__success">${escapeHtml(f.success)}</div>` : ""}
       </div>
     </div>`;
-  }
-
-  function connectLabel() {
-    if (state.fleet.busy) return "Moving sensors…";
-    if (state.form.busy) return "Connecting…";
-    if (state.fleet.confirmNeeded) return "Connect anyway";
-    return "Connect";
   }
 
   async function postJson(url, body) {
@@ -255,50 +211,7 @@ const Network = (() => {
     renderConnect();
   }
 
-  // Step 1 of a connect: hand the fleet the network this device is about
-  // to join, while they can still hear us through it. Returns true if the
-  // join should go ahead now, false if we're stopping to let the technician
-  // decide about a sensor that didn't answer.
-  //
-  // Failing this step never blocks the join: the base station's own
-  // connectivity is not the fleet's to veto, and every unmoved sensor
-  // recovers on its own (its AP + portal comes back once it loses WiFi).
-  async function pushFleet(ssid, password) {
-    const f = state.form;
-    state.fleet = { busy: true, results: null, confirmNeeded: false, pushedSsid: ssid };
-    f.busy = true;
-    renderConnect();
-    let body;
-    try {
-      body = await postJson("/network/wifi/fleet-provision", { ssid, password });
-    } catch (err) {
-      console.error("Failed to push WiFi credentials to the fleet", err);
-      state.fleet = { busy: false, results: null, confirmNeeded: false, pushedSsid: ssid };
-      return true;
-    }
-    const nodes = body.nodes || [];
-    const silent = nodes.filter((n) => n.status === "no_answer");
-    state.fleet = { busy: false, results: nodes, confirmNeeded: silent.length > 0, pushedSsid: ssid };
-    if (silent.length > 0) {
-      f.busy = false;
-      renderConnect();
-      return false;
-    }
-    return true;
-  }
-
   async function submitConnect() {
-    // The fleet push runs once per attempt: after it has reported back,
-    // a second tap on the (now "Connect anyway") button is the technician
-    // accepting that result, not a request to push again.
-    if (!(state.fleet.confirmNeeded && state.fleet.pushedSsid === state.form.ssid)) {
-      const proceed = await pushFleet(state.form.ssid, state.form.password);
-      if (!proceed) return;
-    }
-    await joinNetwork();
-  }
-
-  async function joinNetwork() {
     const f = state.form;
     const targetSsid = f.ssid;
     f.busy = true;
@@ -313,7 +226,6 @@ const Network = (() => {
       // Classifier's EI link form follows on success).
       state.form = { ssid: "", password: "", busy: false, error: null, notice: null,
         success: `Connected to "${targetSsid}".` };
-      state.fleet = { ...state.fleet, busy: false, confirmNeeded: false };
       await refreshStatus();
     } catch (err) {
       if (err instanceof TypeError) {
@@ -330,16 +242,11 @@ const Network = (() => {
         state.form = { ssid: "", password: "", busy: false, error: null,
           notice: `Switching networks… checking if "${targetSsid}" connected.`,
           success: null };
-        state.fleet = { ...state.fleet, busy: false, confirmNeeded: false };
         pollForOutcome(targetSsid);
       } else {
         // Failure: drop the password and let the user retype it rather than
-        // holding it in state indefinitely. Clearing confirmNeeded matters
-        // here: the retype is usually a corrected password, and the fleet
-        // was pushed the wrong one -- the next attempt must push again
-        // rather than reuse this attempt's "Connect anyway" confirmation.
+        // holding it in state indefinitely.
         state.form = { ...f, password: "", busy: false, error: err.message, notice: null, success: null };
-        state.fleet = { ...state.fleet, busy: false, confirmNeeded: false };
       }
     }
     renderConnect();

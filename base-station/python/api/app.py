@@ -58,11 +58,9 @@ from store import HistoryStore
 from retention import DEFAULT_RETENTION_SECONDS, run_retention_loop
 from perf import PerformanceMonitor
 from gpu_perf import GpuPerfPoller
-from sensor_frame import BASE_STATION_NODE_ID
 from spi_reader import SpiConsumer
 import telegram_alerts
 from wifi import WifiStatusPoller, connect as wifi_connect, forget as wifi_forget, scan as wifi_scan
-from fleet_roam import FleetRoamer
 from connection_manager import ConnectionManager
 from manager import PipelineManager
 from alert_store import AlertStore, SubscriberNotFoundError
@@ -89,11 +87,6 @@ _EMPTY_INGEST = {"seq": None, "frames_ok": 0, "frames_dup": 0, "frames_dropped":
                   "on_frame_errors": 0, "paused_for_exclusive": 0}
 _EMPTY_GPU_PERF = {"available": False, "busy_percent": None}
 _EMPTY_WIFI_STATUS = {"available": False, "mode": None, "ssid": None, "ip": None}
-
-# How stale a node's last frame may be and still be worth pushing WiFi
-# credentials to (POST /network/wifi/fleet-provision). Six times the
-# dashboard's own offline threshold on purpose -- see _roam_target_node_ids().
-_ROAM_TARGET_WINDOW_S = 60.0
 
 _PERF_BROADCAST_INTERVAL_S = 1.0
 
@@ -188,11 +181,6 @@ class WifiConnectBody(BaseModel):
     password: str
 
 
-class WifiFleetProvisionBody(BaseModel):
-    ssid: str
-    password: str
-
-
 class EILinkBody(BaseModel):
     device_type: str
     username: str
@@ -248,7 +236,6 @@ def create_app(registry: Registry, history_store: HistoryStore,
                 telegram_bot_username: Optional[str] = None,
                 ei=None,
                 wifi_status: Optional[WifiStatusPoller] = None,
-                fleet_roamer: Optional[FleetRoamer] = None,
                 protection=None,
                 stopped_baseline=None,
                 setup=None,
@@ -314,7 +301,6 @@ def create_app(registry: Registry, history_store: HistoryStore,
     app.state.telegram_bot_username = telegram_bot_username
     app.state.ei = ei
     app.state.wifi_status = wifi_status
-    app.state.fleet_roamer = fleet_roamer
     app.state.protection = protection
     app.state.stopped_baseline = stopped_baseline
     app.state.setup = setup
@@ -524,51 +510,6 @@ def create_app(registry: Registry, history_store: HistoryStore,
     @app.get("/network/wifi/scan")
     def scan_wifi():
         return wifi_scan()
-
-    # Fleet WiFi roaming (docs/WIFI_ONBOARDING_PLAN.md S6). Deliberately a
-    # separate call the frontend makes *before* POST /network/wifi/connect,
-    # not a flag on it: the connect call's response can never arrive (the
-    # join drops the network carrying it -- S1's Round 2 finding), so
-    # anything the technician needs to *see* about the fleet has to come
-    # back on its own request while the page is still reachable.
-    @app.post("/network/wifi/fleet-provision")
-    def fleet_provision_wifi(body: WifiFleetProvisionBody):
-        if app.state.fleet_roamer is None:
-            # No --mqtt-host: there is no fleet to move. Not an error --
-            # the frontend just goes straight on to its own connect.
-            return {"available": False, "nodes": []}
-        node_ids = _roam_target_node_ids()
-        try:
-            result = app.state.fleet_roamer.push(body.ssid, body.password, node_ids)
-        except RuntimeError as e:
-            raise HTTPException(status_code=503, detail=str(e))
-        names = app.state.registry.list()
-        for node in result["nodes"]:
-            entry = names.get(node["node_id"])
-            node["device_name"] = entry.device_name if entry is not None else node["node_id"]
-        return {"available": True, **result}
-
-    def _roam_target_node_ids() -> List[str]:
-        """Every node that has streamed a frame recently enough to still
-        plausibly be on the air. Uses a much longer window than the
-        dashboard's own 10s offline threshold (app.js's OFFLINE_AFTER_S):
-        a node that went quiet 20s ago is still sitting on this network and
-        still needs telling, and the cost of pushing to a node that turns
-        out to be gone is one unanswered ack row, not a failure.
-
-        This device's OWN node is excluded. It appears in the registry like
-        any other asset (its SPI-attached sensors, ingestion/sensor_frame.py's
-        BASE_STATION_NODE_ID) and streams frames constantly, so it looked
-        like the liveliest satellite in the fleet -- but it has no MQTT
-        command subscriber, cannot roam anywhere (it IS the thing about to
-        switch), and so answered every push with silence. That silence then
-        stopped the very switch it was about to perform, on behalf of
-        itself."""
-        now = time.time()
-        return [node_id for node_id, entry in app.state.registry.list().items()
-                if node_id != BASE_STATION_NODE_ID
-                and entry.last_seen is not None
-                and now - entry.last_seen <= _ROAM_TARGET_WINDOW_S]
 
     @app.post("/network/wifi/connect")
     def connect_wifi(body: WifiConnectBody):
