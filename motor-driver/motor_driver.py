@@ -271,8 +271,17 @@ class Rig:
         never finish -- a trip landing mid-profile would hang this loop (and
         the whole script) forever instead of letting the remaining motors
         carry on."""
-        max_delta = rate * tick
+        # Advance by ELAPSED time, not by "one loop pass = one step". Each pass
+        # costs tick PLUS however long the serial writes took, so a fixed
+        # per-pass delta always ramped slower than `rate` asked for -- and the
+        # more motors in `targets`, the slower it got. The catch-up is capped at
+        # two ticks so a scheduling hiccup resumes the ramp instead of issuing
+        # one big jump, which is the stall this ramp exists to prevent.
+        last = time.monotonic() - tick   # first pass gets one full tick's worth
         while True:
+            now = time.monotonic()
+            max_delta = rate * min(now - last, tick * 2)
+            last = now
             done = True
             for idx, target in targets.items():
                 if idx in self._tripped:

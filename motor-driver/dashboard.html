@@ -236,6 +236,16 @@ const BOOT_MS = 2200;          // Uno resets when the port opens; wait before dr
 // rpm/second, and the intermediate values are what actually get sent.
 const RAMP_RPM_S = 150;        // matches the old firmware's proven-safe ramp rate
 const RAMP_TICK_MS = 100;      // how often the ramp advances and sends a command
+// The longest gap between two ticks that still counts in full toward the ramp.
+// setInterval only ever promises *at least* RAMP_TICK_MS, so the ramp measures
+// real elapsed time rather than counting ticks (see rampTick). The catch-up has
+// to be capped, though, because credited time IS step size: at RAMP_RPM_S a
+// 200ms credit is a 30 RPM jump in a single command. A normal on-time tick is a
+// 15 RPM step, and jumps near ~100 RPM are known to stall the motor outright at
+// high RPM, so this allows at most 2x the proven-safe step. Past the cap the
+// ramp keeps its small steps and simply takes longer -- a slow ramp is a
+// nuisance, a stalled motor is a failed run.
+const RAMP_MAX_CATCHUP_MS = 200;
 
 let port = null, writer = null, reader = null, keepReading = false;
 const enc = new TextEncoder();
@@ -479,8 +489,26 @@ async function zeroAllMotors() {
   }
 }
 
+// Wall-clock time of the previous tick, so the ramp can advance by how long it
+// ACTUALLY waited. This used to be a fixed RAMP_RPM_S * RAMP_TICK_MS step per
+// tick, which silently made the rate a function of timer accuracy: browsers
+// clamp setInterval to >=1s in a hidden/backgrounded tab, so switching away
+// from this page mid-ramp turned 150 RPM/s into ~15 RPM/s (0->1200 went from
+// ~8s to ~80s), and any main-thread jank stretched it by the same mechanism.
+let lastRampAt = null;
+let rampWasLate = false;
 function rampTick() {
-  const maxDelta = RAMP_RPM_S * (RAMP_TICK_MS / 1000);
+  const now = performance.now();
+  const gap = lastRampAt === null ? RAMP_TICK_MS : now - lastRampAt;
+  lastRampAt = now;
+  // Report a stalled timer once per episode rather than every tick, so the
+  // console shows *why* a ramp crawled instead of just looking slow.
+  const late = gap > RAMP_MAX_CATCHUP_MS;
+  if (late !== rampWasLate) {
+    rampWasLate = late;
+    if (late) log("sys", `ramp timer throttled (${Math.round(gap)}ms tick) - page backgrounded?`);
+  }
+  const maxDelta = RAMP_RPM_S * (Math.min(gap, RAMP_MAX_CATCHUP_MS) / 1000);
   for (const idx of MOTOR_IDS) {
     // Never command a tripped motor. The rig host refuses these anyway
     // (motor_driver.py's Rig.motor), but a stream of rejected commands would
@@ -503,6 +531,8 @@ function rampTick() {
 
 function startRampLoop() {
   if (rampTimer) return;
+  lastRampAt = null;   // first tick after a (re)connect counts as one normal tick
+  rampWasLate = false;
   rampTimer = setInterval(() => { rampTick(); refreshEnergize(); }, RAMP_TICK_MS);
 }
 function stopRampLoop() {
