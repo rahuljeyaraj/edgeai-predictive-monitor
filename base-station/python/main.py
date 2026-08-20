@@ -627,6 +627,7 @@ def main():
         # telegram_bot.start() belongs here for the same reason: a message
         # (e.g. /start) could arrive and trigger on_subscriber_change's
         # broadcast_threadsafe before the loop is ready otherwise.
+        nonlocal telegram_bot
         spi_consumer.start()
         gpu_perf.start()
         # Started here rather than at construction so every sink (including
@@ -637,7 +638,25 @@ def main():
         if mqtt_thread is not None:
             mqtt_thread.start()
         if telegram_bot is not None:
-            telegram_bot.start()
+            # Opt-in and best-effort: this is the board's own reboot-then-
+            # -reconnect window, when wlan0 can still be sitting on its
+            # fallback Hotspot profile with no upstream internet (see
+            # cold-boot-runbook-facts). A Telegram API timeout here used to
+            # raise out of start_ingestion and take the whole lifespan --
+            # and therefore the entire dashboard, sensors included -- down
+            # with it, for one opt-in integration. Swallow it instead: log
+            # loudly, null out the bot (app.state too, so /alerts/telegram/
+            # status stops claiming "configured" for a bot that never
+            # actually started), and let everything else boot normally.
+            try:
+                telegram_bot.start()
+            except Exception:
+                logger.exception(
+                    "Telegram bot failed to start (no internet yet? bad "
+                    "token?) -- continuing without it, dashboard/sensors "
+                    "are unaffected")
+                telegram_bot = None
+                app.state.telegram_bot = None
 
     app = create_app(registry, history, commissioning, capture=capture, manager=manager,
                       perf_monitor=perf_monitor, gpu_perf=gpu_perf, spi_consumer=spi_consumer,
