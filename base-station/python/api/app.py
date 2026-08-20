@@ -74,8 +74,19 @@ logger = logging.getLogger(__name__)
 # corresponding consumer wasn't wired in (e.g. tests constructing routes
 # standalone). Kept the same shape as the populated case so the frontend
 # never has to special-case a missing key.
+#
+# arm_errors/on_frame_errors/paused_for_exclusive are here because leaving them
+# out cost three sessions of debugging: base_station went "Offline" for ~10s at
+# a time while every counter this dict DID expose looked perfectly healthy.
+# frames_ok is incremented before on_frame is ever called (spi_reader._store),
+# so it proves the SPI transport is alive and nothing else -- a stall upstream
+# of it (arm RPC timeout) or downstream of it (on_frame raising, another
+# process holding the SPI flock) simply stops it advancing, which is
+# indistinguishable from an idle link. These three are the only counters that
+# tell those cases apart, and they were being collected and then dropped here.
 _EMPTY_INGEST = {"seq": None, "frames_ok": 0, "frames_dup": 0, "frames_dropped": 0,
-                  "crc_fail": 0, "arm_gap": 0}
+                  "crc_fail": 0, "arm_gap": 0, "arm_errors": 0,
+                  "on_frame_errors": 0, "paused_for_exclusive": 0}
 _EMPTY_GPU_PERF = {"available": False, "busy_percent": None}
 _EMPTY_WIFI_STATUS = {"available": False, "mode": None, "ssid": None, "ip": None}
 

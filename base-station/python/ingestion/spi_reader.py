@@ -96,6 +96,14 @@ CHUNK_SIZE = 512
 STREAM_PACING_S = 0.015
 FRAME_RETRIES = 3
 ARM_RETRIES = 30
+# Per-call ceiling for the arm RPC. Bridge.call's own default is timeout=10
+# (arduino/app_utils/bridge.py) -- a full 10s parked inside BRIDGE_LOCK with
+# zero frames pulled, which is LONGER than the dashboard's OFFLINE_AFTER_S
+# (frontend/app.js), so one lost RPC reply was enough to flip base_station to
+# "Offline" and back. The arm normally answers in well under 150ms (frames
+# land at 6-7/s including chunk reads), so 1s is ~7x headroom and bounds a
+# lost reply to a blip the 10s staleness rule never sees.
+ARM_CALL_TIMEOUT_S = 1
 PULL_INTERVAL_S = 0.02
 
 # Cross-process mutual exclusion for who's allowed to actively pull the SPI
@@ -147,6 +155,7 @@ class SpiConsumer:
         self.arm_gap = 0               # empty/busy/done stalls
         self.on_frame_errors = 0       # on_frame (PipelineManager.route) raised
         self.paused_for_exclusive = 0  # cycles skipped because another process holds the lock
+        self.arm_errors = 0            # arm RPC raised (timeout/transport), not a busy/empty reply
 
     # -- transport ----------------------------------------------------------
     @staticmethod
@@ -179,8 +188,26 @@ class SpiConsumer:
         for _ in range(ARM_RETRIES):
             try:
                 with BRIDGE_LOCK:
-                    reply = str(Bridge.call("spi_arm_stream", str(CHUNK_SIZE)))
+                    reply = str(Bridge.call("spi_arm_stream", str(CHUNK_SIZE),
+                                            timeout=ARM_CALL_TIMEOUT_S))
             except Exception:
+                # Measured 2026-08-20: the router's read loop hits a msgpack
+                # decode error ("Unexpected error in read loop: 'utf-8' codec
+                # can't decode byte 0x91"), `continue`s past the pending reply,
+                # and this call then waits out Bridge.call's whole timeout with
+                # BRIDGE_LOCK held -- 10.4s of frozen last_seen, seq jumping
+                # 164 unpulled frames on recovery, and the node reading
+                # "Offline" the entire time. See ARM_CALL_TIMEOUT_S above.
+                #
+                # Counted, not silent: this used to be a bare `return None`
+                # that incremented nothing (arm_gap below only covers a
+                # busy/empty *reply*), so a 10s blackout left every ingest
+                # counter looking healthy -- frames_ok simply stopped
+                # advancing, which reads identically to "nothing to pull".
+                # That blind spot is what made this take three sessions to
+                # pin down.
+                with self._lock:
+                    self.arm_errors += 1
                 return None
             if reply not in ("busy", "empty"):
                 break
@@ -363,5 +390,6 @@ class SpiConsumer:
             return dict(seq=self.last_seq, bins=self.last_bins, meta=self.last_meta,
                         frames_ok=self.frames_ok, frames_dup=self.frames_dup,
                         frames_dropped=self.frames_dropped, crc_fail=self.crc_fail,
-                        arm_gap=self.arm_gap, on_frame_errors=self.on_frame_errors,
+                        arm_gap=self.arm_gap, arm_errors=self.arm_errors,
+                        on_frame_errors=self.on_frame_errors,
                         paused_for_exclusive=self.paused_for_exclusive)
