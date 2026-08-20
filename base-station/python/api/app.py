@@ -58,6 +58,7 @@ from store import HistoryStore
 from retention import DEFAULT_RETENTION_SECONDS, run_retention_loop
 from perf import PerformanceMonitor
 from gpu_perf import GpuPerfPoller
+from sensor_frame import BASE_STATION_NODE_ID
 from spi_reader import SpiConsumer
 import telegram_alerts
 from wifi import WifiStatusPoller, connect as wifi_connect, forget as wifi_forget, scan as wifi_scan
@@ -542,10 +543,20 @@ def create_app(registry: Registry, history_store: HistoryStore,
         dashboard's own 10s offline threshold (app.js's OFFLINE_AFTER_S):
         a node that went quiet 20s ago is still sitting on this network and
         still needs telling, and the cost of pushing to a node that turns
-        out to be gone is one unanswered ack row, not a failure."""
+        out to be gone is one unanswered ack row, not a failure.
+
+        This device's OWN node is excluded. It appears in the registry like
+        any other asset (its SPI-attached sensors, ingestion/sensor_frame.py's
+        BASE_STATION_NODE_ID) and streams frames constantly, so it looked
+        like the liveliest satellite in the fleet -- but it has no MQTT
+        command subscriber, cannot roam anywhere (it IS the thing about to
+        switch), and so answered every push with silence. That silence then
+        stopped the very switch it was about to perform, on behalf of
+        itself."""
         now = time.time()
         return [node_id for node_id, entry in app.state.registry.list().items()
-                if entry.last_seen is not None
+                if node_id != BASE_STATION_NODE_ID
+                and entry.last_seen is not None
                 and now - entry.last_seen <= _ROAM_TARGET_WINDOW_S]
 
     @app.post("/network/wifi/connect")

@@ -24,7 +24,7 @@ import time
 
 from fastapi.testclient import TestClient
 
-from sensor_frame import FrameSource, SensorFrame
+from sensor_frame import BASE_STATION_NODE_ID, FrameSource, SensorFrame
 from registry import NodeNotFoundError, NodeStatus, Registry, SensorChannel
 from store import HistoryStore
 from app import create_app
@@ -1154,6 +1154,30 @@ def test_fleet_provision_pushes_only_to_recently_seen_nodes(tmp_dir):
         api.stop()
 
 
+def test_fleet_provision_never_pushes_to_the_base_station_itself(tmp_dir):
+    """This device's own SPI-attached sensors are a registry node like any
+    other, and the liveliest one in the fleet -- but there is nobody on the
+    other end of its cmd topic, and it cannot roam anywhere because it IS
+    the thing about to switch. Including it meant its own silence stopped
+    its own WiFi switch and asked the technician to confirm it (seen live
+    2026-08-20: "Turbine 1 -- no answer")."""
+    roamer = FakeFleetRoamer()
+    api = ApiUnderTest(tmp_dir, fleet_roamer=roamer)
+    try:
+        api.registry.add(BASE_STATION_NODE_ID, device_name="Turbine 1")
+        api.registry.touch_last_seen(BASE_STATION_NODE_ID)
+        api.registry.add("sat-1", device_name="Pump 1")
+        api.registry.touch_last_seen("sat-1")
+
+        status, body = api.request("POST", "/network/wifi/fleet-provision",
+                                    {"ssid": "Factory", "password": "pw"})
+        assert status == 200, (status, body)
+        assert roamer.pushed["node_ids"] == ["sat-1"], roamer.pushed
+        print("POST /network/wifi/fleet-provision never pushes to the base station itself: PASS")
+    finally:
+        api.stop()
+
+
 def test_fleet_provision_503s_when_the_broker_is_unreachable(tmp_dir):
     """Distinct from a node staying silent: this is a fault in the base
     station itself, and matches how POST /network/wifi/connect reports an
@@ -1325,6 +1349,7 @@ def main():
     test_ei_upload_job_failure_broadcasts_error_over_ws(tempfile.mkdtemp(dir=tmp_dir))
     test_fleet_provision_reports_unavailable_with_no_broker_wired(tempfile.mkdtemp(dir=tmp_dir))
     test_fleet_provision_pushes_only_to_recently_seen_nodes(tempfile.mkdtemp(dir=tmp_dir))
+    test_fleet_provision_never_pushes_to_the_base_station_itself(tempfile.mkdtemp(dir=tmp_dir))
     test_fleet_provision_503s_when_the_broker_is_unreachable(tempfile.mkdtemp(dir=tmp_dir))
     test_history_endpoint_returns_recorded_scores(tempfile.mkdtemp(dir=tmp_dir))
     test_websocket_broadcast_reaches_connected_client(tempfile.mkdtemp(dir=tmp_dir))
