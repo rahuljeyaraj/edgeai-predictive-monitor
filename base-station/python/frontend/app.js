@@ -12,7 +12,19 @@ const NODES_POLL_MS = 5000;
 // while, independent of its last confirmed status -- last_seen staleness
 // is the online/offline signal (docs/EPM_Dashboard_Redesign_Spec.md S5.1,
 // "OFFLINE continues to be frontend-computed"). Never pushed by the server.
-const OFFLINE_AFTER_S = 30;
+//
+// A node that stops publishing cannot announce that it has, so this timeout
+// is the ONLY way offline is ever noticed -- unlike coming online, which a
+// single frame proves instantly (see the "last_seen" WS branch below). 30s
+// made a stopped node linger on the dashboard for half a minute.
+//
+// 10s is bounded below by the slowest frame rate any node is expected to
+// sustain: the sims publish at 5fps and real satellite nodes have measured
+// 0.27-4.9fps, so even the slowest is ~2.7 frames inside this window. Do not
+// cut this much finer without re-checking that floor -- at 5s a real node
+// that stalls briefly (SPI bridge hiccup, WiFi retry) would flap to Offline
+// and back, which reads as a fault the operator has to go investigate.
+const OFFLINE_AFTER_S = 10;
 
 // last_seen is stamped from the *device's* clock, so it can only be compared
 // against the device's clock -- never against Date.now(), which is the
@@ -308,6 +320,35 @@ function tickTripCountdowns() {
   }
 }
 setInterval(tickTripCountdowns, 500);
+
+// Going offline is the one status change nothing pushes: it is the ABSENCE
+// of frames, so no WS message and no REST response ever announces it (see
+// OFFLINE_AFTER_S). Without this the fleet list would only notice a node had
+// gone quiet whenever something else happened to trigger a render -- in
+// practice the 5s poll -- so a 10s threshold would surface at 10-15s.
+//
+// Diffed, not an unconditional re-render: this runs every second forever, and
+// renderFleetList rebuilds the whole list. Nothing is redrawn on the ticks
+// where no node actually crossed the threshold, which is almost all of them.
+let lastOfflineBuckets = {};
+function tickOfflineStatus() {
+  let changed = false;
+  const seen = {};
+  for (const [nodeId, entry] of Object.entries(state.lastNodes)) {
+    const bucket = bucketFor(entry);
+    seen[nodeId] = bucket;
+    if (lastOfflineBuckets[nodeId] !== bucket) changed = true;
+  }
+  for (const nodeId of Object.keys(lastOfflineBuckets)) {
+    if (!(nodeId in seen)) changed = true;
+  }
+  lastOfflineBuckets = seen;
+  if (!changed) return;
+  renderSummary(state.lastNodes);
+  renderTripBanner();
+  if (editingNodeId === null && editingDeviceTypeNodeId === null) renderFleetList(state.lastNodes);
+}
+setInterval(tickOfflineStatus, 1000);
 
 tripBanner.addEventListener("click", (e) => {
   const button = e.target.closest("button[data-action]");
