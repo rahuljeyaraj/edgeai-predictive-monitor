@@ -1191,7 +1191,13 @@ function motorRowHtml(entry) {
     ? `<span class="motor-row__armed" title="Protection armed — this asset can stop its machine" aria-label="Protection armed">${ICON_SHIELD}</span>`
     : "";
 
-  const showClassificationChip = (bucket === "warning" || bucket === "fault") && entry.last_classification;
+  // Also drop it if the classifier itself is calling "healthy" while the
+  // status pill says warning/fault -- showing "Healthy" right next to a
+  // warning/fault pill reads as a contradiction, not as the independent
+  // signal it's meant to be.
+  const showClassificationChip = (bucket === "warning" || bucket === "fault")
+    && entry.last_classification
+    && entry.last_classification.label.toLowerCase() !== "healthy";
   const classificationChipHtml = showClassificationChip
     ? `<span class="motor-row__classification-chip" title="Fault classifier's current read -- an independent signal from the status above">${escapeHtml(titleCase(entry.last_classification.label))}</span>`
     : "";
