@@ -65,6 +65,34 @@
  * connected to the wrong network/broker, give me the form back." */
 #define FORCE_PROVISION_HOLD_MS 3000
 
+/* Fleet WiFi roaming (docs/WIFI_ONBOARDING_PLAN.md S6): the base station
+ * pushes MQTT_MSG_TYPE_WIFI_PROVISION to every node it can still reach,
+ * immediately before joining that network itself, so a whole fleet moves on
+ * one dashboard form instead of one captive portal per device.
+ *
+ * How long the ack gets to leave before the join that kills the link
+ * carrying it. PubSubClient::publish() writes straight to the socket, so
+ * this is TCP flush time on an already-open connection, not a round trip -
+ * but the base station is waiting on this ack to decide whether it can
+ * switch, so it is worth being unhurried about. Same "let the answer out
+ * before the door closes" reasoning as PROVISIONING_AP_TEARDOWN_GRACE_MS,
+ * one link down. */
+#define ROAM_ACK_FLUSH_MS 500
+
+/* After a roam join succeeds, how long the node gets to actually find the
+ * broker again at its new address before it gives up and opens its own AP.
+ *
+ * This is the one failure this feature can produce that a node cannot
+ * recover from on its own: it is on the right network, but the base
+ * station's mDNS name doesn't resolve there (S4's "multicast is often
+ * blocked on managed/VLAN'd WiFi" caveat), so no amount of retrying will
+ * ever find it. Generous, because everything *else* that keeps MQTT down
+ * for a while - the base station still finishing its own join, a slow DHCP
+ * lease, a router still bringing a VLAN up - is transient and self-heals
+ * well inside this window, and reopening the AP on one of those would be a
+ * false alarm that drops a perfectly good node off the dashboard. */
+#define ROAM_RENDEZVOUS_TIMEOUT_MS 180000
+
 /* PubSubClient::publish() packs the MQTT PUBLISH header + topic string +
  * the *entire* payload byte-by-byte into this->buffer before writing it to
  * the socket (PubSubClient.cpp: MQTT_MAX_HEADER_SIZE + 2 + strlen(topic) +
@@ -115,6 +143,14 @@ static SemaphoreHandle_t mqtt_mutex;
 static char node_id[7]; /* 6 lowercase hex chars + NUL, MAC-derived (derive_node_id() below) */
 static char data_topic[32];
 static char cmd_topic[32];
+static char evt_topic[32]; /* node -> base station replies, today only the roam ack */
+
+/* Set by mqtt_callback() (which runs inside mqtt_client.loop(), already
+ * holding mqtt_mutex - so it cannot publish the ack or touch the radio
+ * itself) and consumed by the state machine on the next tick, once that
+ * mutex is released. */
+static struct wifi_provision_payload pending_roam;
+static volatile bool roam_pending;
 
 static struct node_credentials creds;
 
@@ -170,16 +206,23 @@ static void derive_node_id(void)
 
 	snprintf(data_topic, sizeof(data_topic), "epm/%s/data", node_id);
 	snprintf(cmd_topic, sizeof(cmd_topic), "epm/%s/cmd", node_id);
+	snprintf(evt_topic, sizeof(evt_topic), "epm/%s/evt", node_id);
 }
 
 /* MQTT message callback - runs inside mqtt_client.loop() (transport_task's
- * own task context, see transport_task_entry() below). The only inbound
- * command type over MQTT is STATUS_LED (the cmd topic,
- * SENSOR_TELEMETRY_FRAME_PLAN.md S6) - there's no per-type dispatch switch
- * needed since there's only ever one type to handle. Payload is binary
- * ([TYPE: 1B][display_rgb_payload], frame_codec/wire_protocol.h) rather
- * than the JSON envelope an earlier revision of this firmware parsed
- * here. */
+ * own task context, see transport_task_entry() below), which means it runs
+ * with mqtt_mutex HELD: nothing in here may publish, and nothing in here
+ * may block. Payload is binary ([TYPE: 1B][PAYLOAD], frame_codec/
+ * wire_protocol.h) rather than the JSON envelope an earlier revision of
+ * this firmware parsed here.
+ *
+ * Two inbound command types now (SENSOR_TELEMETRY_FRAME_PLAN.md S6,
+ * WIFI_ONBOARDING_PLAN.md S6): STATUS_LED, handled inline because setting
+ * the ring is instant and touches nothing this callback's caller owns, and
+ * WIFI_PROVISION, which is only *recorded* here - acting on it means
+ * publishing an ack and then tearing down the WiFi link this callback is
+ * being dispatched from, both of which have to happen from the state
+ * machine's own context. */
 static void mqtt_callback(char *topic, uint8_t *payload, unsigned int length)
 {
 	(void)topic;
@@ -191,20 +234,73 @@ static void mqtt_callback(char *topic, uint8_t *payload, unsigned int length)
 	if (!mqtt_decode_message(payload, length, &type, &body, &body_len)) {
 		return;
 	}
-	if (type != MQTT_MSG_TYPE_STATUS_LED) {
+
+	switch (type) {
+	case MQTT_MSG_TYPE_STATUS_LED: {
+		if (body_len < sizeof(struct display_rgb_payload)) {
+			return;
+		}
+
+		struct display_rgb_payload cmd;
+
+		memcpy(&cmd, body, sizeof(cmd));
+
+		hal_display_rgb_set(cmd.rgb, (enum rgb_display_mode)cmd.mode, cmd.period_ms);
+		Serial.printf("[transport] RX STATUS_LED rgb=0x%06x mode=%u period_ms=%u\n", cmd.rgb,
+			      (unsigned)cmd.mode, cmd.period_ms);
+		break;
+	}
+	case MQTT_MSG_TYPE_WIFI_PROVISION: {
+		if (body_len < sizeof(struct wifi_provision_payload)) {
+			return;
+		}
+		/* Last one wins if two pushes somehow arrive inside one tick:
+		 * the newer credentials are by definition the ones the base
+		 * station is about to move to. */
+		memcpy(&pending_roam, body, sizeof(pending_roam));
+		/* Defensive: the sender NUL-pads every field, but a truncated
+		 * or hostile payload must not leave an unterminated string for
+		 * WiFi.begin()/strncpy() below. */
+		pending_roam.wifi_ssid[sizeof(pending_roam.wifi_ssid) - 1] = '\0';
+		pending_roam.wifi_password[sizeof(pending_roam.wifi_password) - 1] = '\0';
+		pending_roam.mqtt_broker_host[sizeof(pending_roam.mqtt_broker_host) - 1] = '\0';
+		roam_pending = true;
+		Serial.printf("[transport] RX WIFI_PROVISION roam=%u ssid=\"%s\" broker=%s:%u\n",
+			      (unsigned)pending_roam.roam_id, pending_roam.wifi_ssid,
+			      pending_roam.mqtt_broker_host, pending_roam.mqtt_broker_port);
+		break;
+	}
+	default:
+		break;
+	}
+}
+
+/* Answers a WIFI_PROVISION push on this node's own /evt topic. Called from
+ * the state machine (never from mqtt_callback - see its comment), so taking
+ * mqtt_mutex here is safe and necessary: threads/fuser_task.cpp publishes
+ * telemetry on the same client from its own task.
+ *
+ * The ack says "credentials taken, switching now", never "joined": the join
+ * is what destroys the link this travels on. */
+static void publish_provision_ack(uint32_t roam_id, uint8_t status)
+{
+	struct wifi_provision_ack_payload ack = { roam_id, status };
+	uint8_t message[1 + sizeof(ack)];
+	size_t len = mqtt_encode_message(MQTT_MSG_TYPE_WIFI_PROVISION_ACK, (const uint8_t *)&ack,
+					  sizeof(ack), message, sizeof(message));
+
+	if (len == 0) {
 		return;
 	}
-	if (body_len < sizeof(struct display_rgb_payload)) {
-		return;
+
+	xSemaphoreTake(mqtt_mutex, portMAX_DELAY);
+	if (mqtt_client.connected()) {
+		mqtt_client.publish(evt_topic, message, len, false);
+		/* Push it out now rather than on the next loop() tick: the very
+		 * next thing this node does is leave the network. */
+		mqtt_client.loop();
 	}
-
-	struct display_rgb_payload cmd;
-
-	memcpy(&cmd, body, sizeof(cmd));
-
-	hal_display_rgb_set(cmd.rgb, (enum rgb_display_mode)cmd.mode, cmd.period_ms);
-	Serial.printf("[transport] RX STATUS_LED rgb=0x%06x mode=%u period_ms=%u\n", cmd.rgb,
-		      (unsigned)cmd.mode, cmd.period_ms);
+	xSemaphoreGive(mqtt_mutex);
 }
 
 /* Dev-bench escape hatch (docs/WIFI_ONBOARDING_PLAN.md S2 "Implementation
@@ -378,6 +474,94 @@ static void start_provisioning_ap(const char *ap_ssid, const char *broker)
 	WiFi.scanDelete();
 }
 
+/* Carries out a WIFI_PROVISION push taken by mqtt_callback() (fleet WiFi
+ * roaming, docs/WIFI_ONBOARDING_PLAN.md S6). Returns true if this node is
+ * now on the pushed network.
+ *
+ * Order matters and is forced by physics: the ack goes out FIRST, because
+ * the join immediately after it is what destroys the link the ack would
+ * travel on. The base station is holding its own join open waiting for that
+ * ack (python/network/fleet_roam.py), so an ack that leaves late is an ack
+ * that never counted.
+ *
+ * A failed join rolls back to the credentials this node arrived with and
+ * rejoins that network, rather than leaving it stranded on a network it
+ * could not reach - the wrong-password case, where the base station's own
+ * join is about to fail too and leave it exactly where these nodes just
+ * rolled back to. Credentials are persisted only on a confirmed-good join,
+ * the same invariant STA_TESTING keeps for portal submissions.
+ */
+static bool perform_roam(const struct wifi_provision_payload *push)
+{
+	if (push->wifi_ssid[0] == '\0') {
+		Serial.println("[transport] WIFI_PROVISION with an empty SSID - rejecting");
+		publish_provision_ack(push->roam_id, WIFI_PROVISION_ACK_REJECTED);
+		return false;
+	}
+
+	struct node_credentials previous = creds;
+	struct node_credentials next;
+
+	memset(&next, 0, sizeof(next));
+	strncpy(next.wifi_ssid, push->wifi_ssid, CREDS_SSID_MAX_LEN);
+	strncpy(next.wifi_password, push->wifi_password, CREDS_PASS_MAX_LEN);
+	strncpy(next.mqtt_broker_host, push->mqtt_broker_host, CREDS_BROKER_MAX_LEN);
+	next.mqtt_broker_port = push->mqtt_broker_port;
+
+	bool same_network = strcmp(next.wifi_ssid, previous.wifi_ssid) == 0 &&
+			     strcmp(next.wifi_password, previous.wifi_password) == 0;
+
+	publish_provision_ack(push->roam_id, WIFI_PROVISION_ACK_ACCEPTED);
+
+	/* Re-pushed the network we are already on (a technician retyping the
+	 * same details, or a second base station switch to the same SSID):
+	 * take the broker address, which may well have changed, but don't
+	 * bounce a perfectly good radio link and lose telemetry for 15s to
+	 * rejoin a network we never left. */
+	if (same_network && WiFi.status() == WL_CONNECTED) {
+		bool broker_changed = strcmp(next.mqtt_broker_host, previous.mqtt_broker_host) != 0 ||
+				       next.mqtt_broker_port != previous.mqtt_broker_port;
+
+		creds = next;
+		hal_credentials_save(&creds);
+		if (broker_changed) {
+			Serial.printf("[transport] roam: same network, new broker %s:%u\n",
+				      creds.mqtt_broker_host, creds.mqtt_broker_port);
+			xSemaphoreTake(mqtt_mutex, portMAX_DELAY);
+			mqtt_client.disconnect();
+			xSemaphoreGive(mqtt_mutex);
+		}
+		return true;
+	}
+
+	vTaskDelay(pdMS_TO_TICKS(ROAM_ACK_FLUSH_MS));
+
+	xSemaphoreTake(mqtt_mutex, portMAX_DELAY);
+	mqtt_client.disconnect();
+	xSemaphoreGive(mqtt_mutex);
+
+	WiFi.disconnect();
+
+	if (attempt_sta_join(next.wifi_ssid, next.wifi_password)) {
+		creds = next;
+		hal_credentials_save(&creds);
+		Serial.printf("[transport] roam: joined \"%s\", broker now %s:%u\n",
+			      creds.wifi_ssid, creds.mqtt_broker_host, creds.mqtt_broker_port);
+		return true;
+	}
+
+	Serial.printf("[transport] roam: couldn't join \"%s\" - rolling back to \"%s\"\n",
+		      next.wifi_ssid, previous.wifi_ssid);
+	creds = previous;
+	if (previous.wifi_ssid[0] != '\0') {
+		/* Best effort. If this fails too, CONNECTED's own WiFi check
+		 * picks it up on the next tick and RECOVERING takes over -
+		 * the same path any other WiFi loss goes through. */
+		attempt_sta_join(previous.wifi_ssid, previous.wifi_password);
+	}
+	return false;
+}
+
 static void transport_task_entry(void *arg)
 {
 	(void)arg;
@@ -408,6 +592,9 @@ static void transport_task_entry(void *arg)
 	}
 
 	uint32_t recovery_deadline = 0;
+	/* Non-zero only between a completed roam and the moment MQTT comes
+	 * back up on the new network - see ROAM_RENDEZVOUS_TIMEOUT_MS. */
+	uint32_t roam_rendezvous_deadline = 0;
 	enum mqtt_led_state mqtt_led = MQTT_LED_UNKNOWN;
 
 	while (1) {
@@ -477,6 +664,25 @@ static void transport_task_entry(void *arg)
 			break;
 
 		case TRANSPORT_STATE_CONNECTED:
+			if (roam_pending) {
+				roam_pending = false;
+
+				struct wifi_provision_payload push = pending_roam;
+
+				hal_display_rgb_set(RGB_STA_TESTING, RGB_DISPLAY_BREATHE, 1000);
+				mqtt_led = MQTT_LED_UNKNOWN;
+				if (perform_roam(&push)) {
+					have_saved_creds = true;
+					roam_rendezvous_deadline =
+						millis() + ROAM_RENDEZVOUS_TIMEOUT_MS;
+				}
+				/* Either way, fall back through the loop: the
+				 * WiFi/MQTT checks below decide what this node's
+				 * state actually is now, rather than this code
+				 * asserting it. */
+				break;
+			}
+
 			if (WiFi.status() != WL_CONNECTED) {
 				Serial.println("[transport] WiFi dropped, attempting silent recovery...");
 				recovery_deadline = millis() + RECOVERY_WINDOW_MS;
@@ -502,6 +708,28 @@ static void transport_task_entry(void *arg)
 						hal_display_rgb_set(RGB_MQTT_DOWN, RGB_DISPLAY_CONST, 0);
 						mqtt_led = MQTT_LED_DOWN;
 					}
+					/* Roamed onto the new network but never
+					 * found the base station there - the one
+					 * roam failure retrying can't fix (its
+					 * mDNS name not resolving on this
+					 * network, S4). Hand it back to a
+					 * technician with the portal, where a raw
+					 * broker IP can be typed in, rather than
+					 * blinking blue forever. Credentials are
+					 * deliberately NOT cleared: the WiFi half
+					 * of them is working fine. */
+					if (roam_rendezvous_deadline != 0 &&
+					    (int32_t)(millis() - roam_rendezvous_deadline) >= 0) {
+						Serial.println("[transport] roam: broker never reachable on the new network, reopening portal");
+						roam_rendezvous_deadline = 0;
+						WiFi.mode(WIFI_AP_STA);
+						set_wifi_regulatory_domain();
+						start_provisioning_ap(ap_ssid, creds.mqtt_broker_host);
+						hal_display_rgb_set(RGB_PROVISIONING, RGB_DISPLAY_CONST, 0);
+						mqtt_led = MQTT_LED_UNKNOWN;
+						state = TRANSPORT_STATE_FORCED_PROVISIONING;
+						break;
+					}
 					vTaskDelay(pdMS_TO_TICKS(MQTT_RECONNECT_BACKOFF_MS));
 					break;
 				}
@@ -517,6 +745,7 @@ static void transport_task_entry(void *arg)
 			 * last status change was never sent anything and sat on a
 			 * stale local color indefinitely. */
 			mqtt_led = MQTT_LED_UP;
+			roam_rendezvous_deadline = 0;
 
 			xSemaphoreTake(mqtt_mutex, portMAX_DELAY);
 			mqtt_client.loop();

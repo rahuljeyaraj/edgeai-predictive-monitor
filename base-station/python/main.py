@@ -60,6 +60,7 @@ from store import HistoryStore
 from perf import PerformanceMonitor
 from gpu_perf import GpuPerfPoller
 from wifi import WifiStatusPoller
+from fleet_roam import FleetRoamer
 from app import create_app, broadcast_threadsafe
 from commissioning_controller import CommissioningController
 from capture_controller import CaptureController
@@ -602,6 +603,10 @@ def main():
     stop_event = threading.Event()
     mqtt_thread = None
     status_led_publisher = None
+    # Only meaningful with a broker: fleet roaming (docs/WIFI_ONBOARDING_PLAN.md
+    # S6) talks to satellites over MQTT, so with no --mqtt-host there is no
+    # fleet to move and the Network tab's connect stays exactly what it was.
+    fleet_roamer = FleetRoamer(args.mqtt_host, args.mqtt_port) if args.mqtt_host else None
     if args.mqtt_host:
         mqtt_thread = threading.Thread(
             target=run_mqtt, args=(args.mqtt_host, args.mqtt_port, on_frame, stop_event,
@@ -638,7 +643,8 @@ def main():
                       perf_monitor=perf_monitor, gpu_perf=gpu_perf, spi_consumer=spi_consumer,
                       alert_store=alert_store, telegram_bot=telegram_bot,
                       telegram_bot_username=telegram_bot_username, ei=ei_controller,
-                      wifi_status=wifi_status, protection=protection,
+                      wifi_status=wifi_status, fleet_roamer=fleet_roamer,
+                      protection=protection,
                       stopped_baseline=stopped_baseline, setup=setup,
                       trip_outputs=trip_outputs,
                       on_startup=start_ingestion)

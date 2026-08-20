@@ -6,7 +6,10 @@ Round 3's scan/messaging fixes below. **§2 (satellite) implemented 2026-08-01,
 restyled + scan/RGB fixes added 2026-08-17, built + compiles clean, NOT yet
 live-verified on real hardware** — see "Implementation notes (§2, satellite)"
 and its 2026-08-17 follow-up below. §3 (sim onboarding) remains out of scope
-(no onboarding needed, see §3). Companion to
+(no onboarding needed, see §3). **§6 (fleet roaming, 2026-08-20) supersedes
+the per-device dance as the normal path**: the base station hands the whole
+fleet the network it is about to join, and §2's per-satellite captive portal
+becomes the recovery fallback rather than the routine. Companion to
 [SENSOR_TELEMETRY_FRAME_PLAN.md](SENSOR_TELEMETRY_FRAME_PLAN.md) and
 [EDGE_IMPULSE_FAULT_CLASSIFICATION_PLAN.md](EDGE_IMPULSE_FAULT_CLASSIFICATION_PLAN.md).
 
@@ -198,6 +201,12 @@ Per-device AP+portal means a phone/laptop must join each device's network one at
 time, which gets tedious past roughly 10 devices — noted here as a **documented
 future upgrade path** if a real deployment scales to dozens of satellites.
 
+**Superseded as the normal path by §6 (2026-08-20):** the fix for that tedium
+turned out not to need BLE at all — the base station pushes the network to
+every already-connected satellite over MQTT before joining it itself. This
+per-device portal remains, unchanged, as the recovery path for a node that
+misses or fails that push.
+
 **Resolved (2026-08-01):** built as designed above, with one deliberate deviation
 — see "Implementation notes" below.
 
@@ -358,3 +367,114 @@ No firmware/dashboard code changes yet — design only. Other brainstormed dashb
 features from the same session (chart-clutter redesign, per-node EI data-collection
 UI, dev/perf page, Telegram alerts, clickable status filters, LED matrix status
 message) are **not** covered here — separate topics, still backlog/undocumented.
+
+## 6. Fleet roaming: one form moves the whole fleet (2026-08-20)
+
+**Status: built, unit-tested + browser-tested against a mock backend, NOT yet
+run on real hardware** (needs a satellite reflash + a base-station redeploy).
+
+### The problem with S1 + S2 as built
+
+S1 and S2 each work, but together they make onboarding O(devices): a
+technician joins the base station's hotspot and gives it the factory network,
+then joins *each satellite's own AP* in turn and gives it the same network
+again. S2 itself already flagged this ("gets tedious past roughly 10
+devices") and parked it as a future BLE-provisioning upgrade. It doesn't need
+BLE: at the moment a technician types the factory credentials into the
+dashboard, every satellite is already connected to the base station and
+listening on its MQTT command topic. The information they need is on the
+device that has it, with a working channel to every one of them.
+
+### The sequence, and why the order can't be anything else
+
+    push credentials to the fleet  ->  wait for acks  ->  base station joins
+
+The base station has one radio (S1): joining the factory network **drops its
+own hotspot outright**. Every satellite reachable through that hotspot loses
+its only path to us at that instant. So the last moment we can tell them
+anything is *before* our own join. There is no "switch first, coordinate
+after" variant.
+
+The same constraint shapes what an ack can mean. A node acks when it has
+**taken** the credentials, not when it has joined -- its join tears down the
+link the ack would travel on. Every label in the UI says "moving", never
+"moved"; the real confirmation is nodes reappearing on the dashboard once
+both ends are on the new network.
+
+### Wire format
+
+Two new message types on the existing `[TYPE: 1B][PAYLOAD]` command envelope
+(`base-station/python/common/wire_protocol.py`, mirrored byte-for-byte in
+`satellite/include/frame_codec/wire_protocol.h`):
+
+- `WIFI_PROVISION` (0x0a), base -> node on `epm/<node_id>/cmd`: `roam_id` +
+  fixed-width SSID/password/broker-host fields (each `CREDS_*_MAX_LEN + 1`,
+  so the ESP32 memcpy's them straight onto `struct node_credentials`) +
+  broker port. 169B, constant regardless of credential length. Published
+  QoS 1, **not retained** -- a retained credential push would replay onto any
+  node connecting later, silently undoing a technician's deliberate manual
+  re-provisioning.
+- `WIFI_PROVISION_ACK` (0x0b), node -> base on the new `epm/<node_id>/evt`
+  topic: `roam_id` + status (accepted / simulated / rejected). Its own topic,
+  not `/data`, keeps that topic's "every byte is a section-list telemetry
+  frame" rule (S6 of SENSOR_TELEMETRY_FRAME_PLAN.md) intact.
+
+`roam_id` exists because a node acks *before* it switches: without it, a late
+ack from an earlier push would be indistinguishable from an answer to the
+current one, and could let the base station switch away from a node that
+never heard the retry.
+
+### Nodes are given the mDNS name, never an IP
+
+The address the base station is about to get from the factory network's DHCP
+is unknown at push time and can change on renewal, so the push always carries
+`epm-base.local` (S4). This is also what replaces the fixed `10.42.0.1` a
+satellite would be holding if it had been set up against the hotspot
+directly -- that address is dead the moment this roam completes, so the
+broker field has to move with the SSID, not separately.
+
+### Failure paths (all bounded, none need a factory reset)
+
+| What fails | What happens |
+| --- | --- |
+| A node doesn't ack in 8s | Reported per-node in the UI as "no answer". The switch **stops** and asks the technician, who can Connect anyway -- that node keeps its own AP + portal (S2) as the fallback it was always meant to be. |
+| A node's join fails (wrong password) | It rolls back to the credentials it arrived with and rejoins that network. The base station's own join then fails too and it stays on the hotspot -- which is exactly where the rolled-back nodes still are, so the common typo case self-heals. |
+| A node joins but never finds the broker (mDNS blocked, S4) | After `ROAM_RENDEZVOUS_TIMEOUT_MS` (3 min) it reopens its own AP + portal, where a raw broker IP can be typed. Credentials are **not** cleared -- the WiFi half of them is working. |
+| The same network is re-pushed | The node takes the (possibly new) broker address but does not bounce a working radio link. |
+| No `--mqtt-host` / no fleet | The route reports `available: false` and the Network tab goes straight to the base station's own join, exactly as before this feature. |
+
+### Where it lives
+
+- `base-station/python/network/fleet_roam.py` -- `FleetRoamer.push()`: opens
+  its own short-lived MQTT client (it needs a *subscription* for the acks,
+  which `ingestion/mqtt_publisher.py`'s publish-only client doesn't have, and
+  a rare technician action shouldn't perturb the live telemetry connection).
+- `POST /network/wifi/fleet-provision` (`api/app.py`), targeting every node
+  seen in the last 60s. A separate call the frontend makes *before* `POST
+  /network/wifi/connect`, deliberately: the connect call's response can never
+  arrive (Round 2's finding above), so anything the technician must see has
+  to come back on its own request while the page still works.
+- `frontend/network.js` -- one Connect button, two steps: push, show the
+  per-node result, then either continue automatically (everyone answered) or
+  stop and offer "Connect anyway".
+- `satellite/src/threads/transport_task.cpp` -- `perform_roam()`, plus the
+  rendezvous timeout in `TRANSPORT_STATE_CONNECTED`.
+- `base-station/python/tools/satellite_node_sim.py` -- sim nodes answer
+  `simulated` rather than staying silent; silence from a sim node would stop
+  the switch for a decision nobody needs to make.
+
+### Verification so far (no-hardware paths)
+
+- `base-station/tests/wire_protocol_test.py` -- codec round-trips, oversize
+  rejection, and the exact field offsets the firmware struct depends on.
+- `base-station/tests/fleet_roam_test.py` -- which acks count (roam_id
+  matching, silence, sim nodes), and unreachable-broker vs. silent-fleet.
+- `base-station/tests/api_test.py` -- the route's targeting and its 503.
+- `pio run` clean on the satellite firmware (RAM 39.9%, Flash 23.7%).
+- The Network tab's two flows driven in a real headless browser against a
+  mock backend: all-acked auto-continues to the join; one silent node stops
+  with "Connect anyway" and does not re-push on the second tap.
+
+**Still to do on hardware:** a real two-satellite roam (base station on its
+hotspot, both nodes joined to it, factory credentials entered once), a
+wrong-password rollback, and a blocked-mDNS rendezvous timeout.

@@ -27,7 +27,46 @@
 
 enum mqtt_msg_type {
 	MQTT_MSG_TYPE_STATUS_LED = 0x08, /* Base Station -> Node, payload: display_rgb_payload */
+	MQTT_MSG_TYPE_WIFI_PROVISION = 0x0a, /* Base Station -> Node, payload: wifi_provision_payload */
+	MQTT_MSG_TYPE_WIFI_PROVISION_ACK = 0x0b, /* Node -> Base Station (epm/<node_id>/evt), payload: wifi_provision_ack_payload */
 };
+
+/* Fleet WiFi roaming (docs/WIFI_ONBOARDING_PLAN.md S6): the base station
+ * hands its whole fleet the network it is about to join itself, so one form
+ * in its dashboard onboards every node instead of one captive portal per
+ * device. This is the only command whose *reply* travels back over MQTT
+ * (MQTT_MSG_TYPE_WIFI_PROVISION_ACK below, on epm/<node_id>/evt - a separate
+ * topic from /data precisely so the telemetry decoder never sees a byte that
+ * isn't a section-list frame).
+ *
+ * Field widths are hal/hal_credentials.h's CREDS_*_MAX_LEN + 1 exactly, so
+ * threads/transport_task.cpp can copy these straight onto a struct
+ * node_credentials. Matches base-station/python/common/wire_protocol.py's
+ * WIFI_PROVISION_PAYLOAD_FMT ("<I33s65s65sH", 169 bytes) byte for byte. */
+struct wifi_provision_payload {
+	uint32_t roam_id;       /* echoed in the ack - see wifi_provision_ack_payload */
+	char wifi_ssid[33];      /* CREDS_SSID_MAX_LEN + 1, NUL-padded */
+	char wifi_password[65];  /* CREDS_PASS_MAX_LEN + 1, NUL-padded */
+	char mqtt_broker_host[65]; /* CREDS_BROKER_MAX_LEN + 1, NUL-padded */
+	uint16_t mqtt_broker_port;
+} __attribute__((packed));
+
+/* A node acks when it has TAKEN the credentials, not when it has joined:
+ * the join tears down the very link this ack travels on, so "joined" can
+ * never be reported. roam_id is echoed so the base station can tell this
+ * ack apart from one belonging to an earlier push (a retry after a timeout,
+ * or a duplicate delivery). Matches WIFI_PROVISION_ACK_PAYLOAD_FMT ("<IB").
+ *
+ * status: 0 = accepted (switching now), 1 = simulated node (no radio),
+ * 2 = rejected (unusable push) - base-station/python/common/
+ * wire_protocol.py's WifiProvisionAckStatus. */
+struct wifi_provision_ack_payload {
+	uint32_t roam_id;
+	uint8_t status;
+} __attribute__((packed));
+
+#define WIFI_PROVISION_ACK_ACCEPTED 0
+#define WIFI_PROVISION_ACK_REJECTED 2
 
 /* display_rgb_payload's wire shape, reused here for MQTT's STATUS_LED -
  * same struct, same three-mode vocabulary (hal/hal_display_rgb.h's enum

@@ -12,14 +12,15 @@ TestClient, which drives the app in-process without binding a real
 socket -- same coverage, no more hand-rolled protocol code in the test
 itself.
 
-Run with PYTHONPATH covering base-station/python/ingestion, base-station/python/registry, base-station/python/pipeline,
-base-station/python/history, base-station/python/api, base-station/python/monitoring, base-station/python/alerts:
-    PYTHONPATH=base-station/python/ingestion:base-station/python/registry:base-station/python/pipeline:base-station/python/history:base-station/python/api:base-station/python/monitoring:base-station/python/alerts \\
+Run with PYTHONPATH covering every base-station/python subpackage api/app.py
+imports (the same set main.py bootstraps for itself):
+    PYTHONPATH=base-station/python/ingestion:base-station/python/registry:base-station/python/pipeline:base-station/python/history:base-station/python/api:base-station/python/monitoring:base-station/python/alerts:base-station/python/common:base-station/python/network:base-station/python/protection \\
         python3 base-station/tests/api_test.py
 """
 import os
 import sys
 import tempfile
+import time
 
 from fastapi.testclient import TestClient
 
@@ -68,6 +69,27 @@ class FakeTelegramBot:
 
     def send_message(self, chat_id, text):
         return True
+
+
+class FakeFleetRoamer:
+    """Duck-types network/fleet_roam.py's FleetRoamer for the route test:
+    records which nodes the route decided to push to (the part api/app.py
+    owns) and replays a canned per-node answer. The push protocol itself --
+    which acks count, what silence means -- is tests/fleet_roam_test.py's
+    subject, not this file's."""
+
+    def __init__(self, answers=None, error=None):
+        self.answers = answers or {}
+        self.error = error
+        self.pushed = None
+
+    def push(self, ssid, password, node_ids, ack_timeout_s=None, broker_port=None):
+        if self.error is not None:
+            raise self.error
+        self.pushed = {"ssid": ssid, "password": password, "node_ids": list(node_ids)}
+        return {"roam_id": 1, "broker_host": "epm-base.local",
+                 "nodes": [{"node_id": n, "status": self.answers.get(n, "accepted")}
+                            for n in node_ids]}
 
 
 class FakeEiClient:
@@ -154,7 +176,7 @@ class ApiUnderTest:
 
     def __init__(self, tmp_dir: str, node_id=NODE_ID, sensor_config=frozenset({SensorChannel.MIC}),
                  min_frames=5, epochs=300, telegram_bot=None, telegram_bot_username=None,
-                 ei_totp_code=None, ei_fail_job=None):
+                 ei_totp_code=None, ei_fail_job=None, fleet_roamer=None):
         registry_path = os.path.join(tmp_dir, "registry.json")
         self.registry = Registry(registry_path)
         self.registry.add(node_id, sensor_config=sensor_config)
@@ -176,7 +198,8 @@ class ApiUnderTest:
         self.app = create_app(self.registry, self.history, self.commissioning, self.capture,
                                manager=self.manager,
                                alert_store=self.alert_store, telegram_bot=telegram_bot,
-                               telegram_bot_username=telegram_bot_username, ei=self.ei)
+                               telegram_bot_username=telegram_bot_username, ei=self.ei,
+                               fleet_roamer=fleet_roamer)
         self._client_cm = TestClient(self.app)
         self.client = self._client_cm.__enter__()  # runs lifespan, so broadcast_threadsafe works
 
@@ -1090,6 +1113,63 @@ def test_ei_upload_rejects_empty_selection_synchronously(tmp_dir):
         api.stop()
 
 
+def test_fleet_provision_reports_unavailable_with_no_broker_wired(tmp_dir):
+    """No --mqtt-host means no fleet to move -- the Network tab goes
+    straight on to the base station's own join rather than erroring."""
+    api = ApiUnderTest(tmp_dir)
+    try:
+        status, body = api.request("POST", "/network/wifi/fleet-provision",
+                                    {"ssid": "Factory", "password": "pw"})
+        assert status == 200, (status, body)
+        assert body == {"available": False, "nodes": []}, body
+        print("POST /network/wifi/fleet-provision reports unavailable with no broker: PASS")
+    finally:
+        api.stop()
+
+
+def test_fleet_provision_pushes_only_to_recently_seen_nodes(tmp_dir):
+    """A node that hasn't streamed in minutes isn't on this network to be
+    told anything; waiting out its ack timeout would only delay the switch."""
+    roamer = FakeFleetRoamer(answers={"live-node": "accepted"})
+    api = ApiUnderTest(tmp_dir, fleet_roamer=roamer)
+    try:
+        api.registry.add("live-node", device_name="Pump 1")
+        api.registry.touch_last_seen("live-node")
+        api.registry.add("long-gone")
+        api.registry.touch_last_seen("long-gone", timestamp=time.time() - 3600)
+        # NODE_ID itself has never streamed a frame (last_seen is None).
+
+        status, body = api.request("POST", "/network/wifi/fleet-provision",
+                                    {"ssid": "Factory", "password": "pw"})
+        assert status == 200, (status, body)
+        assert roamer.pushed["node_ids"] == ["live-node"], roamer.pushed
+        assert roamer.pushed["ssid"] == "Factory", roamer.pushed
+        assert body["available"] is True, body
+        # The dashboard's own name for the node, not its MAC-derived id --
+        # the technician reading this list knows it as "Pump 1".
+        assert body["nodes"] == [{"node_id": "live-node", "status": "accepted",
+                                   "device_name": "Pump 1"}], body
+        print("POST /network/wifi/fleet-provision pushes only to recently-seen nodes: PASS")
+    finally:
+        api.stop()
+
+
+def test_fleet_provision_503s_when_the_broker_is_unreachable(tmp_dir):
+    """Distinct from a node staying silent: this is a fault in the base
+    station itself, and matches how POST /network/wifi/connect reports an
+    unreachable wifi-bridge."""
+    roamer = FakeFleetRoamer(error=RuntimeError("MQTT broker unreachable"))
+    api = ApiUnderTest(tmp_dir, fleet_roamer=roamer)
+    try:
+        api.registry.touch_last_seen(NODE_ID)
+        status, body = api.request("POST", "/network/wifi/fleet-provision",
+                                    {"ssid": "Factory", "password": "pw"})
+        assert status == 503, (status, body)
+        print("POST /network/wifi/fleet-provision 503s when the broker is unreachable: PASS")
+    finally:
+        api.stop()
+
+
 def test_history_endpoint_returns_recorded_scores(tmp_dir):
     api = ApiUnderTest(tmp_dir)
     try:
@@ -1243,6 +1323,9 @@ def main():
     test_ei_upload_rejects_unlinked_device_type_synchronously(tempfile.mkdtemp(dir=tmp_dir))
     test_ei_upload_rejects_empty_selection_synchronously(tempfile.mkdtemp(dir=tmp_dir))
     test_ei_upload_job_failure_broadcasts_error_over_ws(tempfile.mkdtemp(dir=tmp_dir))
+    test_fleet_provision_reports_unavailable_with_no_broker_wired(tempfile.mkdtemp(dir=tmp_dir))
+    test_fleet_provision_pushes_only_to_recently_seen_nodes(tempfile.mkdtemp(dir=tmp_dir))
+    test_fleet_provision_503s_when_the_broker_is_unreachable(tempfile.mkdtemp(dir=tmp_dir))
     test_history_endpoint_returns_recorded_scores(tempfile.mkdtemp(dir=tmp_dir))
     test_websocket_broadcast_reaches_connected_client(tempfile.mkdtemp(dir=tmp_dir))
     test_telegram_status_reports_not_configured_by_default(tempfile.mkdtemp(dir=tmp_dir))

@@ -240,8 +240,11 @@ values and the node will auto-seed NVS with these on its first boot after flashi
 > pass these as build flags in `platformio.ini` instead (see the README) — the
 > effect is identical either way, since both just become the compiled `#define`.
 
-**Option B — the real captive portal** (what a deployed node actually uses, no
-`app_config.h` edit at all): leave `app_config.h` untouched, flash, and once booted
+**Option B — the real captive portal** (no `app_config.h` edit at all; on a
+deployed fleet this is now the *recovery* path rather than the routine one —
+a node that is already talking to a base station gets moved to a new network
+by the base station itself, see [WIFI_ONBOARDING_PLAN.md](WIFI_ONBOARDING_PLAN.md)
+§6): leave `app_config.h` untouched, flash, and once booted
 the node has no saved creds so it starts its own AP instead. Join it from your
 phone/laptop:
 

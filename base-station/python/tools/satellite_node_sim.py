@@ -117,8 +117,12 @@ from wire_protocol import (  # noqa: E402
     ChannelSpectrum,
     LED_MODE_FROM_INT,
     MqttMsgType,
+    WifiProvisionAckStatus,
     decode_display_rgb_payload,
     decode_mqtt_message,
+    decode_wifi_provision_payload,
+    encode_mqtt_message,
+    encode_wifi_provision_ack_payload,
     rgb_int_to_hex,
 )
 import telemetry_schema as schema  # noqa: E402
@@ -142,6 +146,7 @@ from raw_features import (  # noqa: E402
 
 DATA_TOPIC_FMT = "epm/{node_id}/data"
 CMD_TOPIC_FMT = "epm/{node_id}/cmd"
+EVT_TOPIC_FMT = "epm/{node_id}/evt"
 
 # tools/ -> python/ -> base-station/ -> base-station/captures/, alongside
 # pull_captures.sh and tools/offline_experiment.py's own default -- resolved
@@ -453,6 +458,9 @@ class SatelliteNode:
             msg_type, body = decode_mqtt_message(msg.payload)
         except ValueError:
             return
+        if msg_type == MqttMsgType.WIFI_PROVISION:
+            self._handle_wifi_provision(client, body)
+            return
         if msg_type != MqttMsgType.STATUS_LED:
             return
         try:
@@ -468,6 +476,25 @@ class SatelliteNode:
             led = dict(self.led)
         print(f"[{self.node_id}] STATUS_LED received: rgb={led['rgb']} mode={led['mode']} "
               f"period_ms={led['period_ms']}", flush=True)
+
+    def _handle_wifi_provision(self, client, body: bytes) -> None:
+        """Fleet WiFi roaming (docs/WIFI_ONBOARDING_PLAN.md S6). A sim node
+        is a host process with no radio, so there is nothing here to move --
+        but it must still answer, and answer distinctly: the base station
+        holds its own WiFi switch open waiting for the fleet's acks, and a
+        silent sim node would read as a real sensor about to be stranded and
+        stop that switch for a human decision that isn't needed."""
+        try:
+            roam_id, ssid, _password, broker_host, broker_port = decode_wifi_provision_payload(body)
+        except (struct.error, UnicodeDecodeError):
+            return
+        ack = encode_mqtt_message(
+            MqttMsgType.WIFI_PROVISION_ACK,
+            encode_wifi_provision_ack_payload(roam_id, WifiProvisionAckStatus.SIMULATED))
+        client.publish(EVT_TOPIC_FMT.format(node_id=self.node_id), ack, qos=1)
+        print(f"[{self.node_id}] WIFI_PROVISION received (ssid={ssid!r}, "
+              f"broker={broker_host}:{broker_port}) -- simulated node, nothing to move",
+              flush=True)
 
     def list_files(self):
         """Recurses under captures_dir and returns paths relative to it,
