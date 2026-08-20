@@ -138,6 +138,7 @@ const Setup = (() => {
       state.byNode[nodeId] = data.setup;
     } catch (err) {
       bridge.toast(`Couldn't start setup: ${err.message}`, "error");
+      bridge.rerender();
       return false;
     }
     await fetchTripOutputs();
@@ -148,6 +149,17 @@ const Setup = (() => {
   async function refresh(nodeId) {
     try {
       const data = await api("GET", `/nodes/${nodeId}/setup`);
+      if (!data.setup && state.byNode[nodeId]) {
+        // The server has no session for a node this drawer already thinks
+        // it's mid-setup on -- almost always a restart wiping the in-memory
+        // session out from under a drawer left open across it
+        // (setup_controller.py: state is in-memory only). Left alone this
+        // sticks on "Loading setup..." forever: every later poll just
+        // re-confirms there's still nothing there, and nothing else ever
+        // calls start() again. Re-enter instead of just recording the null.
+        await start(nodeId);
+        return;
+      }
       state.byNode[nodeId] = data.setup;
     } catch (err) {
       console.error("Failed to fetch setup state", err);
