@@ -393,6 +393,17 @@ const Charts = (() => {
       trimByAge(rows, msg.timestamp, SCALAR_RETENTION_SECONDS, SCALAR_MAX_POINTS);
     }
     dirty.add(msg.node_id);
+    // A node going quiet->online (sim panel toggle, satellite reboot, ...)
+    // is pure connectivity: nothing about NodeStatus changes, so it never
+    // fires a "registry" push -- app.js's fleet list would otherwise only
+    // learn the node is back via the 5s GET /nodes poll (worst case ~2
+    // cycles, since a poll in flight when this arrives can lose the race
+    // and get reapplied stale -- see app.js's lastWsTouchAt). Forwarding
+    // just node_id+timestamp here (not the full msg -- that's charts-only
+    // payload, no reason for app.js to hold a reference to it) lets
+    // app.js bump last_seen and flip the fleet-list bucket the instant the
+    // first frame lands, same as a real status transition would.
+    if (registryHandler) registryHandler({ type: "last_seen", node_id: msg.node_id, timestamp: msg.timestamp });
   }
 
   // ---------------------------------------------------------------------

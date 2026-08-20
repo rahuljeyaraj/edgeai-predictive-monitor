@@ -256,11 +256,6 @@ function tripBannerLine(entry) {
     }
     return { kind: "tripped", text, dismissible: true };
   }
-  if (entry.status === "fault" && !p.armed) {
-    // S10 Q4: a faulted asset with nothing wired to stop it still belongs
-    // here -- quieter, and with no Hold, because there's nothing to hold.
-    return { kind: "unarmed", text: `${name} — faulty, no stop output wired`, dismissible: true };
-  }
   return null;
 }
 
@@ -1675,10 +1670,29 @@ async function pollNodes() {
 
 // Primary channel for registry/removed updates is this WS push (S4:
 // "WebSocket for continuous real-time push"); the 5s poll below stays as
-// the documented fallback -- it's also still how a brand new node is
-// discovered in the first place (nothing broadcasts on first auto-add).
+// the documented fallback. A brand new node IS broadcast the instant it's
+// auto-added (registry.add() fires the same on_status_change listener as
+// every other transition, api/app.py's _on_registry_status_change) --
+// what the poll is still the ONLY source for is a node going quiet/online
+// again with no NodeStatus change involved, which is why "last_seen"
+// above exists.
 Charts.init((msg) => {
-  if (msg.type === "removed") {
+  if (msg.type === "last_seen") {
+    // charts.js forwards this on every "spectrum" frame -- see its own
+    // comment. Coming online (or back online) is pure connectivity, no
+    // NodeStatus transition, so it's otherwise invisible to this WS
+    // handler and waits on the 5s poll fallback. Bucket-diffed rather than
+    // an unconditional render like the branches below: this fires at full
+    // frame rate for every node (unlike a status edge), and the shared
+    // render tail is a full fleet-list rebuild -- see dashboard smoothness
+    // notes for why that must not run per frame across a whole fleet.
+    const entry = state.lastNodes[msg.node_id];
+    if (!entry) return;
+    const wasBucket = bucketFor(entry);
+    entry.last_seen = msg.timestamp;
+    lastWsTouchAt[msg.node_id] = Date.now();
+    if (bucketFor(entry) === wasBucket) return;
+  } else if (msg.type === "removed") {
     lastWsTouchAt[msg.node_id] = Date.now();
     delete state.lastNodes[msg.node_id];
     expandedNodeIds.delete(msg.node_id);
