@@ -17,6 +17,7 @@ base-station/python/history, base-station/python/api, base-station/python/monito
     PYTHONPATH=base-station/python/ingestion:base-station/python/registry:base-station/python/pipeline:base-station/python/history:base-station/python/api:base-station/python/monitoring:base-station/python/alerts \\
         python3 base-station/tests/api_test.py
 """
+import json
 import os
 import sys
 import tempfile
@@ -1206,11 +1207,51 @@ def test_telegram_subscriber_prefs_update_broadcasts_and_disconnect_removes(tmp_
         api.stop()
 
 
+def test_node_payloads_omit_server_only_model_internals(tmp_dir):
+    """The dashboard never receives the STOPPED noise floor or the scalar
+    standardization constants -- gate.py and inference.py are their only
+    readers, and at 128 bins x 3 channels they were 82% of every node
+    payload, re-sent on each 5s poll though they only change when an
+    operator captures a baseline. They must still reach registry.json:
+    to_dict() is the persistence path too, so trimming there instead of
+    at the API boundary would silently drop a commissioned node's model
+    calibration on the next restart."""
+    api = ApiUnderTest(tmp_dir)
+    try:
+        entry = api.registry.get(NODE_ID)
+        entry.scalar_mu = tuple(float(i) for i in range(24))
+        entry.scalar_sigma = tuple(1.0 for _ in range(24))
+        api.registry.set_stopped_baseline(
+            NODE_ID, {"mic": tuple(0.5 for _ in range(128))}, 0.25, smoothing_frames=4)
+
+        status, listing = api.request("GET", "/nodes")
+        assert status == 200, (status, listing)
+        status, single = api.request("GET", f"/nodes/{NODE_ID}")
+        assert status == 200, (status, single)
+
+        for where, payload in (("/nodes", listing[NODE_ID]), (f"/nodes/{NODE_ID}", single)):
+            for field in ("stopped_spectrum_ref", "scalar_mu", "scalar_sigma"):
+                assert field not in payload, (where, field, sorted(payload))
+            # The scalar the frontend actually reads to know a baseline
+            # exists at all (frontend/app.js) has to survive the trim.
+            assert payload["stopped_energy_ref"] == 0.25, (where, payload)
+
+        with open(os.path.join(tmp_dir, "registry.json")) as f:
+            persisted = json.load(f)[NODE_ID]
+        assert persisted["stopped_spectrum_ref"]["mic"][0] == 0.5, persisted
+        assert persisted["scalar_mu"][5] == 5.0, persisted
+        assert persisted["scalar_sigma"][5] == 1.0, persisted
+        print("node payloads omit server-only model internals but still persist them: PASS")
+    finally:
+        api.stop()
+
+
 def main():
     tmp_dir = tempfile.mkdtemp(prefix="api_test_")
 
     test_get_nodes_lists_registry_entries(tempfile.mkdtemp(dir=tmp_dir))
     test_get_node_404_for_unknown(tempfile.mkdtemp(dir=tmp_dir))
+    test_node_payloads_omit_server_only_model_internals(tempfile.mkdtemp(dir=tmp_dir))
     test_rename_updates_registry_and_broadcasts(tempfile.mkdtemp(dir=tmp_dir))
     test_node_order_persists_and_broadcasts(tempfile.mkdtemp(dir=tmp_dir))
     test_device_type_updates_registry_and_broadcasts(tempfile.mkdtemp(dir=tmp_dir))

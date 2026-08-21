@@ -90,6 +90,36 @@ _EMPTY_WIFI_STATUS = {"available": False, "mode": None, "ssid": None, "ip": None
 
 _PERF_BROADCAST_INTERVAL_S = 1.0
 
+# RegistryEntry fields that stay on the server. RegistryEntry.to_dict() has
+# two jobs -- it is what Registry._save() persists to registry.json, and it
+# is the base of every node payload the dashboard receives -- and these
+# three are only wanted by the first.
+#
+# They are model internals: the per-bin STOPPED noise floor gate.py measures
+# live frames against, and the per-column standardization constants
+# inference.py applies before scoring. Nothing in frontend/ reads any of
+# them (stopped_energy_ref, a scalar, is what app.js checks to know whether
+# a baseline exists at all).
+#
+# Sending them anyway cost 8.2 KB of every 9.1 KB node payload -- 115 KB per
+# GET /nodes across thirteen nodes, uncompressed, re-sent on the dashboard's
+# 5s poll even though a stopped baseline only changes when an operator
+# captures one. On a marginal link that transfer alone could outlast the
+# frontend's OFFLINE_AFTER_S, which paints the whole fleet Offline while the
+# board is perfectly healthy. See docs and the offline_detector tooling.
+_ENTRY_FIELDS_NOT_SENT = ("stopped_spectrum_ref", "scalar_mu", "scalar_sigma")
+
+
+def _public_entry(entry) -> dict:
+    """A registry entry as the dashboard should see it: everything
+    to_dict() persists, minus the server-only bulk above. Every route and
+    /ws broadcast that ships an entry goes through here, so there is one
+    place to answer "does the browser get this field?"."""
+    d = entry.to_dict()
+    for field in _ENTRY_FIELDS_NOT_SENT:
+        d.pop(field, None)
+    return d
+
 
 class RenameBody(BaseModel):
     # Optional + defaulted rather than required: the old handler used
@@ -320,7 +350,7 @@ def create_app(registry: Registry, history_store: HistoryStore,
         # replaces every one-off broadcast_threadsafe call that used to
         # follow a status-changing registry method below.
         entry = registry.get(node_id)
-        # _node_dict, not entry.to_dict(): a FAULT transition also starts the
+        # _node_dict, not _public_entry(entry): a FAULT transition also starts the
         # protection countdown, and the dashboard needs trip_in_s in the same
         # push that told it about the fault. Waiting for the next 5s poll would
         # mean showing FAULT for several seconds with no sign that a trip was
@@ -413,7 +443,7 @@ def create_app(registry: Registry, history_store: HistoryStore,
         return _perf_payload()
 
     def _node_dict(node_id: str, entry) -> dict:
-        d = entry.to_dict()
+        d = _public_entry(entry)
         # Only present while a commissioning session is active for this
         # node -- lets the dashboard's train icon (frontend/app.js) unlock
         # once enough frames are in, without duplicating frame-counting
@@ -596,8 +626,8 @@ def create_app(registry: Registry, history_store: HistoryStore,
             entry = app.state.registry.rename(node_id, body.device_name)
         except NodeNotFoundError:
             raise HTTPException(status_code=404, detail=f"unknown node_id {node_id!r}")
-        broadcast_threadsafe(app, {"type": "registry", "node_id": node_id, "entry": entry.to_dict()})
-        return entry.to_dict()
+        broadcast_threadsafe(app, {"type": "registry", "node_id": node_id, "entry": _public_entry(entry)})
+        return _public_entry(entry)
 
     @app.post("/nodes/order")
     def reorder_nodes(body: NodeOrderBody = NodeOrderBody()):
@@ -617,8 +647,8 @@ def create_app(registry: Registry, history_store: HistoryStore,
             entry = app.state.registry.set_device_type(node_id, device_type)
         except NodeNotFoundError:
             raise HTTPException(status_code=404, detail=f"unknown node_id {node_id!r}")
-        broadcast_threadsafe(app, {"type": "registry", "node_id": node_id, "entry": entry.to_dict()})
-        return entry.to_dict()
+        broadcast_threadsafe(app, {"type": "registry", "node_id": node_id, "entry": _public_entry(entry)})
+        return _public_entry(entry)
 
     @app.post("/nodes/{node_id}/trip_motor")
     def set_trip_motor(node_id: str, body: TripMotorBody = TripMotorBody()):
@@ -758,7 +788,7 @@ def create_app(registry: Registry, history_store: HistoryStore,
             raise HTTPException(status_code=409, detail=str(e))
         # No broadcast_threadsafe here -- registry.pause() already fired
         # _on_registry_status_change above.
-        return entry.to_dict()
+        return _public_entry(entry)
 
     @app.post("/nodes/{node_id}/resume")
     def resume_node(node_id: str):
@@ -770,7 +800,7 @@ def create_app(registry: Registry, history_store: HistoryStore,
             raise HTTPException(status_code=409, detail=str(e))
         # No broadcast_threadsafe here -- registry.resume() already fired
         # _on_registry_status_change above.
-        return entry.to_dict()
+        return _public_entry(entry)
 
     @app.post("/nodes/{node_id}/decommission")
     def decommission_node(node_id: str):
@@ -804,7 +834,7 @@ def create_app(registry: Registry, history_store: HistoryStore,
         entry = app.state.registry.get(node_id)
         # No broadcast_threadsafe here -- commissioning.start() already
         # fired _on_registry_status_change above (via registry.start_commissioning()).
-        return entry.to_dict()
+        return _public_entry(entry)
 
     def _start_training(node_id: str) -> None:
         """Runs the (slow, fixed-epoch) fit on a background thread, streaming
@@ -873,7 +903,7 @@ def create_app(registry: Registry, history_store: HistoryStore,
         # No broadcast_threadsafe here -- stop_collecting() already fired
         # _on_registry_status_change above (COMMISSIONING_TRAINING).
         _start_training(node_id)
-        return entry.to_dict()
+        return _public_entry(entry)
 
     # Guided setup (docs/UNIFIED_COMMISSIONING_PLAN.md) -- one flow that
     # sequences the four scattered ones. Additions only: every route these
@@ -1168,7 +1198,7 @@ def create_app(registry: Registry, history_store: HistoryStore,
             app.state.ei.rename_device_type(old, new)
         for node_id in changed_node_ids:
             entry = app.state.registry.get(node_id)
-            broadcast_threadsafe(app, {"type": "registry", "node_id": node_id, "entry": entry.to_dict()})
+            broadcast_threadsafe(app, {"type": "registry", "node_id": node_id, "entry": _public_entry(entry)})
         broadcast_threadsafe(app, {
             "type": "device_types_renamed", "old_device_type": old, "new_device_type": new,
         })
