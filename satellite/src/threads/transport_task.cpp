@@ -42,6 +42,34 @@
 #define TRANSPORT_LOOP_DELAY_MS    10
 #define MQTT_RECONNECT_BACKOFF_MS  2000
 
+/* The broker kills a client that has sent nothing for keepalive x 1.5, and
+ * PubSubClient only emits its keepalive PINGREQ from inside
+ * mqtt_client.loop(). transport_publish_spectrum() holds mqtt_mutex across a
+ * BLOCKING socket write, and the loop() call in the CONNECTED state takes
+ * that same mutex - so a congested write stalls the keepalive for exactly as
+ * long as the write blocks. That ties the two timeouts into one ordering
+ * constraint:
+ *
+ *     socket write timeout  <  MQTT keepalive x 1.5
+ *
+ * The library defaults VIOLATE it. arduino-esp32's WiFiClient defaults to a
+ * 30s write timeout; PubSubClient's keepalive defaults to 15s, so mosquitto
+ * kills at 22.5s. 30 > 22.5 means any sustained congested write is
+ * *guaranteed* to lose the session. Measured 2026-08-21: both satellites
+ * cycling "has exceeded timeout, disconnecting" -> reconnect about every 30s
+ * while still answering every single 1s ping. On the dashboard that reads as
+ * assets going offline and coming back, which looks like a WiFi or dashboard
+ * fault and is neither - see the offline_detector notes before re-debugging
+ * this from the browser end.
+ *
+ * 5s against a 67.5s kill window leaves an order of magnitude of margin. A
+ * write blocked 5s has already missed its epoch anyway, so failing it fast
+ * and dropping that one frame (telemetry is QoS 0 - "occasional loss
+ * acceptable", SENSOR_TELEMETRY_FRAME_PLAN.md S6) is strictly better than
+ * holding the mutex and losing the whole session. */
+#define MQTT_KEEPALIVE_S           45
+#define MQTT_SOCKET_TIMEOUT_S      5
+
 /* Bounded STA join attempt, both for a saved-creds boot reconnect and for
  * testing a freshly-submitted portal form - generous for a real join (a
  * wrong password/AP-out-of-range reliably resolves well before this). */
@@ -250,6 +278,15 @@ static void connect_mqtt(void)
 		      creds.mqtt_broker_host, creds.mqtt_broker_port, node_id);
 	mqtt_client.setServer(creds.mqtt_broker_host, creds.mqtt_broker_port);
 	if (mqtt_client.connect(node_id)) {
+		/* Set here rather than once at init: WiFiClient pushes SO_SNDTIMEO
+		 * down onto the socket, and there is no socket until the connect
+		 * above succeeds - every reconnect brings a fresh one. NOTE THE
+		 * UNIT: arduino-esp32's WiFiClient::setTimeout() takes SECONDS,
+		 * even though it overrides Stream::setTimeout(), whose argument is
+		 * milliseconds. Passing a milliseconds value here would set a
+		 * timeout thousands of seconds long and silently restore the bug
+		 * this constant exists to close. */
+		wifi_client.setTimeout(MQTT_SOCKET_TIMEOUT_S);
 		mqtt_client.subscribe(cmd_topic, 1); /* QoS 1 - SENSOR_TELEMETRY_FRAME_PLAN.md S6's QoS guidance */
 		Serial.printf("[transport] MQTT connected, subscribed to %s\n", cmd_topic);
 	} else {
@@ -391,6 +428,7 @@ static void transport_task_entry(void *arg)
 	snprintf(ap_ssid, sizeof(ap_ssid), "%s%s", PROVISIONING_AP_SSID_PREFIX, node_id);
 
 	mqtt_client.setBufferSize(MQTT_BUFFER_SIZE);
+	mqtt_client.setKeepAlive(MQTT_KEEPALIVE_S);
 	mqtt_client.setCallback(mqtt_callback);
 
 	bool have_saved_creds = hal_credentials_load(&creds);
