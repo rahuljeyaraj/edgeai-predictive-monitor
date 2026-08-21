@@ -16,7 +16,8 @@
 #
 # Usage:
 #   ./start_sim_nodes_panel.sh --captures-dir captures_3 [--nodes N] \
-#       [--ui-port-base PORT] [--panel-port PORT] [--auto-online]
+#       [--ui-port-base PORT] [--panel-port PORT] [--auto-online] \
+#       [--mqtt-host HOST] [--mqtt-port PORT]
 
 set -uo pipefail
 
@@ -26,6 +27,7 @@ PY_DIR="${LOCAL_DIR}/python"
 VENV="${PY_DIR}/.venv"
 DASHBOARD_PORT=8080
 MQTT_PORT=1883
+MQTT_HOST=""
 CAPTURES_DIR=""
 NUM_NODES=10
 UI_PORT_BASE=9101
@@ -39,12 +41,14 @@ while [ $# -gt 0 ]; do
         --ui-port-base) UI_PORT_BASE="$2"; shift 2 ;;
         --panel-port) PANEL_PORT="$2"; shift 2 ;;
         --auto-online) AUTO_ONLINE=1; shift ;;
+        --mqtt-host) MQTT_HOST="$2"; shift 2 ;;
+        --mqtt-port) MQTT_PORT="$2"; shift 2 ;;
         *) echo "Unknown argument: $1" >&2; exit 1 ;;
     esac
 done
 
 if [ -z "${CAPTURES_DIR}" ]; then
-    echo "Usage: $0 --captures-dir <dir> [--nodes N] [--ui-port-base PORT] [--panel-port PORT] [--auto-online]" >&2
+    echo "Usage: $0 --captures-dir <dir> [--nodes N] [--ui-port-base PORT] [--panel-port PORT] [--auto-online] [--mqtt-host HOST] [--mqtt-port PORT]" >&2
     exit 1
 fi
 case "${CAPTURES_DIR}" in
@@ -101,8 +105,18 @@ if [ -z "${DEVICE_LAN_IP}" ]; then
 fi
 echo "Device LAN IP: ${DEVICE_LAN_IP}"
 
-step "Checking mosquitto broker is reachable at ${DEVICE_LAN_IP}:${MQTT_PORT}"
-if ! "${VENV}/bin/python3" - "${DEVICE_LAN_IP}" "${MQTT_PORT}" <<'EOF'
+# The sims talk to the broker on the device by default. --mqtt-host exists for
+# the case where this machine has no direct route to the device's LAN (e.g. WSL2
+# behind NAT while the fleet sits on a Windows hotspot) and the traffic has to
+# come in via a relay/portproxy address instead.
+if [ -z "${MQTT_HOST}" ]; then
+    MQTT_HOST="${DEVICE_LAN_IP}"
+else
+    echo "Using MQTT host override: ${MQTT_HOST}"
+fi
+
+step "Checking mosquitto broker is reachable at ${MQTT_HOST}:${MQTT_PORT}"
+if ! "${VENV}/bin/python3" - "${MQTT_HOST}" "${MQTT_PORT}" <<'EOF'
 import socket, sys
 host, port = sys.argv[1], int(sys.argv[2])
 s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -115,8 +129,13 @@ finally:
     s.close()
 EOF
 then
-    echo "No MQTT broker reachable at ${DEVICE_LAN_IP}:${MQTT_PORT}." >&2
-    echo "The UNO Q needs mosquitto installed and open to the LAN (one-time, run on-device):" >&2
+    echo "No MQTT broker reachable at ${MQTT_HOST}:${MQTT_PORT}." >&2
+    echo "First check which of the two causes this is:" >&2
+    echo "  adb shell \"ss -tln | grep 1883\"   # broker listening on-device?" >&2
+    echo "If it IS listening, the broker is fine and THIS machine just has no route" >&2
+    echo "to ${MQTT_HOST} (e.g. WSL2 behind NAT, fleet on a Windows hotspot)." >&2
+    echo "Fix the route, then re-run with --mqtt-host <relay-address>." >&2
+    echo "If it is NOT listening, install mosquitto on the UNO Q (one-time, on-device):" >&2
     echo "  adb shell" >&2
     echo "  sudo apt-get update && sudo apt-get install -y mosquitto mosquitto-clients" >&2
     echo "  echo -e 'listener 1883 0.0.0.0\\nallow_anonymous true' | sudo tee /etc/mosquitto/conf.d/lan.conf" >&2
@@ -153,7 +172,7 @@ for i in $(seq 0 $((NUM_NODES - 1))); do
     ui_port=$((UI_PORT_BASE + i))
     (
         cd "${PY_DIR}/tools" && exec "${VENV}/bin/python3" satellite_node_sim.py \
-            --mqtt-host "${DEVICE_LAN_IP}" --mqtt-port "${MQTT_PORT}" \
+            --mqtt-host "${MQTT_HOST}" --mqtt-port "${MQTT_PORT}" \
             --captures-dir "${CAPTURES_DIR}" \
             --ui-host 127.0.0.1 --ui-port "${ui_port}"
     ) &
