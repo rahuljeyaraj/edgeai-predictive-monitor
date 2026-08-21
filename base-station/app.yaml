@@ -1,29 +1,51 @@
 # app.yaml: The main configuration file for your Arduino App.
-# This file describes the application's metadata and properties.
+#
+# NOTE: this file is only a SEED for a board that has never been deployed to.
+# The DEVICE's copy is the source of truth -- deploys deliberately never ship
+# this one (see preserve_device_app_yaml() in _deploy_common.sh), because App
+# Lab stores the Telegram brick secret by writing it INLINE into the deployed
+# app.yaml and there is no separate secret store. Shipping this file over the
+# device's copy would delete the token.
+#
+# Keep this file's shape identical to what App Lab writes (below), minus the
+# secret -- the deploy's drift check compares the two and warns when they
+# differ, so a needless shape difference is a permanent false alarm.
+#
+# To adopt a real change here (a new port, a new brick) on an existing board,
+# follow the 3 steps the deploy prints in its drift NOTE. To recover a board
+# whose token was lost to a pre-fix deploy, run ./reset-base-station.sh.
 
 # The user-visible name of the application.
 name: edgeai-predictive-monitor-base-station
 
-# The icon for the application, can be an emoji or a short string.
-icon: 📳
+description: On-device predictive maintenance for rotating machinery
 
 # A list of network ports that the application exposes.
-# Example: [80, 443]
-ports: [8080, 8081]
+ports:
+- 8080
+- 8081
 
-# A list of bricks used by this application.
 # arduino:telegram_bot powers the Telegram alerts feature
-# (docs/DASHBOARD_IDEAS_BACKLOG.md). Also set TELEGRAM_BOT_TOKEN via App
-# Lab's UI (brick-managed secret) -- the bot's @username for the dashboard's
-# "Connect Telegram" deep link is resolved automatically at startup via
-# Telegram's own getMe API (main.py), no second env var needed. Telegram
-# alerts code paths no-op safely if TELEGRAM_BOT_TOKEN is left unset
-# (main.py only wires the bot then).
-# IMPORTANT: set Telegram_bot_token in App Lab's GUI BEFORE deploying this.
-# The brick hard-fails the on-device build with
-# `Variable "Telegram_bot_token" Is Required` if that variable isn't set --
-# that check runs before main.py, so main.py's own unset-token guard can't
-# save it. Last time (87193e9) a deploy right after re-enabling wiped the
-# device's app.yaml (and the token with it), taking the whole app down --
-# back up app.yaml + the token on-device before deploying.
-bricks: [arduino:telegram_bot]
+# (docs/DASHBOARD_IDEAS_BACKLOG.md). The bot's @username for the dashboard's
+# "Connect Telegram" deep link is resolved at startup via Telegram's own getMe
+# API (main.py), so no second variable is needed.
+#
+# On a FRESH board only: set Telegram_bot_token in App Lab's GUI before the
+# first `app start`. The brick hard-fails the on-device build with
+# `Variable "Telegram_bot_token" Is Required` when the variable is absent, and
+# that check runs before main.py -- so main.py's own unset-token guard cannot
+# save it. App Lab then rewrites the device's app.yaml as:
+#
+#   bricks:
+#   - arduino:telegram_bot:
+#       variables:
+#         TELEGRAM_BOT_TOKEN: <the real token>
+#
+# Back that up on-device afterwards, outside the app dir:
+#   adb shell "cp <REMOTE_DIR>/app.yaml /home/arduino/app.yaml.telegram-backup"
+# Never commit the token.
+bricks:
+- arduino:telegram_bot:
+
+# The icon for the application, can be an emoji or a short string.
+icon: 📳

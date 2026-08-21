@@ -95,7 +95,7 @@ ok "board attached ($(adb devices | awk 'NR>1 && $2=="device" {printf "%s ", $1}
 # no point stopping a working app, because we would not be able to start it
 # again without a trip through App Lab's Windows-only GUI.
 step "2. Telegram token backup"
-if ! adb_retry 15 shell "test -f '${TOKEN_BACKUP}' && grep -q TELEGRAM_BOT_TOKEN '${TOKEN_BACKUP}'" 2>/dev/null; then
+if ! adb_retry 15 shell "test -f '${TOKEN_BACKUP}' && grep -qE '${TOKEN_ASSIGN_RE}' '${TOKEN_BACKUP}'" 2>/dev/null; then
     die "No usable token backup at ${TOKEN_BACKUP} on the device" \
         "Without it, starting the app will hard-fail on the telegram_bot brick." \
         "Recover it by setting Telegram_bot_token in App Lab's GUI (Windows only)," \
@@ -110,14 +110,17 @@ ok "token backup present on device"
 # keeps the device's copy and excludes the repo's from the payload), but a
 # board left broken by an OLDER deploy still needs healing -- that is the state
 # this script most often runs in.
+# Matched with TOKEN_ASSIGN_RE, not a bare `grep TELEGRAM_BOT_TOKEN`: app.yaml
+# documents the variable by name in its comments, so an unanchored match reports
+# a token-less `bricks: []` file as healthy and skips the restore below.
 step "3. Checking the device's app.yaml still has its token"
-if adb_retry 15 shell "grep -q 'TELEGRAM_BOT_TOKEN' '${REMOTE_DIR}/app.yaml'" 2>/dev/null; then
+if adb_retry 15 shell "grep -qE '${TOKEN_ASSIGN_RE}' '${REMOTE_DIR}/app.yaml'" 2>/dev/null; then
     ok "token already in place on the device"
 else
     echo "  Token missing (a pre-fix deploy wiped it) -- restoring from the backup."
     adb_retry 15 shell "cp '${TOKEN_BACKUP}' '${REMOTE_DIR}/app.yaml'" >/dev/null \
         || die "Could not restore app.yaml from the backup"
-    adb_retry 15 shell "grep -q 'TELEGRAM_BOT_TOKEN' '${REMOTE_DIR}/app.yaml'" 2>/dev/null \
+    adb_retry 15 shell "grep -qE '${TOKEN_ASSIGN_RE}' '${REMOTE_DIR}/app.yaml'" 2>/dev/null \
         || die "Restore ran but the token is still not in ${REMOTE_DIR}/app.yaml" \
                "Refusing to start -- the brick check would fail the build."
     ok "token restored"

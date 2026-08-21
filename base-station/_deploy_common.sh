@@ -24,6 +24,14 @@ BUILD_LOG="/tmp/${APP_NAME}_app_start.log"
 # seed for a board that has never been deployed to. See preserve_device_app_yaml().
 DEVICE_APP_YAML="${REMOTE_DIR}/app.yaml"
 
+# Matches a line that actually ASSIGNS the brick secret -- not one of the many
+# comment lines that merely mention TELEGRAM_BOT_TOKEN by name. The start-of-line
+# anchor is the entire point: an unanchored `grep -q TELEGRAM_BOT_TOKEN` matches
+# app.yaml's own documentation, so a wiped app.yaml reads as healthy and the
+# restore that was supposed to heal it is skipped. That false pass is how the
+# token kept "coming back missing" after a recovery run that reported OK.
+TOKEN_ASSIGN_RE='^[[:space:]]*TELEGRAM_BOT_TOKEN[[:space:]]*:[[:space:]]*[^[:space:]#]'
+
 step() { echo; echo "==> $1"; }
 
 wait_for_device() {
@@ -95,7 +103,9 @@ preserve_device_app_yaml() {
         adb_retry 20 shell "mkdir -p '${REMOTE_DIR}'" >/dev/null || true
         adb_retry 20 push "${LOCAL_DIR}/app.yaml" "${DEVICE_APP_YAML}" >/dev/null \
             || { echo "Could not seed app.yaml onto the device." >&2; exit 1; }
-        if grep -qE '^\s*bricks:\s*\[?\s*arduino:' "${LOCAL_DIR}/app.yaml"; then
+        # Both the inline form (bricks: [arduino:x]) and the block form that
+        # App Lab writes (bricks:\n- arduino:x:) declare a brick that needs a secret.
+        if grep -qE '^[[:space:]]*(bricks:[[:space:]]*\[?[[:space:]]*arduino:|-[[:space:]]*arduino:)' "${LOCAL_DIR}/app.yaml"; then
             echo
             echo "WARNING: the seeded app.yaml declares a brick but carries no token." >&2
             echo "  The build will fail until you set the secret in App Lab's GUI," >&2
