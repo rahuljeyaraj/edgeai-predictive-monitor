@@ -1,14 +1,13 @@
 # Dashboard LAN Access Guide
 
-How to view the dashboard (`mpu/frontend/`, served by `mpu/main.py`) from
-the host machine's browser and from a phone on the same Wi-Fi, when
-`mpu/main.py` is run inside WSL2.
+How to view the dashboard (`base-station/python/frontend/`, served by
+`base-station/python/main.py`) from the host machine's browser and from a
+phone on the same Wi-Fi, when `main.py` is run inside WSL2.
 
 ## Run the server
 
 ```
-PYTHONPATH=mpu/common:mpu/ingestion:mpu/registry:mpu/pipeline:mpu/history:mpu/api:mpu/monitoring \
-    python3 mpu/main.py --mqtt-host localhost
+python3 base-station/python/main.py --mqtt-host localhost
 ```
 
 Binds to `0.0.0.0:8080` by default (REST + WebSocket + static frontend,
