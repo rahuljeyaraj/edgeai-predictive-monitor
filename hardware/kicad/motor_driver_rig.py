@@ -30,8 +30,11 @@ PSU = Part(
 )
 
 hub_y, psu_y = stack_column(48, [HUB, PSU])
-row_h = max(DRIVER.height, MOTOR.height)
-motor_y = stack_column(48, [row_h, row_h, row_h])
+# Right column: driver + motor stacked per axis (not side-by-side), so the
+# sheet stays 2 columns wide like the other two diagrams instead of 3 --
+# 3 columns were the ones getting squeezed illegibly when pasted into Word.
+driver_y = stack_column(48, [DRIVER, MOTOR, DRIVER, MOTOR, DRIVER, MOTOR])[0::2]
+motor_y = stack_column(48, [DRIVER, MOTOR, DRIVER, MOTOR, DRIVER, MOTOR])[1::2]
 
 sch.place(HUB, "U1", 60, hub_y, {
     "D8": "ENABLE", "GND": "PWR:GND",
@@ -40,9 +43,8 @@ sch.place(HUB, "U1", 60, hub_y, {
     "D4": "M3_STEP", "D7": "M3_DIR",
 })
 
-for idx, y in zip((1, 2, 3), motor_y):
-    ref_d = chr(ord("A") + idx - 1)
-    sch.place(DRIVER, f"A{idx}", 175, y, {
+for idx, dy, my in zip((1, 2, 3), driver_y, motor_y):
+    sch.place(DRIVER, f"A{idx}", 190, dy, {
         "STEP": f"M{idx}_STEP",
         "DIR": f"M{idx}_DIR",
         "EN": "ENABLE",
@@ -51,7 +53,7 @@ for idx, y in zip((1, 2, 3), motor_y):
         "1A": f"M{idx}_A1", "1B": f"M{idx}_A2",
         "2A": f"M{idx}_B1", "2B": f"M{idx}_B2",
     })
-    sch.place(MOTOR, f"M{idx}", 260, y, {
+    sch.place(MOTOR, f"M{idx}", 190, my, {
         "A1": f"M{idx}_A1", "A2": f"M{idx}_A2",
         "B1": f"M{idx}_B1", "B2": f"M{idx}_B2",
     })
@@ -61,7 +63,7 @@ sch.place(PSU, "PS1", 60, psu_y, {
 })
 
 sch.note("EdgeAI Predictive Monitor -- Motor-Driver Rig Wiring", 20, 25, size=4.2)
-sch.note("Arduino Uno + CNC Shield V3, one driver socket per motor axis. Shared ~ENABLE line on D8, active-LOW. Uno pins named by header number.", 20, 34, size=2.4)
+sch.note("Arduino Uno + CNC Shield V3; one driver per axis, shared ~ENABLE active-LOW on D8.", 20, 34, size=2.4)
 sch.note("Set each driver's current-limit trimpot before running: A4988 Vref = Imax x 8 x Rsense, DRV8825 Vref = Imax / 2.", 20, 41, size=2.0)
 
 open("motor_driver_rig.kicad_sch", "w").write(sch.render())
