@@ -58,7 +58,7 @@ sch.place(RING, "U4", 170, ring_y, {
 })
 
 sch.note("EdgeAI Predictive Monitor -- Satellite Node Wiring", 20, 25, size=4.2)
-sch.note("Seeed Studio XIAO ESP32S3. Same sensor set as the base station, on the XIAO's 11 breakout GPIOs. No LED matrix here -- the ring alone carries status.", 20, 34, size=2.4)
+sch.note("Seeed Studio XIAO ESP32S3. Same sensor set as the base station; status ring only, no LED matrix.", 20, 34, size=2.4)
 sch.note("XIAO pins are named by its own D0-D10 breakout labels -- not by GPIO number.", 20, 41, size=2.0)
 
 open("satellite_node.kicad_sch", "w").write(sch.render())
