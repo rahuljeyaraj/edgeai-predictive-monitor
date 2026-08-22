@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-from gen import Part, Schematic
+from gen import Part, Schematic, stack_column
 
 sch = Schematic("EdgeAI Predictive Monitor - Motor-Driver Rig Wiring (Arduino Uno + CNC Shield V3)")
 
@@ -29,14 +29,17 @@ PSU = Part(
     width=25.4,
 )
 
-sch.place(HUB, "U1", 60, 100, {
+hub_y, psu_y = stack_column(48, [HUB, PSU])
+row_h = max(DRIVER.height, MOTOR.height)
+motor_y = stack_column(48, [row_h, row_h, row_h])
+
+sch.place(HUB, "U1", 60, hub_y, {
     "D8": "ENABLE", "GND": "PWR:GND",
     "D2": "M1_STEP", "D5": "M1_DIR",
     "D3": "M2_STEP", "D6": "M2_DIR",
     "D4": "M3_STEP", "D7": "M3_DIR",
 })
 
-motor_y = [70, 125, 180]
 for idx, y in zip((1, 2, 3), motor_y):
     ref_d = chr(ord("A") + idx - 1)
     sch.place(DRIVER, f"A{idx}", 175, y, {
@@ -53,13 +56,13 @@ for idx, y in zip((1, 2, 3), motor_y):
         "B1": f"M{idx}_B1", "B2": f"M{idx}_B2",
     })
 
-sch.place(PSU, "PS1", 60, 210, {
+sch.place(PSU, "PS1", 60, psu_y, {
     "V+": "VMOT", "GND": "PWR:GND",
 })
 
-sch.note("EdgeAI Predictive Monitor -- Motor-Driver Rig Wiring", 20, 25, size=3.0)
-sch.note("Arduino Uno + CNC Shield V3, one driver socket per motor axis. Shared ~ENABLE line on D8, active-LOW. Uno pins named by header number.", 20, 32, size=1.8)
-sch.note("Report ref: Chapter 5 / Appendix B.3. Set each driver's current-limit trimpot before running: A4988 Vref = Imax x 8 x Rsense, DRV8825 Vref = Imax / 2.", 20, 38, size=1.5)
+sch.note("EdgeAI Predictive Monitor -- Motor-Driver Rig Wiring", 20, 25, size=4.2)
+sch.note("Arduino Uno + CNC Shield V3, one driver socket per motor axis. Shared ~ENABLE line on D8, active-LOW. Uno pins named by header number.", 20, 34, size=2.4)
+sch.note("Set each driver's current-limit trimpot before running: A4988 Vref = Imax x 8 x Rsense, DRV8825 Vref = Imax / 2.", 20, 41, size=2.0)
 
 open("motor_driver_rig.kicad_sch", "w").write(sch.render())
 print("wrote motor_driver_rig.kicad_sch")

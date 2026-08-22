@@ -10,12 +10,40 @@ generated layout readable regardless of part placement.
 """
 import uuid, textwrap, os
 
-SPACING = 6.35
+SPACING = 7.62
 PIN_LEN = 2.54
 STUB_LEN = 8.89
 
+# Text sizes. Bumped well above KiCad's 1.27mm default so the schematic
+# stays legible after it's pasted into a Word doc and shrunk to fit a page
+# column -- at 1.27mm that pass made pin/net text unreadable.
+PROP_SIZE = 1.8    # part Reference/Value captions above each box
+PIN_TEXT_SIZE = 1.6    # pin name (shown) / number (hidden) next to each pin
+PIN_TEXT_OFFSET = 0.8    # ~0.5x PIN_TEXT_SIZE, same ratio as the KiCad default
+LABEL_SIZE = 2.0    # net labels at the end of each stub
+
 def u():
     return str(uuid.uuid4())
+
+# Vertical clearance below a part's box that its Reference/Value caption
+# needs (captions are drawn below the box, not above it).
+CAPTION_CLEAR = 3.2 * PROP_SIZE + 2.0
+
+def stack_column(first_top, parts, gap=6.0):
+    """Y-centers for `parts` stacked top-to-bottom, each row's top clearing
+    the previous row's box + caption text + `gap`, starting at `first_top`.
+    Each entry in `parts` is a Part (uses .height) or a bare height in mm --
+    the latter lets a row shared by two side-by-side parts of different
+    heights (e.g. a driver + motor pair) be spaced by the taller one."""
+    heights = [p.height if hasattr(p, "height") else p for p in parts]
+    ys = []
+    y = first_top + heights[0] / 2
+    for i, h in enumerate(heights):
+        if i > 0:
+            y = y_prev + heights[i - 1] / 2 + CAPTION_CLEAR + gap + h / 2
+        ys.append(y)
+        y_prev = y
+    return ys
 
 # ---------------------------------------------------------------------------
 # Symbol (part) definitions
@@ -51,18 +79,18 @@ class Part:
         lines.append('\t\t\t(hide yes)')
         lines.append('\t\t)')
         lines.append('\t\t(pin_names')
-        lines.append('\t\t\t(offset 0.508)')
+        lines.append(f'\t\t\t(offset {PIN_TEXT_OFFSET})')
         lines.append('\t\t)')
         lines.append('\t\t(exclude_from_sim no)')
         lines.append('\t\t(in_bom yes)')
         lines.append('\t\t(on_board yes)')
         lines.append(f'\t\t(property "Reference" "{self.ref_prefix}"')
-        lines.append(f'\t\t\t(at {-hw} {hh + 2.54} 0)')
-        lines.append('\t\t\t(effects (font (size 1.27 1.27)) (justify left))')
+        lines.append(f'\t\t\t(at {-hw} {hh + 3.2 * PROP_SIZE} 0)')
+        lines.append(f'\t\t\t(effects (font (size {PROP_SIZE} {PROP_SIZE})) (justify left))')
         lines.append('\t\t)')
         lines.append(f'\t\t(property "Value" "{self.value}"')
-        lines.append(f'\t\t\t(at {-hw} {hh + 1.27} 0)')
-        lines.append('\t\t\t(effects (font (size 1.27 1.27)) (justify left))')
+        lines.append(f'\t\t\t(at {-hw} {hh + 1.1 * PROP_SIZE} 0)')
+        lines.append(f'\t\t\t(effects (font (size {PROP_SIZE} {PROP_SIZE})) (justify left))')
         lines.append('\t\t)')
         lines.append('\t\t(property "Footprint" ""')
         lines.append('\t\t\t(at 0 0 0)')
@@ -88,8 +116,8 @@ class Part:
                 lines.append('\t\t\t(pin bidirectional line')
                 lines.append(f'\t\t\t\t(at {x} {y} {ang})')
                 lines.append(f'\t\t\t\t(length {PIN_LEN})')
-                lines.append(f'\t\t\t\t(name "{name}" (effects (font (size 1.016 1.016))))')
-                lines.append(f'\t\t\t\t(number "{pin_no}" (effects (font (size 1.016 1.016))))')
+                lines.append(f'\t\t\t\t(name "{name}" (effects (font (size {PIN_TEXT_SIZE} {PIN_TEXT_SIZE}))))')
+                lines.append(f'\t\t\t\t(number "{pin_no}" (effects (font (size {PIN_TEXT_SIZE} {PIN_TEXT_SIZE}))))')
                 lines.append('\t\t\t)')
                 pin_no += 1
         lines.append('\t\t)')
@@ -238,7 +266,7 @@ class Schematic:
         # further left, away from the box, so anchor at the text's right edge.
         justify = "right" if angle == 0 else "left"
         return (f'\t(label "{text}"\n\t\t(at {x} {y} 0)\n'
-                f'\t\t(effects (font (size 1.27 1.27)) (justify {justify}))\n'
+                f'\t\t(effects (font (size {LABEL_SIZE} {LABEL_SIZE})) (justify {justify}))\n'
                 f'\t\t(uuid "{u()}")\n\t)')
 
     def _text(self, text, x, y, size):
@@ -260,12 +288,12 @@ class Schematic:
         lines.append(f'\t\t(uuid "{iuuid}")')
         hw, hh = part.width / 2, part.height / 2
         lines.append(f'\t\t(property "Reference" "{ref}"')
-        lines.append(f"\t\t\t(at {x - hw} {y + hh + 2.54} 0)")
-        lines.append("\t\t\t(effects (font (size 1.27 1.27)) (justify left))")
+        lines.append(f"\t\t\t(at {x - hw} {y + hh + 3.2 * PROP_SIZE} 0)")
+        lines.append(f"\t\t\t(effects (font (size {PROP_SIZE} {PROP_SIZE})) (justify left))")
         lines.append("\t\t)")
         lines.append(f'\t\t(property "Value" "{part.value}"')
-        lines.append(f"\t\t\t(at {x - hw} {y + hh + 1.27} 0)")
-        lines.append("\t\t\t(effects (font (size 1.27 1.27)) (justify left))")
+        lines.append(f"\t\t\t(at {x - hw} {y + hh + 1.1 * PROP_SIZE} 0)")
+        lines.append(f"\t\t\t(effects (font (size {PROP_SIZE} {PROP_SIZE})) (justify left))")
         lines.append("\t\t)")
         lines.append('\t\t(property "Footprint" ""')
         lines.append(f"\t\t\t(at {x} {y} 0)")
@@ -305,12 +333,12 @@ class Schematic:
         iuuid = u()
         lines.append(f'\t\t(uuid "{iuuid}")')
         lines.append(f'\t\t(property "Reference" "{ref}"')
-        lines.append(f"\t\t\t(at {x} {y - 3.81} 0)")
+        lines.append(f"\t\t\t(at {x} {y - 3 * LABEL_SIZE} 0)")
         lines.append("\t\t\t(effects (font (size 1.27 1.27)) (hide yes))")
         lines.append("\t\t)")
         lines.append(f'\t\t(property "Value" "{kind}"')
-        lines.append(f"\t\t\t(at {x} {y + 3.556} 0)")
-        lines.append("\t\t\t(effects (font (size 1.27 1.27)))")
+        lines.append(f"\t\t\t(at {x} {y + 2.2 * LABEL_SIZE} 0)")
+        lines.append(f"\t\t\t(effects (font (size {LABEL_SIZE} {LABEL_SIZE})))")
         lines.append("\t\t)")
         lines.append('\t\t(property "Footprint" ""')
         lines.append(f"\t\t\t(at {x} {y} 0)")

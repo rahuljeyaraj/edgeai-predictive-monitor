@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-from gen import Part, Schematic
+from gen import Part, Schematic, stack_column
 
 sch = Schematic("EdgeAI Predictive Monitor - Base Station Wiring (Arduino UNO Q)")
 
@@ -34,7 +34,10 @@ RING = Part(
     width=27.94,
 )
 
-sch.place(UNOQ, "U1", 60, 100, {
+unoq_y, = stack_column(48, [UNOQ])
+kx134_y, inmp441_y, ring_y = stack_column(48, [KX134, INMP441, RING])
+
+sch.place(UNOQ, "U1", 60, unoq_y, {
     "D13": "SPI_SCK", "D12": "SPI_MISO", "D11": "SPI_MOSI",
     "D8": "ACC_CS", "D9": "ACC_INT",
     "SCL": "MIC_SCK", "D10": "MIC_WS", "A4": "MIC_SD",
@@ -42,24 +45,24 @@ sch.place(UNOQ, "U1", 60, 100, {
     "5V": "PWR:+5V", "3V3": "PWR:+3V3", "GND": "PWR:GND",
 })
 
-sch.place(KX134, "U2", 170, 70, {
+sch.place(KX134, "U2", 170, kx134_y, {
     "SCK": "SPI_SCK", "SDO": "SPI_MISO", "SDI": "SPI_MOSI",
     "CS": "ACC_CS", "INT1": "ACC_INT",
     "VCC": "PWR:+3V3", "GND": "PWR:GND",
 })
 
-sch.place(INMP441, "U3", 170, 125, {
+sch.place(INMP441, "U3", 170, inmp441_y, {
     "SCK": "MIC_SCK", "WS": "MIC_WS", "SD": "MIC_SD",
     "L/R": "PWR:GND", "VDD": "PWR:+3V3", "GND": "PWR:GND",
 })
 
-sch.place(RING, "U4", 170, 170, {
+sch.place(RING, "U4", 170, ring_y, {
     "DIN": "LED_DIN", "VCC": "PWR:+5V", "GND": "PWR:GND",
 })
 
-sch.note("EdgeAI Predictive Monitor -- Base Station Wiring", 20, 25, size=3.0)
-sch.note("Arduino UNO Q, STM32U585 (Zephyr) side. SPI bus + digital I2S + WS2812 status ring.", 20, 32, size=1.8)
-sch.note("Report ref: Chapter 2.3 / Appendix B.1. UNO Q pins are named by its own header labels (D3, D13, A4, SCL) -- not by STM32 port.", 20, 38, size=1.5)
+sch.note("EdgeAI Predictive Monitor -- Base Station Wiring", 20, 25, size=4.2)
+sch.note("Arduino UNO Q, STM32U585 (Zephyr) side. SPI bus + digital I2S + WS2812 status ring.", 20, 34, size=2.4)
+sch.note("UNO Q pins are named by its own header labels (D3, D13, A4, SCL) -- not by STM32 port.", 20, 41, size=2.0)
 
 open("base_station.kicad_sch", "w").write(sch.render())
 print("wrote base_station.kicad_sch")

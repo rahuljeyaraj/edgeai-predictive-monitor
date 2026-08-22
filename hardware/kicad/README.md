@@ -40,6 +40,16 @@ the relevant script and rerun it:
 python3 base_station.py        # writes base_station.kicad_sch
 ```
 
+Text sizes (headings, pin names, net labels) are centralized as constants at
+the top of `gen.py` (`PROP_SIZE`, `PIN_TEXT_SIZE`, `LABEL_SIZE`) -- they're
+sized well above KiCad's 1.27mm default so the schematic stays legible after
+being pasted into a Word doc and shrunk to a page column. Row placement for
+stacked parts (the sensor column next to each controller) goes through
+`stack_column()`, which spaces rows using each part's actual box height plus
+its caption text, rather than fixed y-coordinates -- if you bump the size
+constants further, placement adjusts on its own instead of needing every
+`.py` script's row positions hand-tuned again.
+
 ## Exporting images
 
 ```sh
@@ -58,15 +68,22 @@ python3 -m venv .venv && .venv/bin/pip install cairosvg
 
 The PNGs used in the report are cropped copies with the drawing-sheet border
 and title block removed, so the schematic itself fills the figure. The crop
-is derived, not hand-measured -- scan for ink inside `[200:2800, 200:3300]`
-(a window that clears the sheet's ruler ticks on all four edges and the
-title block at bottom right), take the bounding box, pad by 55px:
+is derived, not hand-measured -- scan for ink, skipping a 200px margin (the
+sheet's ruler ticks on all four edges) and masking out a 1500x600px box in
+the bottom-right corner (the title block), take the bounding box of what's
+left, pad by 25px. The mask (not a fixed slice window) is what lets this
+keep working as the content's own bounding box grows or shrinks -- e.g. with
+`SPACING`/`PROP_SIZE`/`LABEL_SIZE` changes in `gen.py`:
 
 ```python
 im = Image.open("base_station.png").convert("RGB")
 a = np.array(im.convert("L"))
-ys, xs = np.where(a[200:2800, 200:3300] < 200)
-im.crop((xs.min()+145, ys.min()+145, xs.max()+255, ys.max()+255)).save(out)
+h, w = a.shape
+mask = np.zeros_like(a, dtype=bool)
+mask[200:h-200, 200:w-200] = True
+mask[h-600:h, w-1500:w] = False   # title block corner
+ys, xs = np.where((a < 200) & mask)
+im.crop((xs.min()-25, ys.min()-25, xs.max()+25, ys.max()+25)).save(out)
 ```
 
 Report copies live in `report/diagrams/` as `02b-`, `03b-`, and
