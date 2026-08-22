@@ -11,7 +11,7 @@ c = Canvas(
     subtitle="Same two sensors, same status ring, same frame on the wire. Only the transport differs.",
     footnotes=[
         ("The XIAO ESP32-S3 breaks out 11 GPIOs. The pin map keeps the board's fixed hardware SPI "
-         "lines free for the accelerometer; exact pins are in the KiCad schematic in Appendix B.", None),
+         "lines free for the accelerometer; exact pins are in the KiCad schematic.", None),
         ("No per-unit configuration: the node's ID comes from its own Wi-Fi MAC, and its credentials "
          "come from the setup portal, not from a rebuild.", None),
     ],

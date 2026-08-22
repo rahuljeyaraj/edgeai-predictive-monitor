@@ -13,7 +13,7 @@ c = Canvas(
     footnotes=[
         ("Two internal links, on purpose: small control messages on the UART, bulk spectra on the SPI, "
          "so a large diagnostic pull can never stall the live status loop.", None),
-        ("Exact nets, net names and header pins: the KiCad schematic in Appendix B.", None),
+        ("Exact nets, net names and header pins: the KiCad schematic.", None),
     ],
 )
 
