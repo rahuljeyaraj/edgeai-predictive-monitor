@@ -162,63 +162,69 @@ save(c, "15c-linux-packages", scale=SCALE)
 
 # ================================================= 15d -- one frame's journey
 
-# What actually runs, in plain language. The two claims this figure exists to
-# make: the fault classifier runs before, and independently of, the health
-# score; and the "is it running" test is applied twice, by two separate gates.
+# Two models, two different trainings, two independent sets of conditions:
+#   * the fault classifier needs a model for the machine's *type* (one Edge
+#     Impulse model shared by every machine of that type) -- manager.py's
+#     _maybe_classify checks device_type, then the registry for a fetched
+#     model, then its own gate.
+#   * the health score needs *this machine's own* model, fitted during its
+#     commissioning, and re-tests running through a second gate instance.
+# Either side can be absent without blocking the other, which is why they are
+# drawn as two lanes rather than one chain.
 c = Canvas(
-    900, 1120,
+    900, 1080,
     title="What happens to one frame",
-    subtitle="Top to bottom, one machine at a time. Two models run, under two different conditions.",
+    subtitle="One machine at a time. Two models run in the same thread, under two different conditions.",
     footnotes=[
-        ("The fault name and the health score come from two separate models. A machine that "
-         "has never been trained still gets a fault name — it just gets no score.", None),
-        ("The 'is it running' test is made twice, once for each model. Neither test depends "
-         "on the other.", None),
+        ("Two models, trained two different ways. The fault classifier is trained once per machine "
+         "type in Edge Impulse and shared by every machine of that type. The health model is trained "
+         "on the board, from one machine's own healthy data.", None),
+        ("Either side can be missing. No fault model for the type means no fault name; a machine that "
+         "was never commissioned gets no score. Neither blocks the other.", None),
     ],
 )
 
-c.box(170, 170, 460, 95, "A frame arrives",
-      ["pipeline/manager.py routes it to", "that machine's own pipeline"],
+c.box(230, 170, 440, 90, "A frame arrives for one machine",
+      ["pipeline/manager.py sends it to", "that machine's own pipeline"],
       role="neutral", title_size=TITLE, body_size=BODY)
 
-c.box(170, 291, 460, 95, "Is the machine paused?",
+c.box(230, 286, 440, 85, "Is the machine paused?",
       role="neutral", title_size=TITLE, rx=26)
+c.box(40, 299, 110, 58, "stop", role="ghost", title_size=TITLE - 2)
+c.link([(230, 328), (150, 328)], label="yes", kind="arrowSoft")
 
-c.box(170, 412, 460, 95, "Name the likely fault",
-      ["pipeline/classifier.py", "only while the machine is running"],
+c.link([(450, 371), (450, 390), (234, 390), (234, 410)])
+c.link([(450, 371), (450, 390), (666, 390), (666, 410)])
+
+c.box(34, 410, 400, 250, "Name the likely fault",
+      ["pipeline/classifier.py", "",
+       "needs a fault model for this", "machine's type — one model",
+       "covers every machine of that type", "",
+       "and the machine must be running"],
       role="brain", title_size=TITLE, body_size=BODY)
 
-c.box(170, 533, 460, 95, "Has this machine been trained?",
-      role="neutral", title_size=TITLE, rx=26)
-
-c.box(170, 654, 460, 95, "Score how unusual it looks",
-      ["pipeline/inference.py", "checks running again, separately"],
+c.box(466, 410, 400, 250, "Score how unusual it looks",
+      ["pipeline/inference.py", "",
+       "needs this machine's own model,", "fitted when it was commissioned", "",
+       "and the machine must be running —", "tested separately from the left"],
       role="brain", title_size=TITLE, body_size=BODY)
 
-c.box(170, 775, 460, 95, "Healthy, warning or fault",
-      ["against this machine's own thresholds"],
-      role="brain", title_size=TITLE, body_size=BODY)
+c.box(64, 700, 340, 80, "a fault name",
+      ["shown on the dashboard,", "never trips the machine"],
+      role="neutral", title_size=TITLE, body_size=BODY)
+c.box(496, 700, 340, 80, "healthy · warning · fault",
+      ["against its own thresholds"],
+      role="neutral", title_size=TITLE, body_size=BODY)
 
-c.box(170, 896, 460, 95, "Publish the result",
+c.link([(234, 660), (234, 700)])
+c.link([(666, 660), (666, 700)])
+
+c.box(230, 830, 440, 90, "Publish the result",
       ["registry · history · dashboard"],
       role="tell", title_size=TITLE, body_size=BODY)
 
-for y in (170, 291, 412, 533, 654, 775):
-    c.link([(400, y + 95), (400, y + 121)])
-
-c.box(20, 308, 100, 60, "stop", role="ghost", title_size=TITLE - 2)
-c.link([(170, 338), (120, 338)], label="yes", kind="arrowSoft")
-
-c.box(20, 550, 100, 60, "stop", role="ghost", title_size=TITLE - 2)
-c.link([(170, 580), (120, 580)], label="no", kind="arrowSoft")
-
-c.lines(650, 452, ["runs even if the machine", "was never trained"],
-        size=BODY - 1, anchor="start", fill=INK_SOFT)
-c.lines(650, 694, ["the running test happens", "twice, independently"],
-        size=BODY - 1, anchor="start", fill=INK_SOFT)
-
-c.text(70, 400, "nothing runs", size=BODY - 1, anchor="middle", fill=INK_SOFT)
-c.text(70, 642, "fault name only", size=BODY - 1, anchor="middle", fill=INK_SOFT)
+c.link([(234, 780), (234, 800), (450, 800), (450, 830)])
+c.link([(666, 780), (666, 800), (450, 800), (450, 830)])
 
 save(c, "15d-frame-journey", scale=SCALE)
 
