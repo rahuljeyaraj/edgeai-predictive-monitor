@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 from gen import Part, Schematic, stack_column
 
-sch = Schematic("EdgeAI Predictive Monitor - Motor-Driver Rig Wiring (Arduino Uno + CNC Shield V3)")
+sch = Schematic("EdgeAI Predictive Monitor - Motor-Driver Rig Wiring (Arduino Uno + CNC Shield V3)", paper="A2")
 
 # Pins are named the way the Arduino Uno underneath names them (D2-D8) --
 # the CNC Shield's own X/Y/Z STEP+DIR silkscreen is just a relabelling of
@@ -29,22 +29,27 @@ PSU = Part(
     width=25.4,
 )
 
-hub_y, psu_y = stack_column(48, [HUB, PSU])
-# Right column: driver + motor stacked per axis (not side-by-side), so the
-# sheet stays 2 columns wide like the other two diagrams instead of 3 --
-# 3 columns were the ones getting squeezed illegibly when pasted into Word.
-driver_y = stack_column(48, [DRIVER, MOTOR, DRIVER, MOTOR, DRIVER, MOTOR])[0::2]
-motor_y = stack_column(48, [DRIVER, MOTOR, DRIVER, MOTOR, DRIVER, MOTOR])[1::2]
+# 2 columns, both filled every row: col 1 is the Uno then its 3 drivers,
+# col 2 is the PSU then their 3 motors -- driver/motor land in the same row
+# so their labels (VMOT, M1_A1, ...) still face each other across the gap.
+row_heights = [max(HUB.height, PSU.height)] + [max(DRIVER.height, MOTOR.height)] * 3
+hub_y, driver1_y, driver2_y, driver3_y = stack_column(48, row_heights)
+psu_y, motor_y = hub_y, [driver1_y, driver2_y, driver3_y]
+COL1, COL2 = 60, 190
 
-sch.place(HUB, "U1", 60, hub_y, {
+sch.place(HUB, "U1", COL1, hub_y, {
     "D8": "ENABLE", "GND": "PWR:GND",
     "D2": "M1_STEP", "D5": "M1_DIR",
     "D3": "M2_STEP", "D6": "M2_DIR",
     "D4": "M3_STEP", "D7": "M3_DIR",
 })
 
-for idx, dy, my in zip((1, 2, 3), driver_y, motor_y):
-    sch.place(DRIVER, f"A{idx}", 190, dy, {
+sch.place(PSU, "PS1", COL2, psu_y, {
+    "V+": "VMOT", "GND": "PWR:GND",
+})
+
+for idx, y in zip((1, 2, 3), motor_y):
+    sch.place(DRIVER, f"A{idx}", COL1, y, {
         "STEP": f"M{idx}_STEP",
         "DIR": f"M{idx}_DIR",
         "EN": "ENABLE",
@@ -53,14 +58,10 @@ for idx, dy, my in zip((1, 2, 3), driver_y, motor_y):
         "1A": f"M{idx}_A1", "1B": f"M{idx}_A2",
         "2A": f"M{idx}_B1", "2B": f"M{idx}_B2",
     })
-    sch.place(MOTOR, f"M{idx}", 190, my, {
+    sch.place(MOTOR, f"M{idx}", COL2, y, {
         "A1": f"M{idx}_A1", "A2": f"M{idx}_A2",
         "B1": f"M{idx}_B1", "B2": f"M{idx}_B2",
     })
-
-sch.place(PSU, "PS1", 60, psu_y, {
-    "V+": "VMOT", "GND": "PWR:GND",
-})
 
 sch.note("EdgeAI Predictive Monitor -- Motor-Driver Rig Wiring", 20, 25, size=4.2)
 sch.note("Arduino Uno + CNC Shield V3; one driver per axis, shared ~ENABLE active-LOW on D8.", 20, 34, size=2.4)
