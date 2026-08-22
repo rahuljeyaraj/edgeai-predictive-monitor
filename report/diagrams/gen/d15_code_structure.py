@@ -111,92 +111,116 @@ c.link([(450, 440), (450, 500)])
 
 save(c, "15b-wire-format", scale=SCALE)
 
-# ======================================================= 15c -- the fan-out
+# ================================================== 15c -- the Linux packages
 
-# main.py:540-546 -- one entry point, four consumers, plus a broadcast that
-# never enters the pipeline at all.
+# The top-level map of base-station/python/. Package names and one line of
+# responsibility each -- deliberately no line references, because this figure
+# answers "where does the code live", not "what runs when" (that is 15d).
 c = Canvas(
-    900, 980,
-    title="Every frame goes to four places",
-    subtitle="main.py's on_frame() is the single fan-in point, whichever transport it arrived on.",
-    footnotes=[('The "spectrum" broadcast is not a consumer — it goes straight to the browser '
-                "without touching the pipeline.", None)],
+    900, 960,
+    title="The Linux side, package by package",
+    subtitle="A measurement travels down the left. Each box is a directory under base-station/python/.",
+    footnotes=[("main.py holds no logic of its own. It constructs every object in dependency "
+                "order and connects them, so reading it top to bottom is reading the architecture.", None)],
 )
 
-c.box(30, 359, 300, 140, "on_frame()",
-      ["main.py:540", "MQTT subscriber", "and SpiConsumer", "both call it"],
-      role="neutral", title_size=TITLE, body_size=BODY)
-
-TARGETS = [
-    (160, "manager.route(frame)", "main.py:541 — scoring", "brain"),
-    (272, "commissioning.feed_frame()", "main.py:542", "neutral"),
-    (384, "capture.feed_frame()", "main.py:543", "neutral"),
-    (496, "stopped_baseline.feed_frame()", "main.py:544", "neutral"),
-    (608, 'WS broadcast — "spectrum"', "main.py:546", "tell"),
+COLUMN = [
+    (170, "ingestion/", ["mqtt_subscriber.py · spi_reader.py",
+                         "turns both transports into one frame"], "sense"),
+    (308, "pipeline/", ["one instance per machine",
+                        "scoring · commissioning · capture · baseline",
+                        "every frame goes to all four"], "brain"),
+    (446, "registry/", ["what each machine is,",
+                        "and the status it is in now"], "neutral"),
+    (584, "api/", ["FastAPI routes and the WebSocket",
+                   "one controller per flow"], "neutral"),
+    (722, "frontend/", ["the dashboard — app.js",
+                        "and one module per tab"], "tell"),
 ]
-for y, title, sub, role in TARGETS:
-    c.box(420, y, 440, 90, title, [sub], role=role, title_size=TITLE, body_size=BODY)
+for y, title, body, role in COLUMN:
+    c.box(34, y, 470, 110, title, body, role=role,
+          title_family=MONO, title_size=TITLE, body_size=BODY)
 
-# One shared exit and one shared riser, so this reads as a single fan.
-c.link([(330, 429), (380, 429), (380, 653), (420, 653)], kind="arrowTell")
-c.link([(330, 429), (380, 429), (380, 205), (420, 205)])
-c.link([(330, 429), (380, 429), (380, 317), (420, 317)])
-c.link([(330, 429), (380, 429), (380, 541), (420, 541)])
-c.link([(330, 429), (420, 429)])
+c.link([(269, 280), (269, 308)], label="frames", label_side="right")
+c.link([(269, 418), (269, 446)], label="score + status", label_side="right")
+c.link([(269, 556), (269, 584)])
+c.link([(269, 694), (269, 722)])
 
-c.box(420, 760, 440, 100, "frontend/app.js",
-      ["the dashboard's live spectrum"], role="tell", title_size=TITLE, body_size=BODY)
-c.link([(640, 698), (640, 760)], kind="arrowTell")
+c.box(610, 446, 256, 110, "protection/", ["the trip decision", "and the stop output"],
+      role="act", title_family=MONO, title_size=TITLE, body_size=BODY)
+c.link([(504, 501), (610, 501)], label="fault", kind="arrowAct")
 
-save(c, "15c-frame-fanout", scale=SCALE)
+c.box(610, 170, 256, 110, "main.py", ["constructs every object", "and wires them together"],
+      role="ghost", title_family=MONO, title_size=TITLE, body_size=BODY)
 
-# =================================================== 15d -- the scoring path
+c.box(610, 584, 256, 248, "used throughout",
+      ["common/ — the wire format", "history/ — score history",
+       "alerts/ — Telegram", "monitoring/ — performance", "network/ — Wi-Fi"],
+      role="ghost", title_size=TITLE, body_size=BODY - 1)
 
-# The key figure. manager.py:190 runs the classifier BEFORE the model_path
-# check at :192, and the two models sit behind two different gate instances
-# (manager.py:151 and inference.py:136).
+save(c, "15c-linux-packages", scale=SCALE)
+
+# ================================================= 15d -- one frame's journey
+
+# What actually runs, in plain language. The two claims this figure exists to
+# make: the fault classifier runs before, and independently of, the health
+# score; and the "is it running" test is applied twice, by two separate gates.
 c = Canvas(
-    900, 1080,
-    title="One frame through the pipeline",
-    subtitle="One thread, top to bottom. The two models sit behind two different gates.",
+    900, 1120,
+    title="What happens to one frame",
+    subtitle="Top to bottom, one machine at a time. Two models run, under two different conditions.",
     footnotes=[
-        ("The classifier runs first and unconditionally — a node that has never been "
-         "commissioned is still classified, and then returns at step 3.", None),
-        ("The two gates are separate instances. Neither one gates the other.", None),
+        ("The fault name and the health score come from two separate models. A machine that "
+         "has never been trained still gets a fault name — it just gets no score.", None),
+        ("The 'is it running' test is made twice, once for each model. Neither test depends "
+         "on the other.", None),
     ],
 )
 
-SPINE = [
-    (170, "1 · PAUSED guard", ["manager.py:175", "paused → nothing runs"]),
-    (302, "2 · _maybe_classify()", ["manager.py:190", "the classifier — runs first"]),
-    (434, "3 · model_path check", ["manager.py:192", "commissioned?"]),
-    (566, "4 · InferencePipeline", ["manager.py:208", "the autoencoder"]),
-    (698, "5 · _report_motor_state()", ["manager.py:233", "tells protection"]),
-    (830, "6 · record the score", ["manager.py:235-248", "registry, history, dashboard"]),
-]
-for y, title, body in SPINE:
-    c.box(230, y, 440, 110, title, body, role="brain",
-          title_size=TITLE, body_size=BODY)
+c.box(170, 170, 460, 95, "A frame arrives",
+      ["pipeline/manager.py routes it to", "that machine's own pipeline"],
+      role="neutral", title_size=TITLE, body_size=BODY)
 
-for y in (170, 302, 434, 566, 698):
-    c.link([(450, y + 110), (450, y + 132)])
+c.box(170, 291, 460, 95, "Is the machine paused?",
+      role="neutral", title_size=TITLE, rx=26)
 
-c.box(690, 312, 180, 90, "own gate",
-      ["manager.py:151", "must read RUNNING"], role="brain",
-      title_size=TITLE - 1, body_size=BODY - 1)
-c.link([(670, 357), (690, 357)])
+c.box(170, 412, 460, 95, "Name the likely fault",
+      ["pipeline/classifier.py", "only while the machine is running"],
+      role="brain", title_size=TITLE, body_size=BODY)
 
-c.box(690, 576, 180, 90, "second gate",
-      ["inference.py:136", "separate instance"], role="brain",
-      title_size=TITLE - 1, body_size=BODY - 1)
-c.link([(670, 621), (690, 621)])
+c.box(170, 533, 460, 95, "Has this machine been trained?",
+      role="neutral", title_size=TITLE, rx=26)
 
-c.box(30, 444, 180, 90, "return",
-      ["not commissioned", "— stops here"], role="ghost",
-      title_size=TITLE - 1, body_size=BODY - 1)
-c.link([(230, 489), (210, 489)], kind="arrowSoft")
+c.box(170, 654, 460, 95, "Score how unusual it looks",
+      ["pipeline/inference.py", "checks running again, separately"],
+      role="brain", title_size=TITLE, body_size=BODY)
 
-save(c, "15d-scoring-path", scale=SCALE)
+c.box(170, 775, 460, 95, "Healthy, warning or fault",
+      ["against this machine's own thresholds"],
+      role="brain", title_size=TITLE, body_size=BODY)
+
+c.box(170, 896, 460, 95, "Publish the result",
+      ["registry · history · dashboard"],
+      role="tell", title_size=TITLE, body_size=BODY)
+
+for y in (170, 291, 412, 533, 654, 775):
+    c.link([(400, y + 95), (400, y + 121)])
+
+c.box(20, 308, 100, 60, "stop", role="ghost", title_size=TITLE - 2)
+c.link([(170, 338), (120, 338)], label="yes", kind="arrowSoft")
+
+c.box(20, 550, 100, 60, "stop", role="ghost", title_size=TITLE - 2)
+c.link([(170, 580), (120, 580)], label="no", kind="arrowSoft")
+
+c.lines(650, 452, ["runs even if the machine", "was never trained"],
+        size=BODY - 1, anchor="start", fill=INK_SOFT)
+c.lines(650, 694, ["the running test happens", "twice, independently"],
+        size=BODY - 1, anchor="start", fill=INK_SOFT)
+
+c.text(70, 400, "nothing runs", size=BODY - 1, anchor="middle", fill=INK_SOFT)
+c.text(70, 642, "fault name only", size=BODY - 1, anchor="middle", fill=INK_SOFT)
+
+save(c, "15d-frame-journey", scale=SCALE)
 
 # ======================================================= 15e -- the trip path
 

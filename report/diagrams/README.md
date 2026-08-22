@@ -50,8 +50,8 @@ for f in d*.py; do ../.venv/bin/python "$f"; done
 | `gen/d15_code_structure.py` | `15a`…`15f` (six figures) | S5 (code structure) |
 
 `gen/d15_code_structure.py` is the exception to one-script-one-diagram: it
-emits six figures (`15a-tiers`, `15b-wire-format`, `15c-frame-fanout`,
-`15d-scoring-path`, `15e-trip-path`, `15f-setup-steps`) so they share one
+emits six figures (`15a-tiers`, `15b-wire-format`, `15c-linux-packages`,
+`15d-frame-journey`, `15e-trip-path`, `15f-setup-steps`) so they share one
 set of sizing constants. It is also the only script that overrides `save()`'s
 default `scale=2.2`, passing `scale=3.2` (~307 dpi).
 
@@ -69,6 +69,10 @@ three rules the other scripts do not follow:
 * **Split rather than cram.** Anything that needed a long edge, a crossing, or
   a three-bend detour became its own figure instead. Every edge in the six is
   straight or has one shared riser.
+* **Structure, not call traces.** `15c` and `15d` replaced a pair of figures
+  that drew call sites and line numbers: accurate, but unreadable to anyone
+  not already holding the source. `15c` answers "where does the code live",
+  `15d` answers "what runs when", and both name modules rather than lines.
 
 Note the chapter column moved when the report gained a dedicated Edge Impulse
 chapter — `06-asset-lifecycle` and `08-dashboard-anatomy` are both Ch. 9 now,
