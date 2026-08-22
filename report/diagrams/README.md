@@ -47,13 +47,28 @@ for f in d*.py; do ../.venv/bin/python "$f"; done
 | `gen/d12_software_architecture.py` | `12-software-architecture.png` | Ch. 10 |
 | `gen/d13_tab_map.py` | `13-dashboard-tabs.png` | Ch. 9 |
 | `gen/d14_two_brains.py` | `14-two-brains.png` | Ch. 2 |
-| `gen/d15_system_overview.py` | `15-system-overview.png` | S5 (code structure) |
-| `gen/d16_mpu_pipeline_detail.py` | `16-mpu-pipeline-detail.png` | S5 (code structure) |
+| `gen/d15_code_structure.py` | `15a`…`15f` (six figures) | S5 (code structure) |
 
-`d15` and `d16` are the two code-structure figures, and they are the only
-scripts that override `save()`'s default `scale=2.2` — they pass `scale=3.2`
-(~307 dpi) because they are embedded in the Word report, which asked for
-300 dpi. Keep that argument if you regenerate them.
+`gen/d15_code_structure.py` is the exception to one-script-one-diagram: it
+emits six figures (`15a-tiers`, `15b-wire-format`, `15c-frame-fanout`,
+`15d-scoring-path`, `15e-trip-path`, `15f-setup-steps`) so they share one
+set of sizing constants. It is also the only script that overrides `save()`'s
+default `scale=2.2`, passing `scale=3.2` (~307 dpi).
+
+Those figures are sized for **Word**, not for this repo's PDF, and that drives
+three rules the other scripts do not follow:
+
+* **Canvas width stays near 900 px.** Legibility on paper is set by the ratio
+  of font size to canvas width, not by pixel count. At 900 px wide, 13 pt body
+  text lands at ~8.5 pt when the figure is placed at the page's full ~6.5 in
+  text width. The first draft of these was 1860 px wide and the same text came
+  out under 4 pt.
+* **Height stays under ~1.25x the width**, so a figure can sit at full width
+  without running past the bottom of the page. Being shrunk to fit is what
+  destroys the font size, so a tall figure defeats the rule above.
+* **Split rather than cram.** Anything that needed a long edge, a crossing, or
+  a three-bend detour became its own figure instead. Every edge in the six is
+  straight or has one shared riser.
 
 Note the chapter column moved when the report gained a dedicated Edge Impulse
 chapter — `06-asset-lifecycle` and `08-dashboard-anatomy` are both Ch. 9 now,
