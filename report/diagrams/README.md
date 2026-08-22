@@ -47,6 +47,13 @@ for f in d*.py; do ../.venv/bin/python "$f"; done
 | `gen/d12_software_architecture.py` | `12-software-architecture.png` | Ch. 10 |
 | `gen/d13_tab_map.py` | `13-dashboard-tabs.png` | Ch. 9 |
 | `gen/d14_two_brains.py` | `14-two-brains.png` | Ch. 2 |
+| `gen/d15_system_overview.py` | `15-system-overview.png` | S5 (code structure) |
+| `gen/d16_mpu_pipeline_detail.py` | `16-mpu-pipeline-detail.png` | S5 (code structure) |
+
+`d15` and `d16` are the two code-structure figures, and they are the only
+scripts that override `save()`'s default `scale=2.2` — they pass `scale=3.2`
+(~307 dpi) because they are embedded in the Word report, which asked for
+300 dpi. Keep that argument if you regenerate them.
 
 Note the chapter column moved when the report gained a dedicated Edge Impulse
 chapter — `06-asset-lifecycle` and `08-dashboard-anatomy` are both Ch. 9 now,
