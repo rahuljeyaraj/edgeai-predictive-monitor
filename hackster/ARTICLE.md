@@ -141,61 +141,82 @@ Every other fault is just as physical. Bolts come off the flywheel to unbalance 
 
 # 2 Living with it
 
-<!-- EXPERIENCE TIER. "What you would see and do", never a feature list.
-     This tier must be a complete read on its own. No engineering. -->
-
 ## 2.1 The light on the machine
 
-<!-- Start at the machine, not the screen — this is what an operator on the
-     floor actually sees. The dome is a diffuser salvaged from a dead LED
-     bulb. Colours: green healthy, amber warning, red fault, white idle,
-     cyan not yet set up. VERIFY every colour against the LED code before
-     writing — the ring palette was redesigned. ~150 words. -->
+Every node wears a small dome on top, and the dome is the only part of this system an operator has to learn. It is lit by a ring of addressable LEDs, and the colour is the machine's state.
+
+Green, steady, means healthy. Amber, blinking once a second, means the score has crossed the warning line and something is moving. Red, blinking fast, means a fault. Red, breathing slowly, means the base station already stopped that machine and is holding it stopped.
+
+White means the machine is not turning. Cyan means the node is on the network and has not been set up yet.
+
+The colours are chosen for the LEDs rather than for a screen. Amber is not pure yellow, because pure yellow on this ring reads as light green: its green channel is brighter than its red at the same drive. The dashboard then uses the same colours, so a colour learned on the floor means the same thing on the screen.
 
 [IMAGE: three rigs running, domes lit green, amber and red]
 *One glance across the room tells you which machine needs you.*
 
 ## 2.2 The fleet, at a glance
 
-<!-- The Fleet tab. Counts along the top, one row per machine, colour-coded.
-     13 assets in the demo. Filter tiles. Drag to reorder. ~130 words. -->
+The dashboard opens on the fleet. Across the top is a row of counts: total assets, then tripped, faulty, warning, healthy, idle, new, paused, offline. A count with nothing in it is not shown, so a healthy shop shows two tiles.
+
+Each tile is also a filter. Click Faulty and the list below shows the faulty machines. Click Warning as well and you get both. It is how you go from thirteen machines to the two you care about in one click.
+
+Below that is one row per machine: its name, the class of machine it is, its status, and a small shield if this asset is wired to stop its own motor. When the classifier has named a fault, the name sits on the row beside the status.
+
+Rows carry a grip on the left. Drag it and the machines reorder to match the floor, and that order is saved.
 
 [IMAGE: fleet view screenshot, 13 assets]
 *Thirteen machines, and the three that need attention are the three that are coloured.*
 
 ## 2.3 What one machine tells you
 
-<!-- Expanding a row: anomaly score plotted live against the amber and red
-     lines, the fault-name chip, the spectrum and the waterfall underneath.
-     Keep it as "what you read", not "what it computes". ~140 words. -->
+Click a row and it opens. The chart at the top is the anomaly score over time, with the warning line and the fault line drawn across it, so the question you are answering is not "is 0.19 bad" but "how close is that trace to the red line, and which way is it going".
+
+The chart is seeded from stored history the first time you open it, so a machine that drifted while you were away shows you the drift, not just this second.
+
+Under it are the spectra, vibration and sound, updating live. Under those are two panels that stay closed until you ask for them: a grid of trends for the individual statistics, and a waterfall that stacks the last few minutes of spectra so a growing peak is visible as a stripe.
 
 [IMAGE: expanded asset card — score plot, spectrum, waterfall]
 *The score, the two lines it must stay under, and the spectrum underneath for anyone who wants to look closer.*
 
 ## 2.4 Setting up a new machine, in six steps
 
-<!-- Narrative, not procedure — the procedure is section 7. Name and class,
-     machine off, machine running, train, prove the stop output, done.
-     The punch: training happens on the board and takes seconds. Four to
-     six minutes and the machine is live. ~200 words. -->
+A new node comes up cyan and offers a Set up button. The wizard has six steps and it runs in the dashboard, next to the machine.
+
+Name and class comes first. The name is what the alerts and the alarm banner will say. The class is what decides which trained fault model applies, so two identical pumps share one classifier.
+
+Machine off is next, and it is the step that carries the weight. Switch the machine off, wait for it to stop, and let it measure. This is how it learns what this machine looks like at rest, which is how it will later know the difference between healthy and simply switched off.
+
+Machine running follows. Start the machine and record it, once for each way it normally runs. Every recorded condition is normal, so a two-speed machine gets both speeds.
+
+Train takes seconds and happens on the board. Nothing is uploaded, and no account is needed for this part.
+
+Stop output is where you pick the output wired to this machine and press Test. Then Done.
 
 [IMAGE: 15f-setup-steps.png]
 *Six steps. The one that catches people out is step two, and the software says so.*
 
 ## 2.5 The ten seconds before it stops the motor
 
-<!-- The best moment in the demo. A fault is confirmed. A banner appears
-     with a countdown. An operator can hold it. Nobody does. The motor
-     stops. Then: acknowledge, fix, reset. Write it as a scene. ~180 words. -->
+Take a rig running healthy and slacken its mount. The score lifts, the ring goes amber, and a few frames later it crosses the fault line.
+
+A banner drops across the top of the dashboard: the machine's name, and tripping in 10 seconds, counting down. There is one button on it, Hold, and an operator who knows why the machine is shaking can press it and keep the machine running.
+
+Nobody presses it. The count reaches zero, the base station sends a stop to that machine's output, and the motor spins down.
+
+Then it checks. The same measurement that tells healthy from switched off is used to confirm the machine actually went quiet, and only then does the status become Tripped, ring breathing red. A machine that kept running gets told the trip failed instead.
+
+The whole thing takes about eleven seconds, and ten of those are yours.
 
 [VIDEO: the trip — fault induced, countdown, motor stops]
 *Unbalance induced by hand. Detected, named, and stopped, in about eleven seconds.*
 
 ## 2.6 The message on your phone
 
-<!-- Scan a QR code once, and the alerts arrive. Show the real thread:
-     bearing fault, loose mount, both tripped, then both recovered.
-     ~110 words. -->
+The alerts tab shows a QR code. Scan it, press start in Telegram, and that chat is subscribed. Choose whether you want faults only or warnings too.
+
+After that the messages arrive on their own: a warning when a machine crosses the first line, a fault with the classifier's read and its confidence, and a trip that says the machine was stopped, which output stopped it, and that somebody has to restart it at the machine once the fault is fixed.
+
+Recoveries arrive too. A machine going back to healthy is as worth knowing as the fault was.
 
 [IMAGE: Telegram thread on a phone — fault, trip, recovery]
 *Set up once with a QR code. After that it just tells you.*

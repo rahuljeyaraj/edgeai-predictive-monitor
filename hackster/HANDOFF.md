@@ -37,16 +37,19 @@ Cross-check every fact against the code before it goes in the article.
 - Section 1 complete: 1.1 hook, 1.2 the idea, 1.3 the rigs. ~890 words.
   Reviewed by Rahul over two rounds; his corrections are recorded in §11 and
   they apply to every section still to be written.
+- Section 2 complete: 2.1 the ring, 2.2 fleet, 2.3 one machine, 2.4 setup,
+  2.5 the trip, 2.6 Telegram. ~1,060 words. NOT yet reviewed by Rahul.
+  Everything in it was read out of the code, see §7.
 
 **Not started**
-- Prose for sections 2 through 11
+- Prose for sections 3 through 11
 - The verification pass (§7)
 - Photos and screenshots (§8)
 - Two new diagrams
 
-**Next action:** write section 2 (Living with it), 2.1 through 2.6. Before
-writing 2.1, verify the LED ring colours against the LED code, not the demo
-transcript (§7). Read §11 first; it is the style contract now.
+**Next action:** write section 3 (Running a fleet), 3.1 through 3.3. Verify
+the perf-tab numbers for 3.3 against the real page before writing them (§7).
+Read §11 first; it is the style contract now.
 
 ---
 
@@ -162,15 +165,25 @@ Nothing from the PDF or REPORT.md goes in unverified. Specifically:
 - Running/stopped gate margin `2.09x` (was `1.18x`)
 - `+38.5 sigma` per-axis vs `+1.8 sigma` combined
 - Frame rate `~64 ms` base station / `~200 ms` satellite
-- Dashboard latency `0.32 s`; trip time `~11 s` (10 s is the operator window)
+- Dashboard latency `0.32 s`; trip time `~11 s` (10 s is the operator window).
+  The 10 s is `DEFAULT_TRIP_DELAY_S` in `protection/protection.py`, CONFIRMED.
+  Banner reads "<name> tripping in Ns" with a Hold button; Acknowledge appears
+  after. Setup step order is CONFIRMED as name, stopped, conditions, train,
+  trip_output, done (`api/setup_controller.py` STEPS): Stop output is step 5,
+  after Train.
 - SPI `~40 MHz`, LPUART1 `500000` baud, KX134 run at `12.8 kHz` of a possible
   `25.6 kHz`
 - Perf tab claims from the demo: 13 assets, 4 cores idle, ~2% time budget,
   4-5 fps per satellite node
-- **LED ring colours** — the palette was redesigned (commit fcd8af2, "amber not
-  pure yellow"). The demo transcript says green healthy / red fault / white
-  idle / yellow warning / cyan not onboarded. Verify against the LED code, do
-  not trust the transcript.
+- ~~LED ring colours~~ VERIFIED 2026-09-01 against
+  `base-station/python/registry/status_color.py`, and written into 2.1:
+  green const healthy · amber (#f59e0b) strobe 1s warning · red strobe 200ms
+  fault · red breathe 1s TRIPPED · white const IDLE · cyan const new
+  (all three commissioning states) · amber const PAUSED · off for OFFLINE.
+  Amber not yellow is a hardware finding, and the dashboard reuses the same
+  hexes on purpose. Magenta is the satellite's OWN provisioning ring
+  (`satellite/src/threads/transport_task.cpp`), not a fleet status: use it in
+  3.2 if anywhere.
 - **Mic is currently muted in the model input** (commit cb70b27) — section 10
   must say so. It is zeroed before the feature vector reaches either model.
 - Every script name and flag in sections 6 and 7 — confirm it exists
