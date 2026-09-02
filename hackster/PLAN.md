@@ -1,7 +1,7 @@
 # Hackster.io article — plan
 
-Status: **sections 1 to 5 written** in `hackster/ARTICLE.md` (~4,100 words).
-Next session writes section 6 onward into the same file.
+Status: **sections 1 to 7 written** in `hackster/ARTICLE.md` (~7,960 words).
+Next session writes section 8 onward into the same file.
 
 Source of truth for all technical content: `report/REPORT.md` (3,385 lines).
 Every section below carries the report chapter it draws from.
@@ -305,9 +305,28 @@ Video: one real trip on the rig, motor stopping and the ring changing.
    Do not restate a figure from memory.
 3. Keep each subsection under ~150 words. Keep the story inside the sections,
    never in a heading.
-4. **Budget.** Sections 1 to 5 came to ~4,100 words. The house-style reference
-   (The Fire Pot) runs ~6,100 for ten sections. Sections 6 to 13 should land
-   around 3,500 to 4,000, for a total near 8,000.
+4. **BUDGET IS THE MAIN RISK.** Sections 1 to 7 already run ~7,960 words. The
+   house-style reference (The Fire Pot) is ~6,100 for ten sections. Sections 8
+   to 13 as skeletoned carry 29 subsections; at the pace of sections 6 and 7
+   (~175 words each) that is another ~5,000 and a ~13,000-word article, which is
+   too long to survive a judge's attention.
+   **Consolidate on the way in, do not write long and trim after.** Target
+   ~3,200 for sections 8 to 13, roughly 110 words per subsection, and merge
+   freely: 8.5 to 8.8 are one Edge Impulse round trip and can be three
+   subsections rather than four; 10.3 is already one line per tab; 11.1 to 11.4
+   can be three. Section 12 must keep every number.
+
+### Subsection numbering as actually written
+
+Sections 6 and 7 grew past the skeleton (6 went from 10 subsections to 13,
+7 from 5 to 6 plus an intro). Earlier sections already point at the final
+numbers, so these are now pinned and must not move:
+
+- **6.5** the sensor's own noise floor (pointed at from 4.2)
+- **6.8** what a second condition costs (pointed at from 1.5)
+- **6.10** proving which motor stops this machine (pointed at from 5.4)
+- **section 8** the fault classifier (pointed at from 6.7 and 7.6)
+- **section 13** the roadmap (pointed at from 1.5 and 6.8)
 
 ### Decided while writing sections 1 to 5
 
