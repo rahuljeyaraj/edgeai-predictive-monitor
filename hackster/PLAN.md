@@ -1,8 +1,10 @@
 # Hackster.io article — plan
 
 Status: **complete draft, sections 1 to 13**, in `hackster/ARTICLE.md`
-(~14,700 words). Remaining work, in order: the **length pass** (starts in its
-own session), then media, then transcription.
+(~13,500 words after two length passes and the judge-review fixes). Remaining
+work, in order: **media** (the nine outstanding shots plus the cover image),
+then transcription. **Length is not a scored criterion and is no longer the
+next action**, see section 7 and `hackster/JUDGE-REVIEW.md`.
 
 Source of truth for all technical content: `report/REPORT.md` (3,385 lines).
 Every section below carries the report chapter it draws from.
@@ -273,17 +275,35 @@ the compressor from 1.1.
 - `12-software-architecture.png` -> 11.1
 
 ### Still needed, and not in the repo
-Photos: base station wired on the bench · the pod clipped to the rig, running ·
-a satellite node powered on a second machine · the motor rig with its three
-steppers, labelled · the status ring in several colour states and the LED matrix
-mid-scroll · the printed fault fixtures, if 8.3 is to show them.
 
-Screenshots: the setup drawer on step 3 with two conditions collecting · an
-expanded asset row (anomaly chart, classifier bars, spectra) · the trip banner
-mid-countdown with Hold · the Classifier tab with two class cards · a real
-Telegram fault alert.
+**This is now the top of the queue.** Each item below has a marker in the
+article at the line given, so the marker is the placement decision and nothing
+here needs re-siting.
 
-Video: one real trip on the rig, motor stopping and the ring changing.
+**Cover image, the one binary submission requirement.** The pod clipped to the
+running rig, status ring lit, shot close and shallow. `[COVER IMAGE:]` marker at
+article section 1.2. It is uploaded as Hackster's cover *and* left inline. A
+diagram cannot serve as the cover: it has to be a photograph of the product.
+
+Photos (4): base station wired on the bench (4.5) · the motor rig with its three
+steppers, labelled (5.1) · a satellite node powered on a second machine (7.2) ·
+the status ring in several colour states with the LED matrix mid-scroll (10.5).
+
+Screenshots (4): the desktop dashboard with one simulated node online and
+expanded (2.2) · the trip banner mid-countdown with Hold (10.1) · an expanded
+asset row, anomaly chart, classifier bars and spectra (10.3) · a real Telegram
+fault alert (10.6).
+
+Video (1): one real trip on the rig, motor stopping and the ring changing (5.4).
+**Continuous and uncut**, fault induced on camera, then the countdown, then the
+motor physically stopping, then the ring changing. Upload it and paste the URL
+in: a `[VIDEO:]` marker with no link is worth nothing at judging time.
+
+**No printed fault fixtures exist**, so nothing is owed there. `3d-models/` holds
+enclosures for the base station and satellite and the bracket, shaft, flywheel
+and ring sets for the two rig types. The article now points at all of them, in
+4.1, 4.5, 5.1 and 7.1, which is also what surfaces the CAD resource files to a
+judge. Photographing a printed part is optional, not outstanding.
 
 ---
 
@@ -291,8 +311,10 @@ Video: one real trip on the rig, motor stopping and the ring changing.
 
 1. Section 10.5: state plainly that Telegram is built and demonstrated but
    switched off pending one config value, or drop the subsection?
-2. Section 8.3: are there printed fault fixtures to photograph, or does the
-   grinder-bearing set carry that subsection alone?
+2. ~~Section 8.3: printed fault fixtures?~~ **Closed 2026-09-02.** There are
+   none. `3d-models/` contains enclosures and rig parts only. 8.3 carries the
+   fault story on the grinder bearings plus the two induced classes, and 5.1
+   now documents the printed rig parts the induced classes act on.
 3. The `[FILL IN]` fields the report still carries: GitHub URL, demo video URL,
    submission date, UNO Q purchase price and receipt reference.
 
@@ -300,26 +322,78 @@ Video: one real trip on the rig, motor stopping and the ring changing.
 
 ## 7. Next session
 
-1. **Length.** The draft is ~14,700 words against a ~6,500 target and The Fire
-   Pot's ~6,100. Sections 1 to 7 are ~8,150 of it, sections 8 to 13 ~6,570, so
-   a trim pass has to cut both halves, not just the back one. Options, in
-   descending value: drop the whole of section 2 (the no-hardware path, ~700)
-   to a short pointer at the repo; compress section 4's and 5's build steps to
-   the commands plus one line each; cut 6.12 (the step-ordering correction),
-   8.6 (the axis-naming detour) and 11.4 (the four dashboard details), which
-   are all ~200-word engineering asides a judge does not need. That is ~2,500
-   without losing a fact anyone needs to rebuild the thing.
-2. **Media.** Every `[IMAGE: ...]` and `[VIDEO: ...]` marker that points at a
-   photo or screenshot rather than at `report/diagrams/` still has to be shot.
-   The list is in section 5 below.
-3. **Open questions**, unchanged, in section 6 below. 8.3 currently carries the
-   grinder bearings alone and does not mention printed fixtures.
+Reordered 2026-09-02 against the live contest rubric. See
+`hackster/JUDGE-REVIEW.md` for the scoring that produced this order.
+
+1. **The cover image.** A listed submission requirement and the cheapest
+   possible way to lose. Marker is in place at article 1.2.
+2. **The four photos and four screenshots**, section 5 above. Not one
+   photograph currently above section 5 shows anything that was built, so a
+   judge reading top down for two minutes cannot tell this from a project that
+   was never assembled. The first real photograph today is a machine in pieces
+   at 8.3.
+3. **The trip video**, uploaded and linked. The single strongest artefact this
+   project can produce, and nothing else shows the closed loop.
+4. **Fill Hackster's "Things used" widget** at transcription time. Separate UI
+   from the article body, judges read it as the BOM, and section 2's split says
+   what goes in it. The ready-to-paste list is in section 8 below.
+5. **Length, only if 1 to 4 are done.** The rubric has no length criterion and
+   the Documentation criterion rewards completeness, so this is a house-style
+   preference, not a requirement. If time remains: 6.12's step-ordering
+   correction, 8.6's axis-naming detour and 11.4's four dashboard details are
+   the ~200-word engineering asides that cost least to lose. Do not touch the
+   admitted-failure passages in 6.5, 6.6, 6.10, 9.4 and 12.4, section 2's
+   no-hardware path, section 4.2's software BOM, or section 1.5's built and
+   not-built list: those are the entry's strongest evidence.
+
+### Done 2026-09-02, from the judge review
+
+Everything in `JUDGE-REVIEW.md` that did not require a camera:
+
+- **Cover image marker** reinstated at 1.2 as `[COVER IMAGE:]`, plus a
+  transcription note in the article's header legend. It had fallen out between
+  this plan and the draft.
+- **Scalability named** at the end of 7.1. The numbers were already there and
+  already true; only the label was missing.
+- **Sustainability written**, as a new section **13.2 Repairing instead of
+  replacing**, and the old 13.2 Closing became **13.3**. Three bullets, no
+  invented number for avoided waste. It was the one tie-break axis with nothing
+  to point at: zero occurrences in the whole file.
+- **User experience named** in the section 10 intro, one paragraph.
+- **Section 8 now reports an outcome**, as new **8.8**: no accuracy figure, and
+  why, in section 1.5's voice. Two data-integrity bugs invalidated everything
+  measured before them and the model has not been re-scored since. Cross-linked
+  from 1.5 and 12.4. **Do not fill a number in here without re-scoring first.**
+- **The 3D-printed parts are in the article**, which they were not at all
+  before: the pod housing in 4.1 and 4.5, the rig brackets, shafts, flywheels
+  and rings in 5.1, the satellite enclosure in 7.1. This closed open question 2
+  and it also surfaces the CAD resource files, which a judge otherwise has no
+  way to know exist.
+- **Microphone pin names** in 4.4 and 7.2 now use the INMP441's own datasheet
+  names, `SCK` / `WS` / `SD`, which is what both KiCad schematics label them.
+  4.4 had the STM32 peripheral name `SAI1` and 7.2 had `BCLK` / `LRCLK`, so the
+  two sections and the schematics disagreed three ways.
+
+### Verified 2026-09-02, no action needed
+
+- **Repo is in sync.** `HEAD` equals `origin/main` at `1b7dfd8`. Re-check this
+  on submission night: a judge clicking through to a repo behind the article is
+  a credibility hit worth more than the points.
+- **Schematics are legible at Hackster's inline width.** All three KiCad PNGs
+  rendered at 800 px wide and read cleanly, including the 2343x3216 motor-driver
+  one. No re-export needed.
+- **Pin names are board labels throughout.** No `PBn`, `PAn`, `TIMn`, `GPIOn`
+  or `USART` anywhere in the article after the mic fix above.
+- **Prose rules hold.** Zero em dashes, zero nested bullets, zero tables, and
+  every one of the 23 `section N.N` cross-references resolves to a real heading.
 
 ### Subsection numbering as actually written
 
-Sections grew past the skeleton (6 went from 10 subsections to 13, 7 from 5 to
-6, 8 from 9 to 8, 10 from 5 to 6). Cross-references point at the final numbers,
-so these are pinned and must not move:
+Sections drifted from the skeleton as written. The counts as they actually
+stand today, after the judge-review fixes: 1 has 6 subsections, 2 has 2, 3 has
+3, 4 has 7, 5 has 4, 6 has 11, 7 has 5, 8 has 8, 9 has 5, 10 has 6, 11 has 2,
+12 has 4, 13 has 3. Cross-references point at these final numbers, so the
+anchors below are pinned and must not move:
 
 - **6.5** the sensor's own noise floor (pointed at from 4.2)
 - **6.8** what a second condition costs (pointed at from 1.5)
@@ -327,6 +401,9 @@ so these are pinned and must not move:
 - **section 8** the fault classifier (pointed at from 6.7 and 7.6)
 - **section 12.1** the per-bin gate table (pointed at from 12.5)
 - **section 13** the roadmap (pointed at from 1.5, 6.8 and 12.5)
+- **8.8** the classifier's missing accuracy figure (pointed at from 1.5 and 12.4)
+- **13.1** the roadmap, whose item 6 is pointed at from 8.8
+- **13.3** the closing, renumbered from 13.2 when sustainability was added
 
 ### Decided while writing sections 1 to 5
 
@@ -342,9 +419,10 @@ so these are pinned and must not move:
 
 ### Decided while writing sections 8 to 13
 
-- **Section 8 absorbed report chapters 6 and 7** into eight subsections. The
-  report's §7.8 GPU material was already spent in article 3.4, so 8.8 keeps
-  only the NPU half plus the `urllib`-only note.
+- **Section 8 absorbed report chapters 6 and 7** into eight subsections, then
+  nine when the judge review added 8.8. The report's §7.8 GPU material was
+  already spent in article 3.4, so 8.7 keeps only the NPU half plus the
+  `urllib`-only note.
 - **Section 9 does not repeat the "monitor, not interlock" argument**; 1.4
   carries it, and 9.3 just points back for the motion-not-power caveat.
 - **Section 10 dropped its own "three channels" subsection**, folding it into
@@ -381,3 +459,35 @@ section 3 above.
 
 Chapter 13 item 4 in the report ("satellite hardware bring-up") should become
 "close the satellite captive-portal bug", which is what article 13.1 says.
+
+---
+
+## 8. Things used, ready to paste
+
+Hackster's widget, filled from article 4.1 and 4.2. Judges read this as the BOM
+and an empty or hardware-only widget throws away the entry's best criterion.
+
+**Hardware**
+- Arduino UNO Q (2 GB)
+- SmartElex KX134-1211 triple-axis accelerometer breakout
+- INMP441 I2S MEMS microphone
+- WS2812B 8-pixel RGB ring
+- Seeed Studio XIAO ESP32-S3 (satellite node)
+- Arduino Uno R3 (bench rig motor controller)
+- CNC Shield V3
+- A4988 stepper driver (or DRV8825)
+- NEMA-17 stepper motor, 17HS4401
+
+**Software apps and online services**
+- Arduino App Lab
+- Zephyr RTOS
+- PlatformIO
+- PyTorch
+- Edge Impulse Studio
+- Eclipse Mosquitto
+- Plotly
+- KiCad
+
+**Hand tools and fabrication machines**
+- Multimeter, for the stepper driver current limit
+- 3D printer, for the pod housings and the rig parts in `3d-models/`

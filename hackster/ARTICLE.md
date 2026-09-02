@@ -14,6 +14,7 @@
        [text](url)              ->  the link button
        [IMAGE: ...]             ->  the image embed, caption pasted + italicised
        [VIDEO: ...]             ->  the video embed, caption pasted + italicised
+       [COVER IMAGE: ...]       ->  the cover upload, AND embedded inline as well
 
      Two hard limits, already solved in this source:
        - Only one heading level exists. Every heading is numbered (1, 1.1) and
@@ -22,7 +23,19 @@
 
      TITLE:    EdgeAI Predictive Monitor
      TAGLINE:  Sensors that watch. An AI that decides. A hand that pulls the plug.
-     WRITING STATUS: length pass 2 complete, sections 1-13.
+
+     COVER IMAGE: Hackster's cover image is a separate upload from the article
+     body and is a listed submission requirement. Use the [COVER IMAGE] shot
+     marked in section 1.2. Upload it as the cover AND leave it in place at 1.2.
+
+     THINGS USED: Hackster's "Things used" widget is a separate UI from this
+     file. Fill it from section 4.1's headline hardware plus every item in 4.2.
+     Judges read the widget as the BOM. Do not leave it empty.
+
+     WRITING STATUS: sections 1-13 drafted, two length passes done, and the
+     2026-09-02 judge-review fixes applied (cover marker, 8.8, 13.2, the printed
+     parts, scalability and UX named, mic pin names). Media is the only work
+     left before transcription. See hackster/JUDGE-REVIEW.md and PLAN.md sec 7.
      ========================================================================== -->
 
 # 1 What this is, and what it decides
@@ -48,6 +61,9 @@ stop, and somebody has to be standing there to notice.
 **EdgeAI Predictive Monitor** is a sensor pod that clips to a machine, learns
 what normal feels like for that specific machine, and stops it if normal goes
 far enough wrong.
+
+[COVER IMAGE: photo of the sensor pod clipped to the running rig, status ring lit, shot close and shallow]
+*One pod, clipped to one machine, watching it.*
 
 [IMAGE: report/diagrams/01-system-at-a-glance.png]
 *Sensor pods and satellite nodes feed one base station, which fans out to the dashboard, a phone, the status lights, and, on a confirmed fault, a motor-stop command.*
@@ -100,7 +116,7 @@ says so in the same voice.
 - **Running/stopped gate with a measured noise floor.** Built, live-verified.
 - **Trip-output mapping, confirmed by actually stopping the machine.** Built, live-verified.
 - **Physical motor stop on a confirmed fault, latched.** Built, live-verified in both directions.
-- **Fault-type classifier, Edge Impulse, running on-device.** Built, trained on 541 real captures from this rig.
+- **Fault-type classifier, Edge Impulse, running on-device.** Built, trained on 541 real captures from this rig. No accuracy figure is claimed, and section 8.8 says why.
 - **Live dashboard: five tabs, live charts, controls, global trip banner.** Built, live-verified.
 - **Status ring and on-board LED matrix.** Built, live-verified.
 - **Wi-Fi onboarding via captive portal.** Built, live-verified on real phones over three rounds.
@@ -236,6 +252,11 @@ Robu.in. This block is one per site.
 - 1 set of [jumper wires](https://robu.in/product-category/connectors/jumper-wire/) plus a rigid mount or magnet base. ~ ₹150
 - **Base station subtotal: about ₹8,115.**
 
+One part is printed rather than bought and is therefore not in that subtotal: the
+pod's housing, which is what turns the loose parts above into something you can
+bolt to a machine. Its three `.3mf` files are in the repository under
+`3d-models/base_station/`.
+
 A [4 GB UNO Q](https://robu.in/product/official-arduino-uno-q-4gb-single-board-computer-abx00173/) is a
 straight drop-in. Nothing here needs it, but it is the one to buy if you plan to
 train larger models on-device.
@@ -281,12 +302,13 @@ with and what you plug a wire into.
 - **KX134, SPI SCK / MISO / MOSI:** D13 / D12 / D11, the main header SPI.
 - **KX134, chip select:** D8.
 - **KX134, INT1 buffer-full interrupt:** D9.
-- **INMP441, SAI1 clock / frame sync / data:** SCL / D10 / A4.
+- **INMP441, SCK / WS / SD:** SCL / D10 / A4.
 - **WS2812B ring, data in:** D3, a timer channel driven by DMA so the strict bit-banged timing those LEDs need never depends on the scheduler being free.
 
-The microphone's bit clock is the one signal without a D-number. SAI1's clock line
-is brought out on this board as the dedicated **SCL** pin, so the I2C peripheral
-is disabled to free it and nothing here uses I2C.
+The microphone's bit clock, `SCK`, is the one signal without a D-number. The
+STM32's audio peripheral brings its clock out on this board as the dedicated
+**SCL** pin, so the I2C peripheral is disabled to free it and nothing here uses
+I2C.
 
 [IMAGE: report/diagrams/02b-base-station-schematic-kicad.png]
 *The real schematic. It is a KiCad project under hardware/kicad/, generated from Python, not a drawing.*
@@ -301,6 +323,11 @@ band away with a cable tie and a rubber pad.
 Couple it rigidly to the housing, as close to the bearing as the geometry allows:
 a bolted bracket on the bench rig, a magnet base on clean flat metal on a real
 motor. This is the cheapest line in the bill of materials to get wrong.
+
+The printed housing from 4.1 exists for this reason: a rigid body that carries the
+sensor with the machine, rather than a board and a sensor loose on the ends of
+jumper wires. The satellite node has its own equivalent under
+`3d-models/satellite/`.
 
 [IMAGE: photo of the base station wired on the bench, sensor, board and status ring in one wide shot]
 *One pod: UNO Q, accelerometer, microphone and status ring.*
@@ -366,6 +393,19 @@ to prove the trip.
 - 3 x [NEMA-17 stepper, 17HS4401](https://robu.in/product/nema17-4-2-kgcm-stepper-motor/), the machines being monitored on the bench. ~ ₹534 each
 - 1 x [12 to 24 V DC supply, 3 A or better](https://robu.in/product-category/electronic-instruments-and-tools/power-supply/), motor power. ~ ₹700
 - **Rig subtotal: about ₹4,502.**
+
+The parts that turn three loose motors into three machines are printed rather than
+bought, so they are not in that subtotal. A bare stepper has almost nothing to
+measure: no rotating mass, no belt, and a vibration signature that is mostly its
+own step pulses.
+
+- **`3d-models/direct_drive_motor_rig/`**, the two pump stand-ins: a motor bracket, a shaft, a flywheel and a set of flywheel rings.
+- **`3d-models/belt_drive_motor_rig/`**, the compressor stand-in: the same bracket and flywheel, plus a shaft assembly driven through a belt.
+
+The flywheel is what gives each motor a rotating mass and therefore a signature
+worth learning. It is also what the induced faults in section 8.3 act on: an added
+mass off-centre makes `unbalanced`, an under-torqued bracket makes `loose`. Both
+are reversible, so one rig produces those classes without destroying anything.
 
 [IMAGE: photo of the motor rig with its three steppers, labelled]
 *Three motors, one shared enable line, and one sensor pod watching them.*
@@ -672,6 +712,14 @@ one line item to buy in bulk rather than a different parts list per machine, and
 keeps the cost of growing close to linear: one machine ₹8,115, three machines
 ₹12,605, ten machines ₹28,320.
 
+**That linearity is the scalability argument, and it is a hardware property, not a
+promise.** Adding the tenth machine costs the same ₹2,245 as adding the second,
+needs no new part number, no new firmware build and no per-unit configuration,
+because a node's identity comes from its own MAC address. The software half of the
+same argument is in section 8.2: models are trained per machine *type*, so the
+tenth pump inherits a classifier the first nine paid for. The node's own enclosure
+is printed, under `3d-models/satellite/`.
+
 # 7.2 Wiring, and where a node's name comes from
 
 [IMAGE: report/diagrams/03-satellite-node-wiring.png]
@@ -680,9 +728,9 @@ keeps the cost of growing close to linear: one machine ₹8,115, three machines
 - **KX134, SPI SCK / MISO / MOSI:** D8 / D9 / D10, the board's fixed hardware SPI pins.
 - **KX134, chip select:** D3.
 - **KX134, INT1 buffer-full interrupt:** D2.
-- **INMP441, WS / LRCLK:** D0.
-- **INMP441, BCLK:** D1.
-- **INMP441, SD data in:** D4.
+- **INMP441, WS word select:** D0.
+- **INMP441, SCK bit clock:** D1.
+- **INMP441, SD data out:** D4.
 - **WS2812B ring, data in:** D5.
 
 The XIAO breaks out only 11 GPIOs, so every assignment above exists to keep the
@@ -881,6 +929,36 @@ Two notes on where that model actually runs:
 - **TFLite on the CPU via XNNPACK, deliberately.** Section 3.3 has the GPU measurement; the other half is that there is no NPU to target, because this board exposes only the audio DSP's FastRPC channel and Qualcomm's own product brief gives CPU and GPU as the sanctioned AI path for this part.
 - **No SDK, no HTTP library beyond `urllib`.** The device side is plain REST over Python's standard library, which on a board where an unbuildable wheel already killed the GPU path is not a small consideration.
 
+# 8.8 What it scores, and why no number is printed here
+
+Section 12 puts a number on the gate, the setup run, the trip and the per-axis
+features. It does not put one on the classifier, and that omission is deliberate.
+
+Two data-integrity bugs were found while building this pipeline, and both invalidate
+everything measured before them.
+
+- **The train/test split was leaking.** Windows cut from the same source capture were landing on both sides of it, so the model was partly being tested on data adjacent to what it trained on. The fix is the file-level, contiguous-tail split in section 8.6.
+- **The signal-loading step was corrupting data**, in the code path used to prepare every upload. Not one run: every dataset uploaded up to that point.
+
+When those were fixed, accuracy was still improving with tuning. Another round of
+tuning was not what the project needed most, though: the gate, the trip, the
+dashboard and the satellite bring-up were, and that is where the remaining time
+went. So the honest position is that the pipeline is built and the model runs
+on-device on real captures, **and the current model has not been re-scored since
+those fixes landed.** Every figure from before them is discarded rather than
+quietly reused, and stating that is better than printing a number this project
+cannot stand behind.
+
+What can be said without a number: the classifier's ceiling here is set by data,
+not architecture. Each fault class is close to one continuous capture, which is why
+the split has to be contiguous, and that is a real limitation of one rig rather
+than a tuning problem. Item 6 in section 13.1 is the fix, and it is more recording,
+not more epochs.
+
+The boundary in 8.1 is what makes this safe to say out loud rather than paper
+over. A classifier with no current score still cannot fail dangerously, because it
+has no path to the trip.
+
 ---
 
 # 9 The trip: stopping a motor
@@ -977,6 +1055,12 @@ so the system talks back on three independent channels: a **light on the machine
 for whoever walks past, a **live dashboard** for whoever is checking, and a **phone
 alert** for whoever needs to know without checking anything. None of them requires
 another to be working.
+
+The user this was designed for is not an engineer at a desk. It is whoever is in
+the shed at 06:15, and every interface decision in this section follows from that:
+status readable at a glance from across a room, the one urgent thing never behind a
+click, setup as a guided wizard rather than a configuration file, and onboarding
+done from a phone with no app to install.
 
 # 10.1 The trip banner, the one thing never behind a click
 
@@ -1199,6 +1283,7 @@ parameters. Two findings changed the design.
 - **Multi-condition training costs sensitivity**, by a measured **5.1x** on this rig. Section 6.8 has the numbers; per-condition thresholds are item 3 in section 13.
 - **A score sitting exactly on the fault threshold makes the countdown flap.** Correct behaviour, unpleasant to watch, fixable with hysteresis.
 - **The classifier is not the safety path**, by construction, per section 8.1.
+- **The classifier carries no current accuracy figure.** Two data-integrity bugs invalidated every earlier measurement and the model has not been re-scored since they were fixed. Section 8.8 states this rather than quoting a stale number.
 - **The trip stops motion, not power**, per section 9.3.
 - **Fault classes blur above roughly 1.2 kHz on this rig.** A direct consequence of section 12.1: above the motor's own signature, every class is looking at the same sensor noise. On a machine with genuine high-frequency fault content, which this sensor can see, the constraint lifts.
 - **The satellite's own captive portal has one open bug.** Wi-Fi, MQTT, the status ring, microphone and accelerometer are all hardware-verified on a physical XIAO ESP32-S3. The setup page it serves does not reliably load; the live hypothesis is that its own Wi-Fi scan kicks clients off its access point. The base station's portal is a separate implementation, verified on real phones.
@@ -1217,7 +1302,19 @@ parameters. Two findings changed the design.
 - **6. More labelled fault data per class.** The classifier's ceiling is set by how much genuinely distinct fault data exists per class, and the recording workflow is now good enough that collecting it is a matter of time rather than tooling.
 - **7. Fault-severity trending, not just detection.** The anomaly score is already stored durably per machine. The obvious next question after *something is wrong* is *how fast is it getting worse*, and the data to answer it is already on disk.
 
-# 13.2 Closing
+# 13.2 Repairing instead of replacing
+
+There is a sustainability argument in this project that is worth stating plainly,
+without inflating it.
+
+- **A bearing caught early is a repair. A bearing caught late is a replacement.** The compressor in section 1.1 did not need a new motor when it started sounding wrong. It needed one after it seized. Everything between those two moments is the window this system exists to open, and the difference is one part against a whole machine.
+- **The economics point the same way as the waste does.** A ₹2,245 satellite node is a fraction of what it watches, and it has no moving parts to wear out. The cheap unattended machines in section 1.1 are exactly the ones nobody currently instruments, and exactly the ones that get scrapped rather than diagnosed.
+- **The fault data came from a machine that had already been thrown away.** The Ultra wet grinder in section 8.3 was repaired for years, then abandoned in a corner. Its three rusted bearings are the only fault data here that came from real wear rather than from a fault induced on purpose. Nothing working was broken to build this.
+
+No number is put on avoided waste, because none was measured. The mechanism is
+real, the arithmetic is not something this project is in a position to claim.
+
+# 13.3 Closing
 
 The compressor from section 1.1 is the machine that started this. Nine thousand
 rupees, bolted down outside, running on a pressure switch, seized on a Tuesday and
