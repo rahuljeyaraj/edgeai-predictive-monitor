@@ -1,7 +1,7 @@
 # Hackster.io article — plan
 
-Status: **sections 1 to 7 written** in `hackster/ARTICLE.md` (~7,960 words).
-Next session writes section 8 onward into the same file.
+Status: **complete draft, sections 1 to 13**, in `hackster/ARTICLE.md`
+(~14,700 words). Remaining work is media, a length pass, and transcription.
 
 Source of truth for all technical content: `report/REPORT.md` (3,385 lines).
 Every section below carries the report chapter it draws from.
@@ -299,41 +299,33 @@ Video: one real trip on the rig, motor stopping and the ring changing.
 
 ## 7. Next session
 
-1. Continue `hackster/ARTICLE.md` at **section 6**. The legend, sections 1 to 5
-   and a pending-marker comment at the end are already in place.
-2. Verify every number against `report/REPORT.md` or the code as you write it.
-   Do not restate a figure from memory.
-3. Keep each subsection under ~150 words. Keep the story inside the sections,
-   never in a heading.
-4. **BUDGET. Decided by Rahul, 2026-09-02. Do not re-open.**
-
-Sections 1 to 7 run ~7,960 words across 43 subsections, averaging 185 words
-each. Sections 8 to 13 as skeletoned carry 29 more. At the same pace that is a
-~13,300-word article, which is too long to survive a judge's attention.
-
-**Target ~3,000 words for sections 8 to 13, landing the article near 11,000.**
-Consolidate on the way in. Do not write long and trim afterwards.
-
-Where the depth goes, and where it does not:
-
-- **Section 9, the trip, stays at full depth.** All five subsections. This is the differentiator and the whole argument for Physical AI.
-- **Section 12, measured results, stays at full depth** and keeps every number. This is the credibility.
-- **Section 8 compresses from 9 subsections to about 5.** 8.5 through 8.8 are one Edge Impulse round trip (link, upload, train, fetch) and should be two subsections, not four. Keep 8.3 (the grinder bearings, with the three photos) and 8.9 (CPU-only is a finding) intact.
-- **Section 10 compresses from 5 subsections to about 3.** It is a dashboard tour, carried better by screenshots than by prose. Keep 10.1 (trip banner) and 10.4 (the status ring colour table) as their own; fold the rest together.
-- **Section 11 compresses from 4 subsections to about 2.** The linked report covers the internals properly, and this is the lowest value per word for a Hackster reader. One subsection on the three-board split, one on a frame's journey.
-- **Section 13 stays as one short section** and closes by returning to the compressor from 1.1.
+1. **Length.** The draft is ~14,700 words against a ~6,500 target and The Fire
+   Pot's ~6,100. Sections 1 to 7 are ~8,150 of it, sections 8 to 13 ~6,570, so
+   a trim pass has to cut both halves, not just the back one. Options, in
+   descending value: drop the whole of section 2 (the no-hardware path, ~700)
+   to a short pointer at the repo; compress section 4's and 5's build steps to
+   the commands plus one line each; cut 6.12 (the step-ordering correction),
+   8.6 (the axis-naming detour) and 11.4 (the four dashboard details), which
+   are all ~200-word engineering asides a judge does not need. That is ~2,500
+   without losing a fact anyone needs to rebuild the thing.
+2. **Media.** Every `[IMAGE: ...]` and `[VIDEO: ...]` marker that points at a
+   photo or screenshot rather than at `report/diagrams/` still has to be shot.
+   The list is in section 5 below.
+3. **Open questions**, unchanged, in section 6 below. 8.3 currently carries the
+   grinder bearings alone and does not mention printed fixtures.
 
 ### Subsection numbering as actually written
 
-Sections 6 and 7 grew past the skeleton (6 went from 10 subsections to 13,
-7 from 5 to 6 plus an intro). Earlier sections already point at the final
-numbers, so these are now pinned and must not move:
+Sections grew past the skeleton (6 went from 10 subsections to 13, 7 from 5 to
+6, 8 from 9 to 8, 10 from 5 to 6). Cross-references point at the final numbers,
+so these are pinned and must not move:
 
 - **6.5** the sensor's own noise floor (pointed at from 4.2)
 - **6.8** what a second condition costs (pointed at from 1.5)
 - **6.10** proving which motor stops this machine (pointed at from 5.4)
 - **section 8** the fault classifier (pointed at from 6.7 and 7.6)
-- **section 13** the roadmap (pointed at from 1.5 and 6.8)
+- **section 12.1** the per-bin gate table (pointed at from 12.5)
+- **section 13** the roadmap (pointed at from 1.5, 6.8 and 12.5)
 
 ### Decided while writing sections 1 to 5
 
@@ -347,6 +339,25 @@ numbers, so these are now pinned and must not move:
 - **Section 4 absorbed Appendix D** into 4.2 as three bullets plus a cost line,
   as planned.
 
+### Decided while writing sections 8 to 13
+
+- **Section 8 absorbed report chapters 6 and 7** into eight subsections. The
+  report's §7.8 GPU material was already spent in article 3.4, so 8.8 keeps
+  only the NPU half plus the `urllib`-only note.
+- **Section 9 does not repeat the "monitor, not interlock" argument**; 1.4
+  carries it, and 9.3 just points back for the motion-not-power caveat.
+- **Section 10 dropped its own "three channels" subsection**, folding it into
+  the section intro, so its subsections are 10.1 to 10.6 rather than the
+  skeleton's 10.1 to 10.5.
+- **Section 12.5 states the satellite truth**, one open captive-portal bug on
+  the node's own AP, rather than the report's stale "no hardware run yet".
+  Roadmap item 4 changed to match.
+- **The closing links the repo** at
+  `github.com/rahuljeyaraj/edgeai-predictive-monitor`. Confirm it is public
+  before the article goes up.
+- **The grinder photos are placed**: two in 8.3 inline, the 6201 set at the end
+  of 8.3.
+
 ### Divergence found, report needs updating
 
 `REPORT.md` §12.7, §12.8 and Chapter 13 item 4 all still say satellite nodes are
@@ -357,3 +368,6 @@ accelerometer are all hardware-verified on node e36428 (commits `e5cfcf8`,
 current truth, including the one open captive-portal bug. The report should be
 brought into line, alongside the lathe/drill-press cast fix already noted in
 section 3 above.
+
+Chapter 13 item 4 in the report ("satellite hardware bring-up") should become
+"close the satellite captive-portal bug", which is what article 13.1 says.

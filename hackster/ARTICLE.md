@@ -22,7 +22,7 @@
 
      TITLE:    EdgeAI Predictive Monitor
      TAGLINE:  Sensors that watch. An AI that decides. A hand that pulls the plug.
-     WRITING STATUS: sections 1-5 drafted. Sections 6-13 pending.
+     WRITING STATUS: complete draft, sections 1-13.
      ========================================================================== -->
 
 # 1 What this is, and what it decides
@@ -702,7 +702,8 @@ What happens instead:
 - **The rig announces its own outputs** on connect, as a *retained* MQTT message, meaning the broker holds the last one and hands it to the dashboard whenever it reconnects. The dashboard offers exactly the outputs that exist. One motor on day one, five when there are five, with no dashboard change.
 - **The operator leaves the machine running** and presses **Test** beside a candidate.
 - **The system sends a real stop.** Same command, same code path, same payload as a genuine trip. Then it watches this node's own vibration gate.
-- **The machine goes quiet inside the confirm window** and the mapping is **confirmed**, stamped with the date. It keeps running, and that was the wrong output or a broken trip path. Try the next one.
+- **The machine goes quiet inside the confirm window** and the mapping is **confirmed**, stamped with the date.
+- **It keeps running** and the test fails, because that was the wrong output or a broken trip path. Try the next one.
 
 # 6.11 What proving it buys, and what it refuses to claim
 
@@ -879,5 +880,595 @@ That is deliberate, and it buys three things.
 
 ---
 
-<!-- SECTIONS 8-13 PENDING. Next session continues at section 8, "Naming the
-     fault", per hackster/PLAN.md section 4. -->
+# 8 Naming the fault
+
+The shop has two pumps now, the borewell one behind the shed and the coolant
+pump on the lathe. Different units, bought years apart, failing the same ways.
+
+# 8.1 Why there is a second model
+
+Healthy, warning and fault answer *whether* something is off. They do not answer
+*what*, and "what" is the difference between stopping everything and ordering a
+bearing for Thursday.
+
+So there is a second model alongside the per-machine autoencoder: a supervised
+classifier that names the fault category it is hearing, bearing wear, imbalance,
+a loose mount. It runs on-device, on the same 536 numbers the anomaly model
+sees, and its result appears next to the machine's status as its own chip.
+
+One boundary, structural rather than a policy someone has to remember. **The
+classifier names faults. It never decides whether to stop a motor.** The trip in
+section 9 runs off the anomaly gate alone and has no code path that reads a
+classification. If the classifier is wrong about which fault this is, the
+machine still stops and only the label is wrong, which is a bad afternoon rather
+than a bad outcome. An asset with no class, or a class with no trained model,
+simply shows its anomaly score and no classification.
+
+# 8.2 One model per machine type, not per machine
+
+[IMAGE: report/diagrams/11-edge-impulse-flow.png]
+*Record on the machine, upload from the dashboard, train in Studio, fetch the built model back onto the board.*
+
+The two models are built in opposite directions, deliberately.
+
+- **The anomaly model is per machine**, because it models *this unit's normal*, and normal is a property of one physical installation: this pump, this mount, this bearing at this age.
+- **The classifier is per machine type**, because what separates a bearing fault from an imbalance is a property of the *fault*, not of the unit. Pooling every pump's fault data gives it far more to learn from than any one pump could.
+
+The asset class typed in step 1 of setup is what recordings are grouped by. One
+Edge Impulse project is linked per class, and the model that comes back applies
+to every asset in it: train once, cover every pump in the shop. The Classifier
+tab is built around that rather than bolting it on, one card per class and not
+one per node, and the normalisation baseline is fitted from every recording
+pooled across the class, so five identical pumps with slightly different mounts
+do not each drag the model their own way.
+
+# 8.3 You cannot buy a broken machine
+
+Getting labelled fault data is the part no amount of software solves. Nobody
+sells a compressor with a failing bearing, and destroying a working machine to
+record one is expensive and slow.
+
+What we had was the family's old Ultra wet grinder: repaired repeatedly over the
+years, then given up on and left in a corner. Taking it apart, an electrician
+pulled three rusted ball bearings out of it, two from the motor and one from the
+drum. You can feel the cracks by turning one in your hand.
+
+[IMAGE: hackster/assets/IMG20260901093223.jpg]
+*The grinder fully apart: belt pulley, stator, rotor, drum shaft, and the three bearings that came out of it.*
+
+[IMAGE: hackster/assets/IMG20260901093820.jpg]
+*One 6004-2RS out of the motor beside a new one. This is what a dying bearing looks like.*
+
+It is also the right shape of machine: a motor driving a belted drum, which is
+Ravi's compressor in miniature, and real wear from something that actually died
+of it rather than damage manufactured for a demo. The other two fault classes
+are induced on the rig and repeatable on purpose: `unbalanced` is a known mass
+mounted off-centre, `loose` is a deliberately under-torqued mount.
+
+[IMAGE: hackster/assets/IMG20260901093909.jpg]
+*Four 6201 bearings, two worn and two new. A fault class you can hold.*
+
+# 8.4 Recording a labelled capture
+
+An operator hears something, or the anomaly score climbs, and wants that moment
+kept. Every machine's row has a **Record** drawer: type a label, optionally set
+a frame count, press Start. Previously used labels are offered as suggestions,
+which is what stops a fleet accumulating `bearing`, `Bearing` and `bearing2`.
+
+**Capture runs server-side.** Closing the drawer does not stop it. Closing the
+browser does not stop it. The row's record button keeps pulsing until you come
+back. That matters because the useful captures are the long ones, and nobody
+wants to babysit a browser tab for four minutes beside a running machine.
+
+The healthy class fills itself: every running condition collected in step 3 of
+setup is also saved as a `healthy` recording, so commissioning the fleet builds
+the classifier's largest class for free. The fault classes are the ones a human
+has to go and produce. The current model is trained on **541 real captures**
+from this rig.
+
+# 8.5 Linking a class to Edge Impulse
+
+Writing a training pipeline from scratch was on the table and was the wrong use
+of the time. Edge Impulse does exactly this, and keeping the classifier's
+training entirely outside this codebase is what makes it structurally
+independent of the safety path.
+
+An unlinked class card has one button, **Link to Edge Impulse**. It asks for a
+username and password, plus a TOTP code if the account has two-factor turned on,
+because a real account probably does. Submitting runs three REST calls rather
+than a redirect to Studio.
+
+- **Create the project** for this asset class. The response carries a scoped API key, the only server-side secret this application persists that was typed into the dashboard, so it is written owner-only, `0600`. The credentials used to create the project are never written anywhere at all.
+- **Create the impulse**, from a fixed template: a `features` input block, a passthrough DSP block, a Keras learn block.
+- **Set the training configuration**, layers, epochs, learning rate, batch size, from that same template every time.
+
+The last two are identical JSON for every class and only the project ID changes,
+so adding a machine type to the fleet is one button rather than a Studio
+session.
+
+# 8.6 The detour only the real service could find
+
+The impulse's input block went through two wrong shapes first, and the second
+one worked.
+
+- **A `features` block with one invented axis name.** It matched none of the axes Edge Impulse derives from a CSV's header row, so the DSP block's axis selection came back empty and nothing trained at all.
+- **A `time-series` block sized so all 536 numbers fit in one window.** This trained, and was rejected anyway. The data is a precomputed feature vector, not a time series, and shipping a workaround as an architecture is how you end up maintaining it forever.
+- **A `features` block with real per-column names**, `accel_x_bin0` through `accel_x_bin127`, `accel_x_rms`, `mic_skewness`, generated from that node's actual sensor configuration and matched by a wide CSV whose header row carries exactly those names. This is what shipped.
+
+Every local test passed throughout all three. The bug existed only against the
+real service, which is the strongest argument in this project for testing
+against the thing itself rather than a convincing local fake.
+
+# 8.7 Uploading, and four ways to get it wrong
+
+Tick the recordings on a class's card and press **Upload**. What happens
+underneath is more careful than the button suggests, and each of these was a
+real mistake first.
+
+- **The scalar tail is standardised before upload.** Live inference always standardises the six-statistics tail before scoring, so uploading raw vectors would train the classifier on a different distribution than it meets at runtime. That is train/serve skew: a model that tests beautifully and behaves oddly on the machine.
+- **The baseline is pooled across the class, not per node.** An earlier version standardised each capture against its own node's commissioning statistics, which silently made five identical pumps inconsistent with each other and made uploading depend on commissioning, which it was never supposed to require. It is now fitted once per class from every recording of that class and saved to disk, so anything that later runs this model standardises the way its training data was standardised.
+- **It is fitted on the train split only.** Fitting normalisation statistics over the test rows too is a small, respectable-looking way to leak.
+- **The train/test split is contiguous.** Each fault condition on this rig is one continuous capture, not many independent short samples, so a random split would put adjacent, near-identical windows on both sides of the line. The last portion of each file is reserved for test and never seen in training. That is a real methodological limitation of one-capture-per-class data, and it is stated rather than papered over.
+
+# 8.8 Training in Studio, and fetching the model back
+
+The dashboard used to have a Train button. It was removed on purpose.
+Everything after "the data is in the right project", DSP tuning, model
+architecture, reading a confusion matrix and deciding what to do about it, is
+work Studio is genuinely better at than a button in somebody else's dashboard,
+and automating it would mean freezing one architecture forever. The card links
+straight to that class's project, and training happens there.
+
+**Fetch trained model** is the one piece of glue that has to exist, because
+nothing else can pull the compiled artefact back down onto the board. It runs a
+build job in Edge Impulse, downloads the deployment archive, pulls the single
+`.tflite` out of it and saves it under the asset class's name. It is a
+background job, because an Edge Impulse build is real minutes rather than a
+request and a response, and it streams named stages to the browser: *building*,
+*downloading*, *done*. Refresh mid-job and the card still shows the job running,
+because job state lives on the server.
+
+From the moment that file lands, **every asset of that class is being
+classified**, with no restart and no per-node action.
+
+Inference then runs as TFLite on the CPU via XNNPACK, which is a conclusion
+rather than a stopgap. Section 3.4 has the GPU measurement; the other half of
+the answer is that there is no NPU to target, because this board exposes only
+the audio DSP's FastRPC channel and Qualcomm's own product brief gives CPU and
+GPU as the sanctioned AI path for this part. The device side of the whole flow
+is plain REST over Python's standard library, no Edge Impulse SDK and no HTTP
+library beyond `urllib`, which on a board where an unbuildable wheel already
+killed the GPU path is not a small consideration.
+
+---
+
+# 9 The trip: stopping a motor
+
+02:40 on a Tuesday. The tank pump is running on its night timer and nobody is in
+the building. Its anomaly score has been drifting up for two days, nothing a
+person would have caught by ear, and it crosses the line. The system does not
+send an email and hope.
+
+# 9.1 The trip chain
+
+[IMAGE: report/diagrams/07-trip-sequence.png]
+*Fault confirmed, countdown, trip published, motor stopped, then either confirmed tripped or reported as a failed trip.*
+
+Five steps, each deliberately boring.
+
+- **1. Fault confirmed.** The anomaly score has stayed over this machine's own fault threshold across consecutive frames, and this asset has a motor armed against it. Protection is armed **per asset**, never fleet-wide: most monitored points have no actuator at all, and arming one is the explicit choice made in step 5 of setup and confirmed by really stopping the machine.
+- **2. A ten-second countdown**, in a banner at the top of every tab, with a **Hold** button. This is the operator's only chance to intervene.
+- **3. The trip is published** over MQTT, naming exactly which motor. One motor, one asset: the dashboard refuses to point two assets at the same motor, because a trip from either would then look like it came from both.
+- **4. The motor stops.** A listener on the rig halts that one axis and latches it. The other motors, if healthy, keep running.
+- **5. Confirmation, or an honest failure.** The vibration gate watches for the machine actually going quiet. If it does, the asset becomes **Tripped**. If it does not, the status stays **Fault** and is explicitly marked as a failed trip.
+
+The first time this ran end to end on real hardware, the rig's console said all
+of it:
+
+```
+TRIP RECEIVED: stopping motor 1...
+motor 1 stopped
+```
+
+# 9.2 Ten seconds, which is longer than an industrial relay
+
+A protection trip with no delay is a nuisance trip: one transient and the shop
+stops. Real machinery-protection relays delay for exactly this reason, typically
+one to three seconds, because a momentary excursion has to persist to be
+believed.
+
+Ten is longer than that on purpose. The delay is not only there to filter noise,
+it is the window in which the decision becomes *legible to a human*: counting
+down on a screen, naming the machine, with a button that stops it. An automatic
+action nobody can see coming is a worse product than one that announces itself
+for ten seconds first.
+
+# 9.3 Latching, and the button that does not exist
+
+A system that re-arms itself a second later is not a safety system, it is a very
+anxious light switch. The stopped motor refuses every later speed command,
+including from the rig's own control panel, until a person clears it from the
+dashboard. That is what separates protection from control.
+
+There is also a deliberate absence: **there is no reset protection button.**
+Restarting the machine is what clears things, and restarting makes frames score
+again, so the score alone decides where the asset lands. Fix the fault and it
+returns to healthy. Do not, and it goes back to fault and trips again. An
+operator cannot restart their way out of a real fault, and nothing in this
+system ever restarts a machine on its own.
+
+One honest note on scope, from section 1.4: **the trip stops motion, not
+power.** A stopped stepper is still an energised stepper. A relay per motor is
+item one on the roadmap.
+
+# 9.4 Refusing to claim a trip that failed
+
+If the trip is published and the machine keeps turning, the system does **not**
+report it as tripped. The asset stays in Fault, and the banner says the trip
+failed, in red, and cannot be dismissed.
+
+Showing "stopped" for a machine that is still turning is the single most
+dangerous lie this dashboard could tell, and no amount of "well, we sent the
+message" changes that. It is the one status here derived from physics rather
+than from having sent something.
+
+# 9.5 Idle versus tripped, and one line of code
+
+Both mean the machine is not turning. Collapsing them into a single *stopped*
+status would erase the only distinction an operator actually cares about:
+whether this was expected.
+
+A machine stopped by the setup test in step 5 lands on **Idle**. We stopped a
+healthy machine on purpose, and recording that as a trip would leave a fake trip
+in that machine's history forever. A fault-driven stop lands on **Tripped**. The
+whole distinction is `target = TRIPPED if was_ours else IDLE`, and it is the
+difference between a maintenance record you can trust and one you cannot.
+
+---
+
+# 10 The operator's view
+
+06:15. Ravi opens the shed. Before his jacket is off he already knows something
+happened: the ring on the pump is blinking slow red, and there is a message on
+his phone from four hours ago. Neither of those needed a laptop.
+
+Nobody is standing at the machine when a trip happens, which is the entire
+point, so the system talks back on three independent channels: a **light on the
+machine** for whoever walks past, a **live dashboard** for whoever is checking,
+and a **phone alert** for whoever needs to know without checking anything. None
+of them requires another to be working.
+
+# 10.1 The trip banner, the one thing never behind a click
+
+Everything else in this section is somewhere you navigate to. The banner is not:
+it sits **above the tab bar**, on screen on Fleet, Classifier, Network,
+Performance and Alerts alike, one line per affected asset.
+
+- **Counting down.** *Pump 1, tripping in 8s*, with a **Hold** button. Not dismissible: it is still true and still needs a decision.
+- **Trip failed.** *Pump 1, trip failed, machine still running*. Not dismissible, and the most severe thing this system can say.
+- **Tripped.** *Tripped, Pump 1 at 02:40, confirmed stopped*. Dismissible, because the event is settled.
+- **Faulty but unarmed.** *Blower, faulty, no trip output wired*. Dismissible, quieter, and no Hold button, because there is nothing to hold.
+
+The countdown used to live inside the Protection section of an expanded asset
+row. Ten seconds is not enough time to remember which asset it was, find its
+row, expand it and scroll. The rule the dashboard follows now is **cold
+configuration in the drawer, hot state out front**: a trip countdown is an
+alarm, not a setting.
+
+A dismissed line comes back if that asset's situation changes again, so one
+acknowledgement never silences a machine permanently.
+
+[IMAGE: screenshot of the trip banner mid-countdown with Hold, on the Performance tab]
+*It follows you across tabs, which is the whole reason it lives above them.*
+
+# 10.2 Ten statuses an asset can hold
+
+[IMAGE: report/diagrams/06-asset-lifecycle.png]
+*New, Collecting and Training, then the live-scored Healthy, Warning and Fault, plus Idle, Tripped, Paused and Offline.*
+
+- **New.** Streaming data, never set up. Nothing to score against. Set by the system when an unknown node first appears.
+- **Collecting.** Setup in progress, with live progress on the row: *Running 41/50*.
+- **Training.** The batch is closed and the model is being fitted, with a live percentage.
+- **Healthy.** Scored, comfortably below this machine's own warning line.
+- **Warning.** Over the warning line. Something changed, nothing has been decided.
+- **Fault.** Over the fault line, sustained. With a motor armed, this is what starts the countdown.
+- **Idle.** Not turning, and *a person* stopped it. Normal, and set by the gate.
+- **Tripped.** Not turning, and *we* stopped it. Latched until cleared, and only set once the gate confirms it actually went quiet.
+- **Paused.** Monitoring deliberately suspended for maintenance or a known noisy job. Staleness never demotes it to Offline, because it is a standing human intent.
+- **Offline.** Nothing heard for 30 seconds. **Never stored**, always derived from the last frame's timestamp, so it cannot get stuck on after a node comes back.
+
+Every legal transition between these is enforced in one explicit state machine,
+rather than by each feature setting a status field and hoping. That is not
+tidiness for its own sake: it closed a bug where pausing a node mid-setup
+silently stole it out from under the setup session.
+
+# 10.3 Fleet, and what an open row shows
+
+[IMAGE: report/diagrams/08-dashboard-anatomy.png]
+*Tabs, status tiles that are also filters, one row per asset, and the expanded detail panel.*
+
+The status tiles across the top each carry a count, and each one is also a
+**filter**. Click *Faulty* and the list below shows only faulty machines, click
+again to bring them back, click several to combine. Tiles with a count of zero
+hide themselves, so a healthy fleet shows a short calm row instead of a wall of
+zeroes, and they reappear in their original fixed position rather than wherever
+they happened to change.
+
+A row is compact: nickname, node ID underneath so identity is never ambiguous
+after somebody names two machines "Pump", asset class, status. Its controls
+change with the status rather than greying out generically, *Set up* becoming
+*Train* becoming *Training…* becoming *Re-run setup*, and on a stopped machine
+the disabled button says what to do about it: *"Start the machine first."*
+
+Open the row and the order is deliberate: **Protection** first, because during
+an incident it is the most important thing on screen, then the **live anomaly
+score** with this machine's own threshold lines and a scrubber for the last half
+hour, then **fault classification**, then **live spectra** per axis and for the
+microphone. The chart is hidden entirely for a machine with no model yet,
+because an empty chart is worse than no chart. Three collapsed panels go deeper:
+all 24 scalar statistics, raw time-domain signals, and a waterfall spectrogram
+in 2D or 3D. The heavy ones are not rendered at all until first opened, which
+keeps opening a row cheap on a phone.
+
+[IMAGE: screenshot of an expanded asset row with the anomaly chart, classifier bars and spectra]
+*Everything known about one machine, in the order an incident needs it.*
+
+# 10.4 The other four tabs
+
+[IMAGE: report/diagrams/13-dashboard-tabs.png]
+*Five tabs, five questions, with the trip banner sitting above all of them.*
+
+Each tab answers one question completely, under one rule held throughout: **no
+fact is editable in two places.** The asset class is edited in setup and nowhere
+else. The trip output is configured in setup and only read back elsewhere.
+
+- **Classifier: what kind of fault is it?** One card per asset class, holding the Edge Impulse link row, the recordings table with checkboxes, one action bar driven by that selection, *Upload (N)*, *Edit label (N)*, *Delete (N)*, and the model row. A class whose nodes are all decommissioned is not hidden, it gets a de-emphasised delete-only card, because making a card vanish and silently taking four hours of labelled captures with it is how people stop trusting a tool.
+- **Network: which network is the base station on?** Mode, network name and address, plus a scan and a password field. This is the page a phone lands on through the captive portal, which is why its network list is tappable buttons rather than an autocomplete.
+- **Performance: is the monitor itself keeping up?** One chart per CPU core rather than one averaged number, because this pipeline has single-threaded stretches and an average would happily hide one core pinned at 100% behind three idle ones. Then memory, temperature and GPU where the board exposes them, and per asset: frames per second and the percentage of the frame's time budget used. Metrics that are not genuinely available are left out, not faked and not shown as zero.
+- **Alerts: who gets told, and about what?** A QR code to connect a phone, then one row per subscriber with two preferences: level, warnings upward or faults only, and scope, the whole fleet or a named set of machines.
+
+# 10.5 The light on the machine
+
+Every base station and every satellite carries its own status ring, and the
+colour alone tells the story from across the room.
+
+- **New:** cyan, steady.
+- **Healthy:** green, steady.
+- **Warning:** amber, slow breathing pulse.
+- **Fault:** red, fast strobe at 200 ms.
+- **Tripped:** red, **slow** strobe at 1000 ms. Deliberate rather than urgent: *I already acted.*
+- **Idle:** magenta, steady.
+- **Paused:** mid grey. **Offline:** dark grey.
+
+These are hand-tuned for real WS2812 LEDs and are deliberately **not** the
+dashboard's palette, which was tried and looked wrong: on an uncorrected WS2812
+any weak secondary channel shows up disproportionately, so a screen-friendly
+emerald rendered visibly bluish and a screen-friendly red rendered pink.
+Near-primary values avoid it. Idle got there the hard way, though, and is the
+one status where ring and screen share an exact value, `#ff00ff`. It was pure
+blue until a bench test showed it was indistinguishable from the cyan used for
+new, which is a genuinely bad pair of meanings to confuse.
+
+Tripped reuses fault's red and differs only in strobe period, deliberately
+rather than as a fourth blink mode: const, breathe and strobe is the entire
+vocabulary every node's firmware understands, so adding one would mean
+reflashing every node in the shop to change one light.
+
+The base station adds the **8x13 LED matrix already on the board**, scrolling a
+one-line fleet summary, counts only, worst first. `FFLT,WWRN,OOFF,HOK` reads as
+one fault, one warning, one offline, the rest healthy. Idle and Paused are
+excluded from it entirely, because that display exists to answer one question,
+*is anything wrong*, and a machine somebody switched off is not.
+
+[IMAGE: photo of the status ring in several colour states and the LED matrix mid-scroll]
+*Colour from across the room, counts up close.*
+
+# 10.6 The phone alert
+
+Link a phone once by scanning the QR code on the Alerts tab, and a confirmed
+fault arrives as a Telegram message carrying the machine's nickname and, when
+there is one, the classifier's read. No account, no invite code typed by hand,
+no bot username to remember. The link carries a one-time token with a
+fifteen-minute life, so an old screenshot of the QR code is not a permanent key
+to the fleet's alerts.
+
+This was built and demonstrated against a real bot and a real phone. It is
+switched off in the current build for exactly one reason: the bot token is a
+managed App Lab secret that has to be re-entered through App Lab's interface
+after some device-testing housekeeping, and the on-device build fails if the
+secret is declared with no value behind it. Nothing about the feature is
+unfinished. A value is missing.
+
+[IMAGE: screenshot of a real Telegram fault alert]
+*The channel that reaches somebody who is not looking at anything.*
+
+---
+
+# 11 How it works inside
+
+# 11.1 Three kinds of board, and only one of them thinks
+
+[IMAGE: report/diagrams/05-full-architecture.png]
+*One base station, any number of satellites, one motor rig. The thinking happens in one place.*
+
+The base station's Linux side holds the asset registry, trains and runs the
+models, serves the dashboard and makes the decision to stop a motor. Every other
+board in this project is a sense organ or a muscle. The motor rig in particular
+is not a peer: it accepts *stop* and nothing else, and there is no code path in
+this system that can set a speed or start a machine.
+
+[IMAGE: report/diagrams/12-software-architecture.png]
+*Five layers on the Linux side. Nothing skips a layer.*
+
+That side is roughly 13,000 lines of Python, alongside 8,000 of frontend, 4,300
+of Zephyr firmware, 2,800 of ESP32 firmware and 8,900 of tests, in five layers:
+
+- **Transport.** Bytes off a wire, into a frame. Two sources, one frame type.
+- **Ingest and route.** Match a frame to an asset, validate its shape, build the 536-number vector.
+- **Decide.** Running or stopped, how unlike normal, which fault.
+- **Remember.** One live record per asset, durable score history, labelled recordings.
+- **Act and tell.** The trip, the dashboard, the phone.
+
+# 11.2 One frame, start to finish
+
+- **Acquire.** Both sensors are sampled at their native rates on whichever chip they are wired to. The accelerometer's hardware FIFO batches samples, so the host gets one interrupt per block rather than one per sample.
+- **Reduce.** That same chip runs a 512-point FFT per channel, computes the six statistics per channel, then average-pools each spectrum down to its 128-bin wire count. This is the step that makes the whole architecture possible: shipping raw audio and vibration off-chip at native rate would saturate any link fast enough to be worth having.
+- **Arrive.** Over the internal SPI bus for the base station's own sensors, about 10 to 14.5 KB every 64 ms, or over Wi-Fi and MQTT from a satellite, about 4.1 KB every 200 ms. Same frame either way.
+- **Route.** The pipeline manager matches the frame to an asset and validates its shape against what that asset was set up with. A node whose channel set or bin count has changed is caught here, rather than silently scored against a model that no longer fits it.
+- **Score.** The gate, the autoencoder, and the class's classifier if there is one.
+- **Fan out.** A status change goes into the registry, which pushes it everywhere at once.
+
+Time-domain sections do not ride every frame. They piggyback on **every fourth**
+one, because the collapsed raw-signal charts do not need per-frame freshness and
+carrying them every time would drag the whole frame's transfer, and therefore
+the anomaly score and the spectra, down with it. The fast path stays fast.
+
+# 11.3 Two links, one broker, and the only thing that fans out
+
+Between the STM32U585 and the QRB2210 run two independent links: **LPUART1 at
+500 kbaud** for the control plane, status pushes, statistics queries and display
+commands, and a **dedicated SPI bus at about 40 MHz** for bulk telemetry.
+
+They started as one link. Splitting them was not an optimisation, it was a fix:
+at around 65 KB/s of continuous frames the shared serial link's message framer
+wedged and took the entire control channel down with it. A large raw capture
+now cannot interfere with the live status loop, because they are not on the same
+wire.
+
+The MQTT broker runs **on the UNO Q itself**, not on a developer machine, and
+that is load-bearing rather than convenient. A satellite bolted to a compressor
+has nowhere else to publish, and a broker living on somebody's laptop means the
+fleet stops when that laptop closes.
+
+And **the registry is the only thing that fans out.** Nothing writes an asset's
+status directly and nothing subscribes to the pipeline. A status change goes
+through one state machine into the registry, and the registry pushes it to the
+dashboard, the status ring, the LED matrix, Telegram and protection at once.
+Adding a new output means subscribing to the registry, not editing the scoring
+path, which is the one place a mistake produces a wrong answer about a machine.
+
+# 11.4 Four details that keep the dashboard honest
+
+Invisible when they work, very visible when they do not. All four were real
+bugs.
+
+- **The registry does not write to disk on every frame.** It used to. Every ingested frame rewrote the whole asset file while holding that asset's lock, the same lock every dashboard action waits on, so one storage hiccup froze the entire UI: ingestion stalled inside the lock, requests piled up behind it, and the node eventually read as offline. Live values now live in memory; durable history is a separate database write.
+- **Charts are re-parented, never rebuilt.** The asset list rebuilds itself on every update, so a chart living inside that markup would have every zoom or pan an operator applied wiped several times a minute. They are created once and moved into whatever slot the newest render produced.
+- **The inference pipeline is rebuilt when its inputs change.** Re-running setup on a machine, or resuming a paused one, used to leave a cached pipeline holding the old model and the old thresholds, so a machine could sit reading *healthy* while its own graph was red.
+- **The setup drawer lives outside the list that re-renders.** The fleet list refreshes on a five-second poll, and a wizard whose text fields sat inside that markup would blank a half-typed machine name every five seconds. That is the kind of defect that makes people stop using a tool without ever filing a bug about it.
+
+---
+
+# 12 Measured results
+
+# 12.1 What "verified" means here, and the gate measured
+
+Every number in this section was measured on the real rig: sensors reading a
+spinning motor, a trip actually stopping that motor, a dashboard checked against
+a live device in a real browser.
+
+Per-bin accelerometer energy, sensor stationary versus the rig spinning at
+90 RPM, in the sensor's own raw units:
+
+- **~131 Hz:** stopped 13,192, running 36,134. Delta **+22,942**.
+- **~281 Hz:** stopped 12,680, running 44,798. Delta **+32,118**.
+- **~381 Hz:** stopped 13,586, running 40,638. Delta **+27,052**.
+- **~631 Hz:** stopped 13,453, running 13,545. Delta +92.
+- **~1,231 Hz:** stopped 11,217, running 11,482. Delta +265.
+- **~3,231 Hz:** stopped 5,525, running 5,483. Delta −42.
+
+The motor's entire mechanical signature is those first three rows. Everything
+above about 600 Hz is the accelerometer's own broadband noise, present
+identically whether the machine runs or not. That is the whole argument of
+section 6.6, in numbers: a full-spectrum average gives a **1.18x** margin
+between stopped and running, excess over a measured baseline gives **2.09x**.
+
+# 12.2 A full setup run
+
+Straight off one session on the real UNO Q and rig:
+
+- **Stopped baseline:** 65 frames with the rig confirmed physically off. Fitted energy reference **1,533.1**, measured spread **1.39x**, gate threshold set at **2,682.9**.
+- The node went from flapping between fault and warning at rest to settling cleanly on **Idle**, and left Idle immediately when the rig spun up.
+- **Trained against the running rig:** healthy anomaly score **0.046**, warning threshold **0.144**, fault threshold **0.288**. Real daylight between normal and the line that means trouble.
+- Ramped down again and it returned cleanly to Idle, not to Fault.
+- Dashboard checked against the live device in a real browser, zero console errors throughout.
+
+A second session ran the full six steps end to end: the rig's output
+announcement arriving and populating step 5; the confirm-by-stopping test
+passing against the correct output, correctly failing against a wrong one, and
+correctly refusing to run against an already-stopped machine; a stopped baseline
+taken with the machine genuinely off; two named running conditions each
+collecting their own frames; and all four trip-banner states rendered on all
+five tabs with no JavaScript errors.
+
+# 12.3 The trip, both directions
+
+Verified repeatedly on the rig, not once. Motor spinning, fault confirmed,
+countdown, **motor stops**, stays stopped, and refuses further speed commands
+until cleared from the dashboard. Cleared and spun back up, it resumes normally
+and is re-scored from scratch. Both the setup confirmation test and a genuine
+fault-driven trip were observed against the same output minutes apart in one
+session, the first landing on Idle and the second on Tripped, exactly as
+intended.
+
+One honest observation from that run, recorded because it is a real
+characteristic rather than a defect: the countdown started and was cancelled
+three times before the trip finally fired, because the score was bouncing right
+at the fault threshold. The system behaved correctly every time, since a fault
+has to persist to be believed, but a score sitting on the line makes a visibly
+twitchy banner, and threshold hysteresis is a fair thing to add.
+
+An earlier version also had a genuine race in how a trip was confirmed, which
+could report a trip that had actually worked as failed. It was found on
+hardware, fixed, and re-tested in both directions.
+
+# 12.4 Per-axis beats fused, decisively
+
+Not every result came off the rig. An offline harness replays real captures
+through the whole feature pipeline and sweeps its parameters, and two of its
+findings changed the design.
+
+- **Per-axis versus fused:** **+38.5 sigma** worst-case fault separation, against **+1.8 sigma** for a combined tri-axial magnitude, on the same captures. That is why the model consumes `accel_x`, `accel_y` and `accel_z` separately rather than one magnitude.
+- **The six statistics carry more than expected:** adding them took healthy-versus-imbalance separation from roughly **3 sigma to roughly 80 sigma**. A spectrum alone was leaving a great deal on the table.
+
+# 12.5 Known limitations
+
+- **The bench rig's three motors share one vibration sensor.** Trip one while the others keep running and that sensor still honestly reads *running*. It is a property of one sensor covering three motors on a bench, not a software defect, and it is why the rig starts with a single motor installed. A real deployment has one sensor per machine.
+- **Multi-condition training costs sensitivity**, by a measured **5.1x** on this rig. Section 6.8 has the numbers, and per-condition thresholds are the open question.
+- **A score sitting exactly on the fault threshold makes the countdown flap.** Correct behaviour, unpleasant to watch, fixable with hysteresis.
+- **The classifier is not the safety path**, by construction. If it names the wrong fault the machine still stops, and only the label is wrong.
+- **The trip stops motion, not power.** A stopped stepper is still an energised stepper.
+- **Faults above roughly bin 24 look alike on this rig.** A direct consequence of section 12.1: above the motor's own signature, every class is looking at the same sensor noise. On a machine with genuine high-frequency fault content, which this sensor can see, the constraint lifts.
+- **The satellite node's own captive portal has one open bug.** Wi-Fi, MQTT, the status ring, the microphone and the accelerometer are all hardware-verified on a physical XIAO ESP32-S3. The setup page the node serves does not reliably load, and the live hypothesis is that the node's own Wi-Fi scan kicks connected clients off its access point. The base station's portal is a separate implementation and is verified on real phones.
+
+---
+
+# 13 What's next
+
+# 13.1 The roadmap, in the order it would be built
+
+- **1. A relay per motor.** Today's trip stops a motor from moving; a relay would remove its power at the source as well. Held back by a no-new-hardware constraint in this build window, not by any design uncertainty: the trip message, the latch and the confirmation logic would not change.
+- **2. Hysteresis on the fault threshold.** Section 12.3 recorded a countdown starting and cancelling three times before a real trip fired. Separating the enter-fault and leave-fault levels fixes the display without weakening the trip.
+- **3. Per-condition thresholds.** The 5.1x sensitivity cost is the single largest known weakness in the detection path. The hard part is not the thresholds, it is knowing which condition a machine is currently in, which nothing detects today and which the same gate machinery is well placed to answer.
+- **4. Closing the satellite portal bug**, the last gap between the satellite firmware and the base station's verification record.
+- **5. A shared anomaly model per asset class.** Pre-train one autoencoder per class on pooled healthy data, and per-unit setup drops from collect-and-train to collect-and-calibrate. That would make commissioning the fortieth machine faster than the first, which is the opposite of how it works today. Precondition: a second same-class machine to measure the benefit against.
+- **6. More labelled fault data per class.** The classifier's ceiling is set by how much genuinely distinct fault data exists per class, and the recording workflow is now good enough that collecting it is a matter of time rather than tooling.
+- **7. Fault-severity trending, not just detection.** The anomaly score is already stored durably per machine. The obvious next question after *something is wrong* is *how fast is it getting worse*, and the data to answer it is already on disk.
+
+# 13.2 Closing
+
+The compressor from section 1.1 is the machine that started this. Nine thousand
+rupees, bolted down outside, running on a pressure switch, seized on a Tuesday
+and took two weeks of the shop with it. Nobody was standing next to it when it
+began to go, and on that machine nobody ever was.
+
+A year on, Ravi runs more machines than he can personally watch and does not
+have to. A light tells him what is fine, a phone tells him what is not, and once
+in a while, at 02:40 on a Tuesday, a motor just stops instead of grinding itself
+into a repair bill.
+
+Sensing, deciding, acting, in that order, with nobody standing over it. That was
+the whole assignment.
+
+All the code, the wiring, the firmware and the full engineering report are at
+[github.com/rahuljeyaraj/edgeai-predictive-monitor](https://github.com/rahuljeyaraj/edgeai-predictive-monitor).
