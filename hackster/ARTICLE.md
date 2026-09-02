@@ -207,25 +207,9 @@ which here is the bot token, not the charts.
 
 # 3.3 Three limits we found by pushing
 
-**The accelerometer's output rate.** The KX134 will run at 25.6 kHz. We run it at
-**12.8 kHz**. At the full rate the sampling thread stopped yielding often enough
-and starved the inter-processor link outright: telemetry frames went to zero.
-12.8 kHz is still eight times the original 1,600 Hz baseline.
-
-**The internal UART.** Raised from the stock 115200 to **500000 baud**. The Linux
-side derives its baud from a 32 MHz reference with 16x oversampling, so 1 Mbaud
-and 2 Mbaud land on divisors of 2 and 1, right where the receiver loses sampling
-margin. They boot beautifully and wedge twenty minutes later, which is the worst
-kind of working. 500000 lands on a divisor of exactly 4 and survived every soak
-test.
-
-**The GPU.** The Adreno 702 was spiked rather than assumed. The vendor TFLite GPU
-wheels are built for ARMv8.1 atomics this CPU does not have, so loading them takes
-the whole process down with an illegal instruction, not an exception you can
-catch. Through a Vulkan backend that does work, bit-exact against CPU, the
-speed-up measured roughly 1.0x from a single vector up to a 256-node batch. These
-models are 536 numbers wide. Sending them to a GPU is chartering a cargo ship to
-post a letter. **Staying on CPU is a finding, not a shortcut.**
+- **The accelerometer's output rate: 12.8 kHz, not the 25.6 kHz it will do.** At the full rate the sampling thread stopped yielding often enough and starved the inter-processor link outright, and telemetry frames went to zero. 12.8 kHz is still eight times the original 1,600 Hz baseline.
+- **The internal UART: 500000 baud, not the stock 115200.** The Linux side derives its baud from a 32 MHz reference with 16x oversampling, so 1 Mbaud and 2 Mbaud land on divisors of 2 and 1, right where the receiver loses sampling margin. They boot beautifully and wedge twenty minutes later, which is the worst kind of working. 500000 lands on a divisor of exactly 4 and survived every soak test.
+- **The GPU: measured, then declined.** The vendor TFLite GPU wheels are built for ARMv8.1 atomics this CPU does not have, so loading them takes the whole process down with an illegal instruction, not an exception you can catch. Through a Vulkan backend that does work, bit-exact against CPU, the speed-up measured roughly 1.0x from a single vector up to a 256-node batch. These models are 536 numbers wide. **Staying on CPU is a finding, not a shortcut.**
 
 ---
 
@@ -443,8 +427,8 @@ real message, that the monitor is allowed to stop.
 
 # 6.1 Why every machine needs its own baseline
 
-The pod is on the machine and the dashboard is up. The obvious question is *so
-what does it think?*, and the honest answer is: nothing yet. It has never met this
+The pod is on the machine and the dashboard is up. The obvious question is *so what
+does it think?*, and the honest answer is: nothing yet. It has never met this
 machine.
 
 Every frame is reduced to a fingerprint of that moment, for each of four channels,
@@ -452,11 +436,11 @@ vibration on X, Y and Z plus audio. A **spectrum** is how much energy sits at ea
 frequency, and a **bin** is one slice of it. Each channel gives:
 
 - **A 128-bin spectrum**, peak-normalised, so the model learns the *shape* of the spectrum rather than how hard the machine happened to be loaded at that instant.
-- **Six shape statistics** from the time-domain window: RMS, peak, crest factor, kurtosis, skewness and standard deviation. They describe what a spectrum hides, particularly impulsiveness, meaning sharp repeated knocks, which is exactly what a failing bearing produces.
+- **Six shape statistics** from the time-domain window: RMS, peak, crest factor, kurtosis, skewness and standard deviation. They describe what a spectrum hides, particularly impulsiveness, meaning sharp repeated knocks, which is what a failing bearing produces.
 
 That is 536 numbers per frame, and every machine's 536 look different. There is no
-universal picture of healthy to ship in the firmware, so the first thing that
-happens with a new machine is not detection. It is listening.
+universal picture of healthy to ship in the firmware, so the first thing that happens
+with a new machine is not detection. It is listening.
 
 # 6.2 The six steps, and why they are in this order
 
@@ -474,28 +458,24 @@ emergency stop.
 - **5. Trip output.** Machine running, then stopped by us. Optional. Produces a *confirmed* answer to "which motor stops this machine".
 - **6. Done.** A summary. The asset goes live.
 
-Two words used throughout: an **asset** is one monitored machine, and the **gate**
-is the logic that decides whether a machine is turning at all.
+Two words used throughout: an **asset** is one monitored machine, and the **gate** is
+the logic that decides whether a machine is turning at all.
 
 The order is not cosmetic. Step 3 relies on the gate to know the machine is really
 running while it collects, and the gate can barely tell running from stopped until
-step 2 has measured this sensor's floor. Collect step 3 first and you have trained
-on frames selected by a gate that does not work. That sequence is the whole
-argument for a wizard over a settings page.
+step 2 has measured this sensor's floor. Collect step 3 first and you have trained on
+frames selected by a gate that does not work.
 
 # 6.3 Step 1: name and class, both mandatory
-
-Neither used to be required. Both are now, with no skip.
 
 **The name** is what a Telegram alert and the trip banner print. *"Tripped:
 esp32-a4cf12, 02:40"* is the wrong thing to read at 02:40.
 
 **The class** is what recordings are grouped by. Making it optional would mean a
 silent conditional branch through the rest of setup: recordings quietly not saved,
-discovered weeks later by somebody trying to train a classifier and finding
-nothing there. On day one the class is free text; after that it is a pick-list of
-the classes that already exist, which stops one shop accumulating `pump`, `Pump`
-and `water pump` as three different things.
+discovered weeks later by somebody trying to train a classifier and finding nothing
+there. On day one the class is free text; after that it is a pick-list of the classes
+that exist, which stops one shop accumulating `pump`, `Pump` and `water pump`.
 
 # 6.4 Step 2: measuring the machine switched off
 
@@ -505,28 +485,27 @@ otherwise: *"Switch the machine off. Confirm it has stopped moving, then Start.
 Nothing here can check that for you. A measurement taken while the machine runs
 teaches the system that its own vibration is silence."*
 
-It captures at least 30 frames of whatever the sensor reads with nothing turning,
-and fits a median floor **per frequency bin**. Not one number for the whole
-spectrum. One number for each bin, on each channel.
+It captures at least 30 frames of whatever the sensor reads with nothing turning, and
+fits a median floor **per frequency bin**. Not one number for the whole spectrum. One
+number for each bin, on each channel.
 
-Get this wrong and nothing downstream announces it. The machine simply never reads
-as stopped again, and the trip can never confirm, until somebody re-measures. It
-takes about thirty seconds and it is the step people are most tempted to skip.
+Get this wrong and nothing downstream announces it. The machine simply never reads as
+stopped again, and the trip can never confirm, until somebody re-measures. It takes
+thirty seconds and it is the step people are most tempted to skip.
 
 # 6.5 Why step 2 exists: the sensor's own noise floor
 
 The first gate did the obvious thing: average vibration energy across the whole
-spectrum, call the machine running if the number is high. It worked in early
-testing and then quietly stopped being trustworthy. Stopped and running measured
-**1.18x** apart in the worst case. You cannot threshold on a 1.18x gap, and a gate
-you cannot trust means a trip that can never confirm.
+spectrum, call the machine running if the number is high. It worked in early testing
+and then quietly stopped being trustworthy. Stopped and running measured **1.18x**
+apart in the worst case. You cannot threshold on a 1.18x gap, and a gate you cannot
+trust means a trip that can never confirm.
 
-The cause was the sensor, not the machine. An accelerometer sensitive enough to
-catch a bearing starting to fail also has a broadband electrical hiss of its own,
-present whether the machine is on or off, spread across most of the spectrum. The
-motor's actual mechanical signature is a handful of narrow lines below about
-600 Hz: at 90 RPM, 200 full steps per revolution puts the step rate at 300 Hz,
-landing on bins 5 to 7 and almost nowhere else.
+The cause was the sensor, not the machine. An accelerometer sensitive enough to catch
+a bearing starting to fail also has a broadband electrical hiss of its own, present
+whether the machine is on or off. The motor's actual mechanical signature is a
+handful of narrow lines below about 600 Hz: at 90 RPM, 200 full steps per revolution
+puts the step rate at 300 Hz, landing on bins 5 to 7 and almost nowhere else.
 
 So the gate was averaging over 384 bins, 128 on each of three axes, of which maybe
 three carried the motor. The other 381 were the sensor listening to itself. We had
@@ -534,28 +513,24 @@ built a very sophisticated and expensive way of measuring an accelerometer.
 
 # 6.6 The fix, and the result that made no sense
 
-The fix is step 2. Measure the floor with the machine deliberately off, per bin,
-and count only the **excess** over that floor as real signal. The floor is a median
+The fix is step 2. Measure the floor with the machine deliberately off, per bin, and
+count only the **excess** over that floor as real signal. The floor is a median
 rather than a mean, which stops one stray frame lifting it.
 
-Measured live, in the sensor's own raw energy units. The two energy figures are
-session means; the margin is the worst case across that session, which is the
-number a threshold actually has to survive.
+Measured live, in raw sensor energy units. The two energy figures are session means;
+the margin is the worst case across that session, which is the number a threshold
+actually has to survive.
 
 - **Full-spectrum average:** stopped 7,480, running 11,137. Worst-case margin **1.18x**.
 - **Excess over a measured baseline:** stopped 1,414, running 6,194. Worst-case margin **2.09x**.
 
-That is the difference between a threshold that is a coin flip and one you can arm
-a motor stop against.
+The obvious alternative was measured too, and it is the least intuitive result in the
+project. **Band-limiting** the gate to bins 0 to 7, the motor's own frequency range,
+separated **worse**: 1.09x against 2.09x. The noise floor is *tallest* in exactly the
+low bins where the real signal also lives, so narrowing the window does not escape it.
 
-The obvious alternative was measured too, and it is the least intuitive result in
-the project. **Band-limiting** the gate to bins 0 to 7, the motor's own frequency
-range, separated **worse**: 1.09x against 2.09x. The noise floor turns out to be
-*tallest* in exactly the low bins where the real signal also lives, so narrowing
-the window does not escape it.
-
-The transferable principle: do not hardcode a number that is supposed to mean
-"this machine is running". Measure it, per machine, per sensor.
+The transferable principle: do not hardcode a number that is supposed to mean "this
+machine is running". Measure it, per machine, per sensor.
 
 # 6.7 Step 3: running conditions, and where the frames go
 
@@ -563,10 +538,9 @@ A machine does not have one healthy state. A pump idling and a pump at full head
 vibrate differently, and both are fine. Show the model only one and the other reads
 as faulty every time the shift changes what the machine is doing.
 
-So step 3 collects **named conditions**, not one batch. *Running* is the default
-and the only mandatory one. An operator can add *No load*, *Full load* or anything
-they type, and each collects its own 50 frames or more. Add none and the step
-behaves exactly like a single batch. Those frames go three places at once.
+So step 3 collects **named conditions**, not one batch. *Running* is the default and
+the only mandatory one; an operator can add *No load*, *Full load* or anything they
+type, each collecting its own 50 frames or more. Those frames go three places at once.
 
 - **Pooled into one training batch.** All conditions together, one model, one picture of healthy that spans the machine's real duty range.
 - **The gate's running reference, taken from the quietest condition**, not the pooled median. A median dragged upward by a loud full-load condition would push that line above the machine's own no-load level, and a machine idling normally would read as stopped.
@@ -575,23 +549,21 @@ behaves exactly like a single batch. Those frames go three places at once.
 # 6.8 What a second condition costs, measured
 
 Pooling conditions widens the spread of healthy scores, and the thresholds sit
-relative to that spread. So they rise and sensitivity drops. That much was
-expected. How much was not. Measured on the rig, same frame counts, same
-everything else:
+relative to that spread. So they rise and sensitivity drops. That much was expected.
+How much was not. Measured on the rig, same frame counts, same everything else:
 
 - **`slow_90rpm` alone:** warning threshold 0.146, fault threshold 0.292.
 - **`slow_90rpm` plus `fast_150rpm`:** warning 0.745, fault 1.490.
 
-**5.1x wider**, and there is a consequence you can watch happen. A 220 RPM
-overspeed, 2.4x the commissioned speed and an unambiguous fault, scored 1.851 and
-tripped in about eleven seconds under one condition. Under two conditions it never
-crossed 1.490 at all.
+**5.1x wider**, and there is a consequence you can watch happen. A 220 RPM overspeed,
+2.4x the commissioned speed and an unambiguous fault, scored 1.851 and tripped in
+about eleven seconds under one condition. Under two conditions it never crossed 1.490
+at all.
 
-It is still the right trade for a machine with a real duty cycle: a higher line
-that never false-alarms at the start of every shift beats a tight line that cries
-wolf. But it should be measured per machine before it is promised to an operator,
-and the honest fix, per-condition thresholds, is on the roadmap in section 13
-rather than claimed as done here.
+It is still the right trade for a machine with a real duty cycle: a higher line that
+never false-alarms at the start of every shift beats a tight line that cries wolf.
+But it should be measured per machine, and the honest fix, per-condition thresholds,
+is on the roadmap in section 13 rather than claimed as done here.
 
 # 6.9 Step 4: training on the board
 
@@ -601,18 +573,18 @@ rather than claimed as done here.
 An **autoencoder** is a small neural network whose only job is to squeeze its input
 through a narrow bottleneck and rebuild it on the other side. Train one on nothing
 but a machine's healthy data and it becomes very good at rebuilding that machine's
-normal, and noticeably worse at rebuilding anything else. The size of that gap is
-the **anomaly score**.
+normal, and worse at rebuilding anything else. The size of that gap is the **anomaly
+score**.
 
-Choosing that over a supervised classifier as the primary detector is practical,
-not academic: **nobody has labelled fault data for a machine that has not failed
-yet.** A supervised model needs examples of the thing you are trying to prevent.
-An autoencoder needs only examples of the machine behaving.
+Choosing that over a supervised classifier as the primary detector is practical, not
+academic: **nobody has labelled fault data for a machine that has not failed yet.** A
+supervised model needs examples of the thing you are trying to prevent. An
+autoencoder needs only examples of the machine behaving.
 
 The network is deliberately small, and its widths scale from the input dimension
-rather than being hardcoded, so the same code fits a microphone-only node and a
-full four-channel one. Training takes seconds on the board, with live progress
-pushed to the browser, and the operator is told they can walk away.
+rather than being hardcoded, so the same code fits a microphone-only node and a full
+four-channel one. Training takes seconds on the board, with live progress pushed to
+the browser, and the operator is told they can walk away.
 
 # 6.10 Step 5: proving which motor stops this machine
 
@@ -645,9 +617,9 @@ send is stop.** No code path anywhere sets a speed or starts a machine.
 
 # 6.11 From a score to a status
 
-A single number is not a status. Two thresholds turn it into one, and both come
-from what this machine's own healthy data looked like. Take the mean of the
-healthy scores, call it mu, and their spread, call it sigma:
+A single number is not a status. Two thresholds turn it into one, both from this
+machine's own healthy data. Take the mean of the healthy scores, call it mu, and
+their spread, call it sigma:
 
 - **Warning** at mu plus 8 sigma.
 - **Fault** at mu plus 15 sigma, with guards so fault above warning above zero always holds, even for a batch with almost no spread at all.
@@ -656,11 +628,11 @@ Those margins look enormous and are not. Healthy scores cluster very tightly rig
 after training on that same data, so eight sigma is a small absolute distance. From
 one real session: healthy score **0.046**, warning **0.144**, fault **0.288**.
 
-A fixed global threshold cannot work here, and this is the most common way a
-project like this fails quietly. Reconstruction error is measured in units set by
-that machine's own spectrum, so what reads as comfortably healthy on one motor
-reads as a fault on another. Crossing the line once is not enough either: a fault
-has to persist across consecutive frames before the status changes.
+A fixed global threshold cannot work here, and this is the most common way a project
+like this fails quietly. Reconstruction error is measured in units set by that
+machine's own spectrum, so what reads as healthy on one motor reads as a fault on
+another. Crossing the line once is not enough either: a fault has to persist across
+consecutive frames before the status changes.
 
 ---
 
@@ -675,12 +647,12 @@ accelerometer, microphone and status ring as the base station, watching its own
 machine and reporting over Wi-Fi. The dashboard does not distinguish wired machines
 from wireless ones.
 
-Wi-Fi rather than Bluetooth, and both BLE options were looked at. Advertise-only
-BLE is one-way, disqualifying the moment the base station has to send a stop
-*back*. BLE GATT was the original plan until Linux's BlueZ stack turned out to have
-documented reliability problems holding concurrent connections to more than one
-peripheral. Throughput settled it either way: a satellite's frame is about 4.1 KB
-every 200 ms, roughly 164 kbps, which is nothing on Wi-Fi and not realistic on BLE.
+Wi-Fi rather than Bluetooth, and both BLE options were looked at. Advertise-only BLE
+is one-way, disqualifying the moment the base station has to send a stop *back*, and
+BLE GATT was the original plan until BlueZ turned out to have documented problems
+holding concurrent connections to more than one peripheral. Throughput settled it
+anyway: 4.1 KB every 200 ms, roughly 164 kbps, is nothing on Wi-Fi and not realistic
+on BLE.
 
 # 7.1 Bill of materials: satellite node
 
@@ -873,25 +845,19 @@ Submitting runs three REST calls rather than a redirect to Studio.
 The last two are identical JSON for every class and only the project ID changes, so
 adding a machine type is one button rather than a Studio session.
 
-That `features` block took two wrong shapes to find. An invented axis name matched
-none of the axes Edge Impulse derives from a CSV header row, so nothing trained at
-all; a `time-series` block sized to fit all 536 numbers in one window did train and
-was rejected anyway, because the data is a precomputed feature vector and shipping a
-workaround as an architecture is how you maintain it forever. What shipped is real
-per-column names, `accel_x_bin0` through `mic_skewness`, generated from that node's
-sensor configuration. Every local test passed throughout: the bug existed only
-against the real service.
+That `features` block took two wrong shapes to find, and every local test passed
+through all three. The bug existed only against the real service, which is this
+project's strongest argument for testing against the thing itself.
 
 # 8.6 Uploading, and four ways to get it wrong
 
-Tick the recordings on a class's card and press **Upload**. What happens underneath
-is more careful than the button suggests, and each of these was a real mistake
-first.
+Tick the recordings on a class's card and press **Upload**. Four things happen
+underneath that the button does not suggest, and each was a real mistake first.
 
-- **The scalar tail is standardised before upload.** Live inference always standardises the six-statistics tail before scoring, so uploading raw vectors would train the classifier on a different distribution than it meets at runtime. That is train/serve skew: a model that tests beautifully and behaves oddly on the machine.
-- **The baseline is pooled across the class, not per node.** An earlier version standardised each capture against its own node's commissioning statistics, which silently made five identical pumps inconsistent with each other and made uploading depend on commissioning, which it was never supposed to require.
+- **The scalar tail is standardised before upload**, because live inference standardises it before scoring. Uploading raw vectors would train the classifier on a different distribution than it meets at runtime: train/serve skew, a model that tests beautifully and behaves oddly on the machine.
+- **The baseline is pooled across the class, not per node.** An earlier version standardised each capture against its own node's commissioning statistics, which silently made five identical pumps inconsistent with each other.
 - **It is fitted on the train split only.** Fitting normalisation statistics over the test rows too is a small, respectable-looking way to leak.
-- **The train/test split is contiguous.** Each fault condition on this rig is one continuous capture, not many independent short samples, so a random split would put adjacent, near-identical windows on both sides of the line. The last portion of each file is reserved for test and never seen in training. That is a real methodological limitation of one-capture-per-class data, and it is stated rather than papered over.
+- **The train/test split is contiguous.** Each fault condition here is one continuous capture, so a random split would put near-identical adjacent windows on both sides of the line. The last portion of each file is reserved for test. That is a real limitation of one-capture-per-class data, stated rather than papered over.
 
 # 8.7 Training in Studio, and fetching the model back
 
@@ -1045,15 +1011,15 @@ changes again, so one acknowledgement never silences a machine permanently.
 - **Training.** The batch is closed and the model is being fitted, with a live percentage.
 - **Healthy.** Scored, comfortably below this machine's own warning line.
 - **Warning.** Over the warning line. Something changed, nothing has been decided.
-- **Fault.** Over the fault line, sustained. With a motor armed, this is what starts the countdown.
+- **Fault.** Over the fault line, sustained. With a motor armed, this starts the countdown.
 - **Idle.** Not turning, and *a person* stopped it. Normal, and set by the gate.
-- **Tripped.** Not turning, and *we* stopped it. Latched until cleared, and only set once the gate confirms it actually went quiet.
-- **Paused.** Monitoring deliberately suspended for maintenance or a known noisy job. Staleness never demotes it to Offline, because it is a standing human intent.
+- **Tripped.** Not turning, and *we* stopped it. Latched until cleared, and only set once the gate confirms it went quiet.
+- **Paused.** Deliberately suspended for maintenance or a known noisy job. Staleness never demotes it to Offline, because it is a standing human intent.
 - **Offline.** Nothing heard for 30 seconds. **Never stored**, always derived from the last frame's timestamp, so it cannot get stuck on after a node comes back.
 
-Every legal transition is enforced in one explicit state machine, rather than by
-each feature setting a status field and hoping. That closed a bug where pausing a
-node mid-setup silently stole it out from under the setup session.
+Every legal transition is enforced in one explicit state machine, rather than by each
+feature setting a status field and hoping. That closed a bug where pausing a node
+mid-setup silently stole it out from under the setup session.
 
 # 10.3 Fleet, and what an open row shows
 
@@ -1150,64 +1116,37 @@ feature is unfinished. A value is missing.
 
 # 11 How it works inside
 
+This section is the short version. The full architecture, layer by layer, is in
+`report/REPORT.md` in the repository.
+
 # 11.1 Three kinds of board, and only one of them thinks
 
 [IMAGE: report/diagrams/05-full-architecture.png]
 *One base station, any number of satellites, one motor rig. The thinking happens in one place.*
 
 The base station's Linux side holds the asset registry, trains and runs the models,
-serves the dashboard and makes the decision to stop a motor. Every other board in
-this project is a sense organ or a muscle. The motor rig in particular is not a
-peer: it accepts *stop* and nothing else.
+serves the dashboard and decides to stop a motor. Every other board is a sense organ
+or a muscle. The motor rig is not a peer: it accepts *stop* and nothing else.
 
 [IMAGE: report/diagrams/12-software-architecture.png]
 *Five layers on the Linux side. Nothing skips a layer.*
 
-That side is roughly 15,700 lines of Python, alongside 9,100 of frontend, 4,300 of
-Zephyr firmware, 3,600 of ESP32 firmware and 11,300 of tests, in five layers:
+Roughly 15,700 lines of Python, alongside 9,100 of frontend, 4,300 of Zephyr
+firmware, 3,600 of ESP32 firmware and 11,300 of tests, in five layers: **transport**
+(bytes off a wire into a frame), **ingest and route** (match a frame to an asset,
+validate, build the 536-number vector), **decide** (running or stopped, how unlike
+normal, which fault), **remember** (live record, durable history, recordings), and
+**act and tell** (the trip, the dashboard, the phone).
 
-- **Transport.** Bytes off a wire, into a frame. Two sources, one frame type.
-- **Ingest and route.** Match a frame to an asset, validate its shape, build the 536-number vector.
-- **Decide.** Running or stopped, how unlike normal, which fault.
-- **Remember.** One live record per asset, durable score history, labelled recordings.
-- **Act and tell.** The trip, the dashboard, the phone.
+# 11.2 Three decisions that shaped it
 
-# 11.2 One frame, start to finish
+- **One frame format, two transports.** The reducing chip runs a 512-point FFT per channel and average-pools to 128 bins before anything leaves it, because shipping raw audio and vibration at native rate would saturate any link worth having. It arrives over internal SPI at about 10 to 14.5 KB every 64 ms, or over MQTT from a satellite at about 4.1 KB every 200 ms. The scoring pipeline never learns which.
+- **Two links between the processors, not one.** **LPUART1 at 500 kbaud** carries the control plane; a **dedicated SPI bus at about 40 MHz** carries bulk telemetry. They started as one, and splitting them was a fix rather than an optimisation: at around 65 KB/s of continuous frames the shared link's message framer wedged and took the whole control channel with it.
+- **The registry is the only thing that fans out.** Nothing writes an asset's status directly and nothing subscribes to the pipeline. A status change goes through one state machine into the registry, which pushes it to the dashboard, the status ring, the LED matrix, Telegram and protection at once. Adding an output means subscribing to the registry, not editing the scoring path, which is the one place a mistake produces a wrong answer about a machine.
 
-- **Acquire.** Both sensors are sampled at their native rates on whichever chip they are wired to. The accelerometer's hardware FIFO batches samples, so the host gets one interrupt per block rather than one per sample.
-- **Reduce.** That same chip runs a 512-point FFT per channel, computes the six statistics per channel, then average-pools each spectrum down to its 128-bin wire count. This is the step that makes the whole architecture possible: shipping raw audio and vibration off-chip at native rate would saturate any link fast enough to be worth having.
-- **Arrive.** Over the internal SPI bus for the base station's own sensors, about 10 to 14.5 KB every 64 ms, or over Wi-Fi and MQTT from a satellite, about 4.1 KB every 200 ms. Same frame either way.
-- **Route.** The pipeline manager matches the frame to an asset and validates its shape against what that asset was set up with. A node whose channel set or bin count has changed is caught here, rather than silently scored against a model that no longer fits it.
-- **Score.** The gate, the autoencoder, and the class's classifier if there is one.
-- **Fan out.** A status change goes into the registry, which pushes it everywhere at once.
-
-Time-domain sections do not ride every frame. They piggyback on **every fourth**
-one, because the collapsed raw-signal charts do not need per-frame freshness and
-carrying them every time would drag the anomaly score and the spectra down with
-them.
-
-# 11.3 Two links, one broker, and the only thing that fans out
-
-Between the STM32U585 and the QRB2210 run two independent links: **LPUART1 at
-500 kbaud** for the control plane, status pushes, statistics queries and display
-commands, and a **dedicated SPI bus at about 40 MHz** for bulk telemetry.
-
-They started as one link. Splitting them was not an optimisation, it was a fix: at
-around 65 KB/s of continuous frames the shared serial link's message framer wedged
-and took the entire control channel down with it. A large raw capture now cannot
-interfere with the live status loop, because they are not on the same wire.
-
-The MQTT broker runs **on the UNO Q itself**, not on a developer machine, and that
-is load-bearing rather than convenient. A satellite bolted to a compressor has
-nowhere else to publish, and a broker on somebody's laptop means the fleet stops
-when that laptop closes.
-
-And **the registry is the only thing that fans out.** Nothing writes an asset's
-status directly and nothing subscribes to the pipeline. A status change goes through
-one state machine into the registry, and the registry pushes it to the dashboard,
-the status ring, the LED matrix, Telegram and protection at once. Adding a new
-output means subscribing to the registry, not editing the scoring path, which is the
-one place a mistake produces a wrong answer about a machine.
+The MQTT broker runs **on the UNO Q itself**. A satellite bolted to a compressor has
+nowhere else to publish, and a broker on somebody's laptop means the fleet stops when
+that laptop closes.
 
 ---
 
@@ -1235,51 +1174,31 @@ the machine runs or not. That is the whole argument of section 6.6, in numbers: 
 full-spectrum average gives a **1.18x** margin between stopped and running, excess
 over a measured baseline gives **2.09x**.
 
-# 12.2 A full setup run
+# 12.2 A full setup run, and the trip
 
 Straight off one session on the real UNO Q and rig:
 
-- **Stopped baseline:** 65 frames with the rig confirmed physically off. Fitted energy reference **1,533.1**, measured spread **1.39x**, gate threshold set at **2,682.9**.
-- The node went from flapping between fault and warning at rest to settling cleanly on **Idle**, and left Idle immediately when the rig spun up.
-- **Trained against the running rig:** healthy anomaly score **0.046**, warning threshold **0.144**, fault threshold **0.288**.
-- Ramped down again and it returned cleanly to Idle, not to Fault.
-- Dashboard checked against the live device in a real browser, zero console errors throughout.
+- **Stopped baseline:** 65 frames with the rig confirmed physically off. Fitted energy reference **1,533.1**, measured spread **1.39x**, gate threshold **2,682.9**. The node went from flapping between fault and warning at rest to settling cleanly on **Idle**, and left Idle the moment the rig spun up.
+- **Trained against the running rig:** healthy anomaly score **0.046**, warning threshold **0.144**, fault threshold **0.288**. Ramped down again, it returned to Idle, not Fault. Zero browser console errors throughout.
+- **The trip, verified repeatedly, not once.** Motor spinning, fault confirmed, countdown, **motor stops**, stays stopped, refuses further speed commands until cleared. Cleared and spun back up, it resumes and is re-scored from scratch.
+- **Both directions in one session.** The setup confirmation test and a genuine fault-driven trip ran against the same output minutes apart, the first landing on Idle and the second on Tripped, exactly as intended.
+- **A second session ran all six steps end to end**, including the confirm-by-stopping test passing against the right output, correctly failing against a wrong one, and correctly refusing to run against an already-stopped machine, plus all four trip-banner states on all five tabs.
 
-A second session ran the full six steps end to end: the rig's output announcement
-arriving and populating step 5; the confirm-by-stopping test passing against the
-correct output, correctly failing against a wrong one, and correctly refusing to run
-against an already-stopped machine; a stopped baseline taken with the machine
-genuinely off; two named running conditions each collecting their own frames; and all
-four trip-banner states rendered on all five tabs with no JavaScript errors.
+Two honest notes from those runs. The countdown started and cancelled three times
+before the trip finally fired, because the score was bouncing right at the fault
+threshold: correct behaviour, since a fault has to persist to be believed, but a
+visibly twitchy banner. And an earlier version had a genuine race that could report a
+working trip as failed. It was found on hardware, fixed, and re-tested both ways.
 
-# 12.3 The trip, both directions
+# 12.3 Per-axis beats fused, decisively
 
-Verified repeatedly on the rig, not once. Motor spinning, fault confirmed, countdown,
-**motor stops**, stays stopped, and refuses further speed commands until cleared from
-the dashboard. Cleared and spun back up, it resumes normally and is re-scored from
-scratch. Both the setup confirmation test and a genuine fault-driven trip were
-observed against the same output minutes apart in one session, the first landing on
-Idle and the second on Tripped, exactly as intended.
+An offline harness replays real captures through the feature pipeline and sweeps its
+parameters. Two findings changed the design.
 
-One honest observation, recorded because it is a real characteristic rather than a
-defect: the countdown started and was cancelled three times before the trip finally
-fired, because the score was bouncing right at the fault threshold. The system
-behaved correctly every time, since a fault has to persist to be believed, but a
-score sitting on the line makes a visibly twitchy banner.
-
-An earlier version also had a genuine race in how a trip was confirmed, which could
-report a trip that had actually worked as failed. It was found on hardware, fixed,
-and re-tested in both directions.
-
-# 12.4 Per-axis beats fused, decisively
-
-An offline harness replays real captures through the whole feature pipeline and
-sweeps its parameters, and two of its findings changed the design.
-
-- **Per-axis versus fused:** **+38.5 sigma** worst-case fault separation, against **+1.8 sigma** for a combined tri-axial magnitude, on the same captures. That is why the model consumes `accel_x`, `accel_y` and `accel_z` separately rather than one magnitude.
+- **Per-axis versus fused:** **+38.5 sigma** worst-case fault separation, against **+1.8 sigma** for a combined tri-axial magnitude, on the same captures. That is why the model consumes `accel_x`, `accel_y` and `accel_z` separately.
 - **The six statistics carry more than expected:** adding them took healthy-versus-imbalance separation from roughly **3 sigma to roughly 80 sigma**. A spectrum alone was leaving a great deal on the table.
 
-# 12.5 Known limitations
+# 12.4 Known limitations
 
 - **The bench rig's three motors share one vibration sensor.** Trip one while the others keep running and that sensor still honestly reads *running*. A property of one sensor covering three motors on a bench, not a software defect, and why the rig starts with a single motor installed. A real deployment has one sensor per machine.
 - **Multi-condition training costs sensitivity**, by a measured **5.1x** on this rig. Section 6.8 has the numbers; per-condition thresholds are item 3 in section 13.
@@ -1296,7 +1215,7 @@ sweeps its parameters, and two of its findings changed the design.
 # 13.1 The roadmap, in the order it would be built
 
 - **1. A relay per motor.** Today's trip stops a motor from moving; a relay would remove its power at the source as well. Held back by a no-new-hardware constraint in this build window, not by design uncertainty: the trip message, the latch and the confirmation logic would not change.
-- **2. Hysteresis on the fault threshold.** Separating the enter-fault and leave-fault levels fixes the flapping countdown in section 12.3 without weakening the trip.
+- **2. Hysteresis on the fault threshold.** Separating the enter-fault and leave-fault levels fixes the flapping countdown in section 12.2 without weakening the trip.
 - **3. Per-condition thresholds.** The 5.1x sensitivity cost is the single largest known weakness in the detection path. The hard part is not the thresholds, it is knowing which condition a machine is currently in, which nothing detects today and which the same gate machinery is well placed to answer.
 - **4. Closing the satellite portal bug**, the last gap between the satellite firmware and the base station's verification record.
 - **5. A shared anomaly model per asset class.** Pre-train one autoencoder per class on pooled healthy data, and per-unit setup drops from collect-and-train to collect-and-calibrate. That would make commissioning the fortieth machine faster than the first, which is the opposite of how it works today.
