@@ -883,7 +883,7 @@ That is deliberate, and it buys three things.
 # 8 Naming the fault
 
 The shop has two pumps now, the borewell one behind the shed and the coolant
-pump on the lathe. Different units, bought years apart, failing the same ways.
+pump inside. Different units, bought years apart, failing the same ways.
 
 # 8.1 Why there is a second model
 
