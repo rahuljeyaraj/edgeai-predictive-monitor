@@ -1,7 +1,8 @@
 # Hackster.io article — plan
 
 Status: **complete draft, sections 1 to 13**, in `hackster/ARTICLE.md`
-(~14,700 words). Remaining work is media, a length pass, and transcription.
+(~14,700 words). Remaining work, in order: the **length pass** (starts in its
+own session), then media, then transcription.
 
 Source of truth for all technical content: `report/REPORT.md` (3,385 lines).
 Every section below carries the report chapter it draws from.
@@ -357,6 +358,15 @@ so these are pinned and must not move:
   before the article goes up.
 - **The grinder photos are placed**: two in 8.3 inline, the 6201 set at the end
   of 8.3.
+- **Cast checked against the rule, 2026-09-02.** Drill press: zero mentions.
+  Lathe: one mention only, section 1.1, as the attended counter-example, which
+  is what this plan's section 3 locked in. An incidental "the coolant pump on
+  the lathe" in section 8 was removed (`020a060`). Do not reintroduce either as
+  a monitored machine.
+- **Hardware bring-up is settled and is not to be re-flagged.** The article
+  states everything as hardware-verified. The one caveat it keeps, in 1.5 and
+  12.5, is the satellite node's own captive portal not loading, which is still
+  genuinely open and not root-caused.
 
 ### Divergence found, report needs updating
 
