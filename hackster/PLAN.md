@@ -1,7 +1,7 @@
 # Hackster.io article — plan
 
-Status: **plan agreed, no prose written.** Next session writes sections 1 onward
-into `hackster/ARTICLE.md`.
+Status: **sections 1 to 5 written** in `hackster/ARTICLE.md` (~4,100 words).
+Next session writes section 6 onward into the same file.
 
 Source of truth for all technical content: `report/REPORT.md` (3,385 lines).
 Every section below carries the report chapter it draws from.
@@ -299,8 +299,35 @@ Video: one real trip on the rig, motor stopping and the ring changing.
 
 ## 7. Next session
 
-1. Create `hackster/ARTICLE.md` with the legend, then write sections 1 to 5.
+1. Continue `hackster/ARTICLE.md` at **section 6**. The legend, sections 1 to 5
+   and a pending-marker comment at the end are already in place.
 2. Verify every number against `report/REPORT.md` or the code as you write it.
    Do not restate a figure from memory.
 3. Keep each subsection under ~150 words. Keep the story inside the sections,
    never in a heading.
+4. **Budget.** Sections 1 to 5 came to ~4,100 words. The house-style reference
+   (The Fire Pot) runs ~6,100 for ten sections. Sections 6 to 13 should land
+   around 3,500 to 4,000, for a total near 8,000.
+
+### Decided while writing sections 1 to 5
+
+- **No tables anywhere.** Hackster's editor has no table button, so every table
+  in the report becomes flat bullets with a bold lead-in. Same for numbered
+  lists: the legend has no ordered-list mapping, so 3.1's four jobs are bullets.
+- **Section 1.6 added**, "Three ways to read this": a three-bullet fork for
+  surfers, builders and readers who want the engineering. Matches the fork in
+  The Fire Pot's section 4.1.
+- **Currency is `₹`**, matching the report.
+- **Section 4 absorbed Appendix D** into 4.2 as three bullets plus a cost line,
+  as planned.
+
+### Divergence found, report needs updating
+
+`REPORT.md` §12.7, §12.8 and Chapter 13 item 4 all still say satellite nodes are
+"built and decode-verified but have not yet been run on a physical XIAO
+ESP32-S3". That is stale: Wi-Fi, MQTT, the status ring, the microphone and the
+accelerometer are all hardware-verified on node e36428 (commits `e5cfcf8`,
+`00bd4af`, `d49461c`, `4ddb009`, `f86ea22`). The article's section 1.5 states the
+current truth, including the one open captive-portal bug. The report should be
+brought into line, alongside the lathe/drill-press cast fix already noted in
+section 3 above.
