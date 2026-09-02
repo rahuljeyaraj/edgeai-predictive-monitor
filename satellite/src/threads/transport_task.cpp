@@ -588,9 +588,16 @@ static void transport_task_entry(void *arg)
 		 * the background too - if the real network comes back on its
 		 * own, self-heal and drop the AP again without needing a
 		 * technician to submit anything (symmetric with the
-		 * first-join path). */
+		 * first-join path). Skipped while a phone/laptop is actually
+		 * associated to the portal AP: ESP32 AP+STA is one radio, and
+		 * an STA join/scan attempt forces the softAP to hop onto the
+		 * STA's channel, which silently kicks any already-connected
+		 * portal client mid-page-load - exactly the "setup page never
+		 * loads" symptom this was causing with stale/unreachable
+		 * saved creds retried every 5s regardless of who was on the
+		 * AP. */
 		if (state == TRANSPORT_STATE_PROVISIONING && have_saved_creds &&
-		    WiFi.status() != WL_CONNECTED) {
+		    WiFi.status() != WL_CONNECTED && WiFi.softAPgetStationNum() == 0) {
 			static uint32_t last_bg_retry;
 
 			if (millis() - last_bg_retry >= 5000) {
