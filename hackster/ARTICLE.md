@@ -82,13 +82,12 @@ is the excuse. The trip is the point.
 This needs saying before anything else, because the software turns things off.
 
 This is condition monitoring with a protective trip. It is **not** a certified
-functional-safety system: no safety integrity level, no redundant channel, no
-independent watchdog on the trip path, no fail-safe if the base station loses
-power. If the Linux side dies, nothing trips and the machine keeps running
-exactly as it would have without this installed. Correct for a monitoring
-device, wrong for a guard interlock. Every safety function a machine already has
-stays where it is, and nothing here ever *starts* a machine: there is no code
-path that could.
+functional-safety system:
+
+- **No safety integrity level, no redundant channel**, and no independent watchdog on the trip path.
+- **No fail-safe if the base station loses power.** If the Linux side dies, nothing trips and the machine keeps running exactly as it would have without this installed. That is correct for a monitoring device and wrong for a guard interlock.
+- **Every safety function the machine already has stays where it is.** Emergency stop, guarding, overload protection: none of them answer to anything in this article.
+- **Nothing here ever *starts* a machine.** There is no code path that could.
 
 # 1.5 What is built, and what is not
 
@@ -119,12 +118,12 @@ says so in the same voice.
 
 # 2 Trying it without hardware
 
-Before you buy anything, run it. This is not a demo mode and not a mock. It
-starts the **real** dashboard application on your laptop, fed by a simulator
-speaking the **real** wire protocol, replaying **real** captured sensor data from
-the rig. The registry, feature pipeline, autoencoder, setup flow, thresholds,
-classifier and entire frontend are the same code that runs on the board. Only
-the sensor hardware at the far end of the wire is simulated.
+Before you buy anything, run it. This is not a demo mode and not a mock.
+
+- **Real application.** The same dashboard that runs on the board, on your laptop.
+- **Real wire protocol**, spoken by the simulator.
+- **Real sensor data**, replayed from captures taken on the rig.
+- **Simulated: one thing only.** The sensor hardware at the far end of the wire. The registry, feature pipeline, autoencoder, setup flow, thresholds, classifier and entire frontend are the shipping code.
 
 # 2.1 Ten minutes, start to finish
 
@@ -140,24 +139,28 @@ cd edgeai-predictive-monitor/base-station
 ./start_desktop_dashboard.sh
 ```
 
-That creates a virtual environment, installs dependencies, starts the
-application on **port 8180** with an isolated data directory so it can never
-touch a real device's registry, starts one simulated node, and prints both URLs.
-Useful flags: `--nodes N` for several independent nodes, `--captures-dir DIR` to
-replay a different folder, `--auto-online` to skip the first click, and
-`--host 0.0.0.0` to open it from a phone.
+That creates a virtual environment, installs dependencies, starts the application on
+**port 8180** with an isolated data directory so it can never touch a real device's
+registry, starts one simulated node, and prints both URLs. Useful flags:
+
+- `--nodes N` for several independent nodes.
+- `--captures-dir DIR` to replay a different folder of captures.
+- `--auto-online` to skip the first click.
+- `--host 0.0.0.0` to open the dashboard from a phone on the same network.
 
 # 2.2 What to look at, and what will be missing
 
-The simulated node starts **offline** on purpose. Open its own control page, then
-press *Go Online*. That page lets you pick which capture it streams, toggle the
-accelerometer and microphone independently, switch between fused and per-axis
-output, change FFT bin counts live, and watch its status LED change colour as the
-base station pushes status down to it. Exactly what a real node does. Then set it
-up on the dashboard, the same six steps section 6 describes, and watch it score.
+The simulated node starts **offline** on purpose. Open its own control page and
+press *Go Online*. That page does everything a real node does:
 
-One thing will be missing: the `base_station` asset itself. Its data arrives over
-the SPI link from the sampling chip, which does not exist on a laptop.
+- Pick which capture it streams.
+- Toggle the accelerometer and microphone independently.
+- Switch between fused and per-axis output, and change FFT bin counts live.
+- Watch its status LED change colour as the base station pushes status down to it.
+
+Then set it up on the dashboard, the same six steps section 6 describes, and watch
+it score. One thing will be missing: the `base_station` asset itself, whose data
+arrives over the SPI link from the sampling chip, which does not exist on a laptop.
 
 [IMAGE: screenshot of the desktop dashboard with one simulated node online and expanded]
 *The whole dashboard, running on a laptop, fed by real recorded vibration.*
@@ -207,9 +210,9 @@ which here is the bot token, not the charts.
 
 # 3.3 Three limits we found by pushing
 
-- **The accelerometer's output rate: 12.8 kHz, not the 25.6 kHz it will do.** At the full rate the sampling thread stopped yielding often enough and starved the inter-processor link outright, and telemetry frames went to zero. 12.8 kHz is still eight times the original 1,600 Hz baseline.
-- **The internal UART: 500000 baud, not the stock 115200.** The Linux side derives its baud from a 32 MHz reference with 16x oversampling, so 1 Mbaud and 2 Mbaud land on divisors of 2 and 1, right where the receiver loses sampling margin. They boot beautifully and wedge twenty minutes later, which is the worst kind of working. 500000 lands on a divisor of exactly 4 and survived every soak test.
-- **The GPU: measured, then declined.** The vendor TFLite GPU wheels are built for ARMv8.1 atomics this CPU does not have, so loading them takes the whole process down with an illegal instruction, not an exception you can catch. Through a Vulkan backend that does work, bit-exact against CPU, the speed-up measured roughly 1.0x from a single vector up to a 256-node batch. These models are 536 numbers wide. **Staying on CPU is a finding, not a shortcut.**
+- **The accelerometer: 12.8 kHz, not the 25.6 kHz it will do.** At full rate the sampling thread stopped yielding often enough and starved the inter-processor link outright: telemetry frames went to zero. 12.8 kHz is still eight times the original 1,600 Hz baseline.
+- **The internal UART: 500000 baud, not the stock 115200.** The Linux side derives baud from a 32 MHz reference with 16x oversampling, so 1 and 2 Mbaud land on divisors of 2 and 1, where the receiver loses sampling margin. They boot beautifully and wedge twenty minutes later, the worst kind of working. 500000 lands on a divisor of exactly 4 and survived every soak test.
+- **The GPU: measured, then declined.** The vendor TFLite GPU wheels need ARMv8.1 atomics this CPU lacks, so loading them kills the process with an illegal instruction, not a catchable exception. Through a Vulkan backend that does work, bit-exact against CPU, the speed-up measured roughly 1.0x from one vector up to a 256-node batch. These models are 536 numbers wide. **Staying on CPU is a finding, not a shortcut.**
 
 ---
 
@@ -256,7 +259,7 @@ The KX134 is the vibration sensor at every sensing point here, base station and
 satellite alike. Three lines decided it over both cheaper and far more expensive
 parts.
 
-- **Bandwidth was a hard filter, not a preference.** Early fault signatures, micro-pitting and incipient bearing race damage, live in the 2 to 10 kHz band. The KX134 reaches 25.6 kHz output; we run it at 12.8 kHz for the reason in section 3.3, putting usable bandwidth at 6.4 kHz, which reaches into that band rather than across all of it. Hobby parts top out near 1 kHz output and 250 to 500 Hz usable, and do not reach it at all.
+- **Bandwidth, the hard filter.** Early fault signatures, micro-pitting and incipient race damage, live in the 2 to 10 kHz band. The KX134 does 25.6 kHz output; we run 12.8 kHz per section 3.3, so usable bandwidth is 6.4 kHz. That reaches into the band. Hobby parts, 1 kHz output and 250 to 500 Hz usable, do not reach it at all.
 - **Noise density sets the detection floor.** Roughly 130 ug per root Hz, against roughly 300 for hobby parts. A noisy sensor raises the effective anomaly threshold before any software runs, and it is the property that mattered most in section 6.5.
 - **The 512-byte FIFO changes the real-time budget.** Without it the host must service the sensor about every 39 microseconds at full rate, a hostile interrupt load for a chip also running FFTs. With it, the sensor batches and raises one interrupt per block.
 
@@ -605,15 +608,14 @@ What happens instead:
 - **The system sends a real stop.** Same command, same code path, same payload as a genuine trip. Then it watches this node's own vibration gate.
 - **The machine goes quiet inside the confirm window** and the mapping is **confirmed**, stamped with the date. **It keeps running** and the test fails. Try the next one.
 
-The mapping is verified against physics rather than somebody's memory of how the
-panel was wired, and it exercises the whole trip path, MQTT topic to rig
-subscription to motor halt to gate confirmation, in daylight instead of during the
-first emergency. A machine that cannot be cycled right now has a *use without
-testing* fallback, recorded as **unconfirmed** and labelled so on the tile.
-Unconfirmed is honest. A confirmed-looking guess is not.
+Three things follow, beyond deleting a dropdown:
 
-The safety invariant survives all of it: **the only command this system can ever
-send is stop.** No code path anywhere sets a speed or starts a machine.
+- **The mapping is verified against physics**, not against somebody's memory of how the panel was wired.
+- **It exercises the whole trip path** in daylight, MQTT topic to rig subscription to motor halt to gate confirmation, instead of during the first emergency.
+- **It is honest about what it does not know.** A machine that cannot be cycled right now has a *use without testing* fallback, recorded as **unconfirmed** and labelled so on the tile. Unconfirmed is honest. A confirmed-looking guess is not.
+
+The safety invariant survives all of it: **the only command this system can ever send
+is stop.** No code path anywhere sets a speed or starts a machine.
 
 # 6.11 From a score to a status
 
@@ -724,13 +726,11 @@ and something a shop can adopt.
 - **5. It appears.** No pairing step, no ID to type. The asset shows up on the Fleet page the moment the first frame lands.
 
 The base station onboards itself the same way, raising an `EPM-BaseStation` hotspot
-and redirecting any request to its Network tab. Three rounds on real phones went
-into two details desk testing would never have produced. **The network list is
-tappable buttons, not an autocomplete field**: an earlier `<datalist>` version
-rendered unreliably or not at all on mobile, leaving the operator typing an SSID
-from memory beside the machine. And **the warning that the page may close sits
-above the Connect button**, because the device's own network switches out from
-under the page too fast to read a message that appears afterwards.
+and redirecting any request to its Network tab. Three rounds on real phones produced
+two fixes desk testing never would have:
+
+- **The network list is tappable buttons, not an autocomplete field.** An earlier `<datalist>` version rendered unreliably or not at all on mobile, leaving the operator typing an SSID from memory beside the machine.
+- **The warning that the page may close sits above the Connect button.** The device's own network switches out from under the page too fast to read a message that appears afterwards.
 
 [IMAGE: photo of a satellite node powered and running on a second machine]
 *One node, one machine, no cable back to the base station.*
@@ -857,7 +857,7 @@ underneath that the button does not suggest, and each was a real mistake first.
 - **The scalar tail is standardised before upload**, because live inference standardises it before scoring. Uploading raw vectors would train the classifier on a different distribution than it meets at runtime: train/serve skew, a model that tests beautifully and behaves oddly on the machine.
 - **The baseline is pooled across the class, not per node.** An earlier version standardised each capture against its own node's commissioning statistics, which silently made five identical pumps inconsistent with each other.
 - **It is fitted on the train split only.** Fitting normalisation statistics over the test rows too is a small, respectable-looking way to leak.
-- **The train/test split is contiguous.** Each fault condition here is one continuous capture, so a random split would put near-identical adjacent windows on both sides of the line. The last portion of each file is reserved for test. That is a real limitation of one-capture-per-class data, stated rather than papered over.
+- **The train/test split is contiguous.** Each fault condition here is one continuous capture, so a random split would put near-identical adjacent windows on both sides of the line. The last portion of each file is reserved for test. A real limitation of one-capture-per-class data, stated rather than papered over.
 
 # 8.7 Training in Studio, and fetching the model back
 
@@ -876,13 +876,10 @@ running, because job state lives on the server. From the moment that file lands,
 **every asset of that class is being classified**, with no restart and no per-node
 action.
 
-Inference runs as TFLite on the CPU via XNNPACK. Section 3.3 has the GPU
-measurement; the other half is that there is no NPU to target, because this board
-exposes only the audio DSP's FastRPC channel and Qualcomm's own product brief gives
-CPU and GPU as the sanctioned AI path for this part. The device side of the flow is
-plain REST over Python's standard library, no Edge Impulse SDK and nothing beyond
-`urllib`, which on a board where an unbuildable wheel already killed the GPU path is
-not a small consideration.
+Two notes on where that model actually runs:
+
+- **TFLite on the CPU via XNNPACK, deliberately.** Section 3.3 has the GPU measurement; the other half is that there is no NPU to target, because this board exposes only the audio DSP's FastRPC channel and Qualcomm's own product brief gives CPU and GPU as the sanctioned AI path for this part.
+- **No SDK, no HTTP library beyond `urllib`.** The device side is plain REST over Python's standard library, which on a board where an unbuildable wheel already killed the GPU path is not a small consideration.
 
 ---
 
@@ -900,7 +897,7 @@ email and hope.
 
 Five steps, each deliberately boring.
 
-- **1. Fault confirmed.** The anomaly score has stayed over this machine's own fault threshold across consecutive frames, and this asset has a motor armed against it. Protection is armed **per asset**, never fleet-wide: most monitored points have no actuator at all, and arming one is the explicit choice made in step 5 of setup.
+- **1. Fault confirmed.** The score has stayed over this machine's fault threshold across consecutive frames, and this asset has a motor armed against it. Protection is armed **per asset**, never fleet-wide: most monitored points have no actuator, and arming one is the explicit choice made in step 5.
 - **2. A ten-second countdown**, in a banner at the top of every tab, with a **Hold** button. This is the operator's only chance to intervene.
 - **3. The trip is published** over MQTT, naming exactly which motor. One motor, one asset: the dashboard refuses to point two assets at the same motor, because a trip from either would then look like it came from both.
 - **4. The motor stops.** A listener on the rig halts that one axis and latches it. The other motors, if healthy, keep running.
@@ -935,14 +932,14 @@ dashboard. That is what separates protection from control.
 
 There is also a deliberate absence: **there is no reset protection button.**
 Restarting the machine is what clears things, and restarting makes frames score
-again, so the score alone decides where the asset lands. Fix the fault and it
-returns to healthy. Do not, and it goes back to fault and trips again. An operator
-cannot restart their way out of a real fault, and nothing here ever restarts a
-machine on its own.
+again, so the score alone decides where the asset lands.
 
-One note on scope, from section 1.4: **the trip stops motion, not power.** A
-stopped stepper is still an energised stepper. A relay per motor is item one on the
-roadmap.
+- **Fix the fault** and it returns to healthy.
+- **Do not**, and it goes back to fault and trips again.
+
+An operator cannot restart their way out of a real fault, and nothing here ever
+restarts a machine on its own. One note on scope, from section 1.4: **the trip stops
+motion, not power.** A stopped stepper is still an energised stepper.
 
 # 9.4 Refusing to claim a trip that failed
 
@@ -1037,14 +1034,12 @@ the status rather than greying out generically, *Set up* becoming *Train* becomi
 *Training…* becoming *Re-run setup*, and on a stopped machine the disabled button
 says what to do about it: *"Start the machine first."*
 
-Open the row and the order is deliberate: **Protection** first, because during an
-incident it is the most important thing on screen, then the **live anomaly score**
-with this machine's threshold lines and a half-hour scrubber, then **fault
-classification**, then **live spectra** per axis and for the microphone. The chart
-is hidden entirely for a machine with no model yet, because an empty chart is worse
-than no chart. Three collapsed panels go deeper: all 24 scalar statistics, raw
-time-domain signals, and a waterfall spectrogram in 2D or 3D, none rendered until
-first opened, which keeps opening a row cheap on a phone.
+Open the row and the order is deliberate, top to bottom:
+
+- **Protection.** First, because during an incident it is the most important thing on screen.
+- **The live anomaly score**, with this machine's threshold lines and a half-hour scrubber. Hidden entirely for a machine with no model yet, because an empty chart is worse than no chart.
+- **Fault classification**, then **live spectra** per axis and for the microphone.
+- **Three collapsed panels**: all 24 scalar statistics, raw time-domain signals, and a waterfall spectrogram in 2D or 3D. None render until first opened, which keeps opening a row cheap on a phone.
 
 [IMAGE: screenshot of an expanded asset row with the anomaly chart, classifier bars and spectra]
 *Everything known about one machine, in the order an incident needs it.*
@@ -1058,9 +1053,9 @@ Each tab answers one question completely, under one rule: **no fact is editable 
 two places.** The asset class is edited in setup and nowhere else. The trip output
 is configured in setup and only read back elsewhere.
 
-- **Classifier: what kind of fault is it?** One card per asset class: the Edge Impulse link row, the recordings table with checkboxes, an action bar driven by that selection, *Upload (N)*, *Edit label (N)*, *Delete (N)*, and the model row. A class whose nodes are all decommissioned gets a de-emphasised delete-only card rather than vanishing, because silently taking four hours of labelled captures with it is how people stop trusting a tool.
+- **Classifier: what kind of fault is it?** One card per asset class: the Edge Impulse link row, the recordings table with checkboxes, an action bar driven by that selection, *Upload (N)*, *Edit label (N)*, *Delete (N)*, and the model row. A fully decommissioned class gets a de-emphasised delete-only card rather than vanishing, because silently taking four hours of labelled captures with it is how people stop trusting a tool.
 - **Network: which network is the base station on?** Mode, network name and address, plus a scan and a password field. This is the page a phone lands on through the captive portal.
-- **Performance: is the monitor itself keeping up?** One chart per CPU core rather than one averaged number, because an average would hide one core pinned at 100% behind three idle ones. Then memory, temperature and GPU where the board exposes them, and per asset: frames per second and percentage of the frame's time budget used. Metrics that are not genuinely available are left out, not faked and not zeroed.
+- **Performance: is the monitor keeping up?** One chart per CPU core, not one average, which would hide a core pinned at 100% behind three idle ones. Then memory, temperature and GPU where the board exposes them, and per asset: frames per second and percentage of the frame's time budget used. Metrics that are not available are left out, not faked and not zeroed.
 - **Alerts: who gets told, and about what?** A QR code to connect a phone, then one row per subscriber with two preferences: level, warnings upward or faults only, and scope, the whole fleet or a named set of machines.
 
 # 10.5 The light on the machine
@@ -1097,17 +1092,18 @@ because that display answers one question, *is anything wrong*.
 
 # 10.6 The phone alert
 
-Link a phone once by scanning the QR code on the Alerts tab, and a confirmed fault
-arrives as a Telegram message carrying the machine's nickname and, when there is
-one, the classifier's read. No account, no invite code, no bot username to
-remember. The link carries a one-time token with a fifteen-minute life, so an old
-screenshot of the QR code is not a permanent key to the fleet's alerts.
+Scan the QR code on the Alerts tab once and a confirmed fault arrives as a Telegram
+message carrying the machine's nickname and, when there is one, the classifier's
+read.
+
+- **No account, no invite code, no bot username to remember.**
+- **The link expires.** A one-time token with a fifteen-minute life, so an old screenshot of the QR code is not a permanent key to the fleet's alerts.
 
 This was built and demonstrated against a real bot and a real phone. It is switched
 off in the current build for exactly one reason: the bot token is a managed App Lab
-secret that has to be re-entered through App Lab's interface, and the on-device
-build fails if the secret is declared with no value behind it. Nothing about the
-feature is unfinished. A value is missing.
+secret that has to be re-entered through App Lab's interface, and the on-device build
+fails if the secret is declared with no value behind it. Nothing about the feature is
+unfinished. A value is missing.
 
 [IMAGE: screenshot of a real Telegram fault alert]
 *The channel that reaches somebody who is not looking at anything.*
@@ -1140,9 +1136,9 @@ normal, which fault), **remember** (live record, durable history, recordings), a
 
 # 11.2 Three decisions that shaped it
 
-- **One frame format, two transports.** The reducing chip runs a 512-point FFT per channel and average-pools to 128 bins before anything leaves it, because shipping raw audio and vibration at native rate would saturate any link worth having. It arrives over internal SPI at about 10 to 14.5 KB every 64 ms, or over MQTT from a satellite at about 4.1 KB every 200 ms. The scoring pipeline never learns which.
-- **Two links between the processors, not one.** **LPUART1 at 500 kbaud** carries the control plane; a **dedicated SPI bus at about 40 MHz** carries bulk telemetry. They started as one, and splitting them was a fix rather than an optimisation: at around 65 KB/s of continuous frames the shared link's message framer wedged and took the whole control channel with it.
-- **The registry is the only thing that fans out.** Nothing writes an asset's status directly and nothing subscribes to the pipeline. A status change goes through one state machine into the registry, which pushes it to the dashboard, the status ring, the LED matrix, Telegram and protection at once. Adding an output means subscribing to the registry, not editing the scoring path, which is the one place a mistake produces a wrong answer about a machine.
+- **One frame format, two transports.** The reducing chip runs a 512-point FFT per channel and average-pools to 128 bins before anything leaves it, because raw audio and vibration at native rate would saturate any link worth having. It arrives over internal SPI at 10 to 14.5 KB every 64 ms, or over MQTT at 4.1 KB every 200 ms. The scoring pipeline never learns which.
+- **Two links, not one.** **LPUART1 at 500 kbaud** carries the control plane; a **dedicated SPI bus at about 40 MHz** carries bulk telemetry. Splitting them was a fix, not an optimisation: at around 65 KB/s of continuous frames the shared link's framer wedged and took the control channel with it.
+- **The registry is the only thing that fans out.** Nothing writes a status directly and nothing subscribes to the pipeline. One state machine feeds the registry, which pushes to the dashboard, status ring, LED matrix, Telegram and protection at once. A new output subscribes to the registry rather than editing the scoring path, the one place a mistake produces a wrong answer about a machine.
 
 The MQTT broker runs **on the UNO Q itself**. A satellite bolted to a compressor has
 nowhere else to publish, and a broker on somebody's laptop means the fleet stops when
@@ -1184,11 +1180,10 @@ Straight off one session on the real UNO Q and rig:
 - **Both directions in one session.** The setup confirmation test and a genuine fault-driven trip ran against the same output minutes apart, the first landing on Idle and the second on Tripped, exactly as intended.
 - **A second session ran all six steps end to end**, including the confirm-by-stopping test passing against the right output, correctly failing against a wrong one, and correctly refusing to run against an already-stopped machine, plus all four trip-banner states on all five tabs.
 
-Two honest notes from those runs. The countdown started and cancelled three times
-before the trip finally fired, because the score was bouncing right at the fault
-threshold: correct behaviour, since a fault has to persist to be believed, but a
-visibly twitchy banner. And an earlier version had a genuine race that could report a
-working trip as failed. It was found on hardware, fixed, and re-tested both ways.
+Two honest notes from those runs:
+
+- **The countdown started and cancelled three times** before the trip finally fired, because the score was bouncing right at the fault threshold. Correct behaviour, since a fault has to persist to be believed, but a visibly twitchy banner.
+- **An earlier version had a genuine race** that could report a working trip as failed. Found on hardware, fixed, and re-tested both ways.
 
 # 12.3 Per-axis beats fused, decisively
 
@@ -1200,13 +1195,13 @@ parameters. Two findings changed the design.
 
 # 12.4 Known limitations
 
-- **The bench rig's three motors share one vibration sensor.** Trip one while the others keep running and that sensor still honestly reads *running*. A property of one sensor covering three motors on a bench, not a software defect, and why the rig starts with a single motor installed. A real deployment has one sensor per machine.
+- **The bench rig's three motors share one vibration sensor.** Trip one while the others run and that sensor still honestly reads *running*. A property of one sensor covering three motors, not a software defect, and why the rig starts with one motor. A real deployment has one sensor per machine.
 - **Multi-condition training costs sensitivity**, by a measured **5.1x** on this rig. Section 6.8 has the numbers; per-condition thresholds are item 3 in section 13.
 - **A score sitting exactly on the fault threshold makes the countdown flap.** Correct behaviour, unpleasant to watch, fixable with hysteresis.
 - **The classifier is not the safety path**, by construction, per section 8.1.
 - **The trip stops motion, not power**, per section 9.3.
 - **Fault classes blur above roughly 1.2 kHz on this rig.** A direct consequence of section 12.1: above the motor's own signature, every class is looking at the same sensor noise. On a machine with genuine high-frequency fault content, which this sensor can see, the constraint lifts.
-- **The satellite node's own captive portal has one open bug.** Wi-Fi, MQTT, the status ring, the microphone and the accelerometer are all hardware-verified on a physical XIAO ESP32-S3. The setup page the node serves does not reliably load; the live hypothesis is that the node's own Wi-Fi scan kicks clients off its access point. The base station's portal is a separate implementation, verified on real phones.
+- **The satellite's own captive portal has one open bug.** Wi-Fi, MQTT, the status ring, microphone and accelerometer are all hardware-verified on a physical XIAO ESP32-S3. The setup page it serves does not reliably load; the live hypothesis is that its own Wi-Fi scan kicks clients off its access point. The base station's portal is a separate implementation, verified on real phones.
 
 ---
 
@@ -1214,9 +1209,9 @@ parameters. Two findings changed the design.
 
 # 13.1 The roadmap, in the order it would be built
 
-- **1. A relay per motor.** Today's trip stops a motor from moving; a relay would remove its power at the source as well. Held back by a no-new-hardware constraint in this build window, not by design uncertainty: the trip message, the latch and the confirmation logic would not change.
+- **1. A relay per motor.** Today's trip stops motion; a relay would remove power at the source too. Held back by a no-new-hardware constraint, not design uncertainty: the trip message, the latch and the confirmation logic would not change.
 - **2. Hysteresis on the fault threshold.** Separating the enter-fault and leave-fault levels fixes the flapping countdown in section 12.2 without weakening the trip.
-- **3. Per-condition thresholds.** The 5.1x sensitivity cost is the single largest known weakness in the detection path. The hard part is not the thresholds, it is knowing which condition a machine is currently in, which nothing detects today and which the same gate machinery is well placed to answer.
+- **3. Per-condition thresholds.** The 5.1x sensitivity cost is the largest known weakness in the detection path. The hard part is not the thresholds, it is knowing which condition a machine is currently in, which nothing detects today and the same gate machinery is well placed to answer.
 - **4. Closing the satellite portal bug**, the last gap between the satellite firmware and the base station's verification record.
 - **5. A shared anomaly model per asset class.** Pre-train one autoencoder per class on pooled healthy data, and per-unit setup drops from collect-and-train to collect-and-calibrate. That would make commissioning the fortieth machine faster than the first, which is the opposite of how it works today.
 - **6. More labelled fault data per class.** The classifier's ceiling is set by how much genuinely distinct fault data exists per class, and the recording workflow is now good enough that collecting it is a matter of time rather than tooling.
