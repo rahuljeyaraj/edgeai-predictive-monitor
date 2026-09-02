@@ -410,9 +410,28 @@ static void start_provisioning_ap(const char *ap_ssid, const char *broker)
 
 	Serial.printf("[transport] diagnostic scan: %d network(s) seen\n", n);
 	for (int i = 0; i < n && i < 5; i++) {
-		Serial.printf("[transport]   %s (rssi=%d)\n", WiFi.SSID(i).c_str(), WiFi.RSSI(i));
+		/* Channel and auth mode, not just RSSI: a strong-signal network
+		 * this node still can't authenticate to is usually an auth-mode
+		 * mismatch (e.g. an AP demanding WPA3/PMF), and the channel says
+		 * whether the country config even permits transmitting there. */
+		Serial.printf("[transport]   %s (rssi=%d ch=%d auth=%d)\n", WiFi.SSID(i).c_str(),
+			      WiFi.RSSI(i), WiFi.channel(i), (int)WiFi.encryptionType(i));
 	}
 	WiFi.scanDelete();
+}
+
+/* "WiFi join timed out" on its own says nothing about WHY - a wrong password,
+ * an AP that never answered, and an association the AP actively refused all
+ * look identical from WiFi.status(). The ESP-IDF disconnect reason separates
+ * them (15 = 4-way handshake timeout, i.e. bad password; 201 = no AP found;
+ * 205 = connection failed; 2/3 = auth/assoc expired), which is the difference
+ * between "retype the password" and "this AP is refusing this client". */
+static void wifi_sta_event_handler(WiFiEvent_t event, WiFiEventInfo_t info)
+{
+	if (event == ARDUINO_EVENT_WIFI_STA_DISCONNECTED) {
+		Serial.printf("[transport] STA disconnected, reason=%u\n",
+			      (unsigned)info.wifi_sta_disconnected.reason);
+	}
 }
 
 static void transport_task_entry(void *arg)
@@ -422,6 +441,7 @@ static void transport_task_entry(void *arg)
 	derive_node_id();
 	maybe_seed_bench_credentials();
 	pinMode(PIN_BOOT_BUTTON, INPUT_PULLUP);
+	WiFi.onEvent(wifi_sta_event_handler);
 
 	char ap_ssid[64];
 
