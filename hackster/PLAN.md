@@ -305,16 +305,23 @@ Video: one real trip on the rig, motor stopping and the ring changing.
    Do not restate a figure from memory.
 3. Keep each subsection under ~150 words. Keep the story inside the sections,
    never in a heading.
-4. **BUDGET IS THE MAIN RISK.** Sections 1 to 7 already run ~7,960 words. The
-   house-style reference (The Fire Pot) is ~6,100 for ten sections. Sections 8
-   to 13 as skeletoned carry 29 subsections; at the pace of sections 6 and 7
-   (~175 words each) that is another ~5,000 and a ~13,000-word article, which is
-   too long to survive a judge's attention.
-   **Consolidate on the way in, do not write long and trim after.** Target
-   ~3,200 for sections 8 to 13, roughly 110 words per subsection, and merge
-   freely: 8.5 to 8.8 are one Edge Impulse round trip and can be three
-   subsections rather than four; 10.3 is already one line per tab; 11.1 to 11.4
-   can be three. Section 12 must keep every number.
+4. **BUDGET. Decided by Rahul, 2026-09-02. Do not re-open.**
+
+Sections 1 to 7 run ~7,960 words across 43 subsections, averaging 185 words
+each. Sections 8 to 13 as skeletoned carry 29 more. At the same pace that is a
+~13,300-word article, which is too long to survive a judge's attention.
+
+**Target ~3,000 words for sections 8 to 13, landing the article near 11,000.**
+Consolidate on the way in. Do not write long and trim afterwards.
+
+Where the depth goes, and where it does not:
+
+- **Section 9, the trip, stays at full depth.** All five subsections. This is the differentiator and the whole argument for Physical AI.
+- **Section 12, measured results, stays at full depth** and keeps every number. This is the credibility.
+- **Section 8 compresses from 9 subsections to about 5.** 8.5 through 8.8 are one Edge Impulse round trip (link, upload, train, fetch) and should be two subsections, not four. Keep 8.3 (the grinder bearings, with the three photos) and 8.9 (CPU-only is a finding) intact.
+- **Section 10 compresses from 5 subsections to about 3.** It is a dashboard tour, carried better by screenshots than by prose. Keep 10.1 (trip banner) and 10.4 (the status ring colour table) as their own; fold the rest together.
+- **Section 11 compresses from 4 subsections to about 2.** The linked report covers the internals properly, and this is the lowest value per word for a Hackster reader. One subsection on the three-board split, one on a frame's journey.
+- **Section 13 stays as one short section** and closes by returning to the compressor from 1.1.
 
 ### Subsection numbering as actually written
 
