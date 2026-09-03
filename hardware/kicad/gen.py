@@ -361,10 +361,33 @@ class Schematic:
         return "\n".join(lines)
 
 
-def write_pro(path):
+def write_pro(path, sch=None):
+    """Write a minimal KiCad 9 project file next to the .kicad_sch so the
+    schematic opens as a self-contained *project* (Hackster/other people
+    download one bundle and double-click), not a loose sheet that makes
+    KiCad prompt to create a project on open. KiCad backfills every other
+    setting with its defaults on first open; the one thing it wants up front
+    is `sheets` mapping the root sheet's UUID to a page name."""
     import json
+    stem = os.path.splitext(os.path.basename(path))[0]
+    root_uuid = sch.sheet_uuid if sch is not None else str(uuid.uuid4())
+    pro = {
+        "board": {"design_settings": {}, "layer_presets": [], "viewports": []},
+        "boards": [],
+        "cvpcb": {"equivalence_files": []},
+        "libraries": {"pinned_footprint_libs": [], "pinned_symbol_libs": []},
+        "meta": {"filename": os.path.basename(path), "version": 1},
+        "net_settings": {"classes": []},
+        "pcbnew": {"page_layout_descr_file": ""},
+        "schematic": {
+            "legacy_lib_dir": "",
+            "legacy_lib_list": [],
+        },
+        "sheets": [[root_uuid, "Root"]],
+        "text_variables": {},
+    }
     with open(path, "w") as f:
-        json.dump({"meta": {"filename": os.path.basename(path), "version": 1}}, f)
+        json.dump(pro, f, indent=2)
 
 
 if __name__ == "__main__":

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-from gen import Part, Schematic, stack_column
+from gen import Part, Schematic, stack_column, write_pro
 
 sch = Schematic("EdgeAI Predictive Monitor - Motor-Driver Rig Wiring (Arduino Uno + CNC Shield V3)", paper="A2")
 
@@ -68,4 +68,5 @@ sch.note("Arduino Uno + CNC Shield V3; one driver per axis, shared ~ENABLE activ
 sch.note("Set each driver's current-limit trimpot before running: A4988 Vref = Imax x 8 x Rsense, DRV8825 Vref = Imax / 2.", 20, 41, size=2.0)
 
 open("motor_driver_rig.kicad_sch", "w").write(sch.render())
-print("wrote motor_driver_rig.kicad_sch")
+write_pro("motor_driver_rig.kicad_pro", sch)
+print("wrote motor_driver_rig.kicad_sch + motor_driver_rig.kicad_pro")

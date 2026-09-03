@@ -7,11 +7,15 @@ Chapter 2.3 / 3.3 / Appendix B — if a pin changes there, regenerate here.
 
 | Script | Output | Report location |
 |---|---|---|
-| `base_station.py` | `base_station.kicad_sch` | Chapter 2.3 / Appendix B.1 |
-| `satellite_node.py` | `satellite_node.kicad_sch` | Chapter 3.3 / Appendix B.2 |
-| `motor_driver_rig.py` | `motor_driver_rig.kicad_sch` | Chapter 5 / Appendix B.3 |
+| `base_station.py` | `base_station.kicad_pro` + `.kicad_sch` | Chapter 2.3 / Appendix B.1 |
+| `satellite_node.py` | `satellite_node.kicad_pro` + `.kicad_sch` | Chapter 3.3 / Appendix B.2 |
+| `motor_driver_rig.py` | `motor_driver_rig.kicad_pro` + `.kicad_sch` | Chapter 5 / Appendix B.3 |
 
-Each `.kicad_sch` opens directly in KiCad (Eeschema). Every part -- UNO Q,
+Each script writes a matching `.kicad_pro` (minimal -- KiCad backfills its
+defaults on first open; `sheets` points at the `.kicad_sch` root UUID) so
+the pair opens as a self-contained *project*, not a loose sheet that makes
+KiCad prompt to create one. Each `.kicad_sch` also opens directly in KiCad
+(Eeschema) on its own. Every part -- UNO Q,
 XIAO ESP32S3, KX134, INMP441, WS2812 ring, A4988/DRV8825, NEMA-17 -- is a
 generated generic box symbol, since none of these breakout boards have
 official KiCad library parts. Connections are drawn as short pin stubs +
@@ -53,8 +57,12 @@ constants further, placement adjusts on its own instead of needing every
 ## Exporting images
 
 ```sh
-kicad-cli sch export svg base_station.kicad_sch -o .
+kicad-cli sch export svg --exclude-drawing-sheet base_station.kicad_sch -o .
 ```
+
+`--exclude-drawing-sheet` drops the sheet border, ruler ticks and title
+block, so the SVG holds only the circuit -- nothing to mask out at crop
+time, and the crop stays correct at any raster scale.
 
 PNG export needs a rasterizer; `kicad-cli` doesn't do SVG->PNG directly.
 This machine has no system rasterizer (no `rsvg-convert`/`pdftoppm`), so a
@@ -62,30 +70,44 @@ local venv with `cairosvg` was used instead (`libcairo2` is already a
 system library here, so no sudo was needed for that part):
 
 ```sh
-python3 -m venv .venv && .venv/bin/pip install cairosvg
-.venv/bin/python -c "import cairosvg; cairosvg.svg2png(url='base_station.svg', write_to='base_station.png', scale=3.0)"
+python3 -m venv .venv && .venv/bin/pip install cairosvg pillow numpy
+.venv/bin/python -c "import cairosvg; cairosvg.svg2png(url='base_station.svg', write_to='base_station.png', scale=5.0)"
 ```
 
-The PNGs used in the report are cropped copies with the drawing-sheet border
-and title block removed, so the schematic itself fills the figure. The crop
-is derived, not hand-measured -- scan for ink, skipping a 200px margin (the
-sheet's ruler ticks on all four edges) and masking out a 1500x600px box in
-the bottom-right corner (the title block), take the bounding box of what's
-left, pad by 25px. The mask (not a fixed slice window) is what lets this
-keep working as the content's own bounding box grows or shrinks -- e.g. with
-`SPACING`/`PROP_SIZE`/`LABEL_SIZE` changes in `gen.py`:
+`scale=5.0` (~3600-3900px wide) is deliberate headroom: the report's host
+(Hackster) re-runs every inline image through an imgix proxy with
+`auto=compress`, so thin schematic lines and pin labels need to go in at
+2-3x their rendered width to survive that pass legibly. It also feeds the
+sibling `.jpg` (quality 92) exported from the same crop. The vector-perfect
+route for anyone who needs to zoom is the per-sheet `.pdf` -- attach those
+as raw files, they bypass the image CDN.
+
+The report PNGs are cropped copies -- since the drawing sheet is already
+excluded from the SVG, the crop is just the ink bounding box: flatten any
+alpha onto the sheet background `(245, 244, 239)` for a true PNG-24 (no
+alpha channel), scan for ink (`L < 200`; the cream background sits at ~244
+and never trips), pad 42px. No corner mask needed any more.
 
 ```python
-im = Image.open("base_station.png").convert("RGB")
-a = np.array(im.convert("L"))
-h, w = a.shape
-mask = np.zeros_like(a, dtype=bool)
-mask[200:h-200, 200:w-200] = True
-mask[h-600:h, w-1500:w] = False   # title block corner
-ys, xs = np.where((a < 200) & mask)
-im.crop((xs.min()-25, ys.min()-25, xs.max()+25, ys.max()+25)).save(out)
+im = Image.open("base_station.png")
+bg = Image.new("RGB", im.size, (245, 244, 239))
+bg.paste(im, mask=im.split()[-1] if im.mode == "RGBA" else None)
+a = np.array(bg.convert("L"))
+ys, xs = np.where(a < 200)
+PAD = 42
+bg.crop((max(xs.min()-PAD, 0), max(ys.min()-PAD, 0),
+         min(xs.max()+PAD, bg.width), min(ys.max()+PAD, bg.height))).save(out)
 ```
 
 Report copies live in `report/diagrams/` as `02b-`, `03b-`, and
-`06-*-schematic-kicad.png`, kept separate from the report's own hand-built
-block diagrams.
+`06-*-schematic-kicad.{png,jpg}`, kept separate from the report's own
+hand-built block diagrams.
+
+## Uploading to Hackster
+
+`make_bundles.py` zips each `.kicad_pro` + `.kicad_sch` + `.pdf` into
+`dist/<board>-kicad.zip`, plus an all-three `dist/edgeai-schematics-kicad.zip`.
+Attach the zip(s) under the project's **Attachments** -- Hackster serves
+attachments as raw downloads, so the KiCad files and PDFs arrive intact
+(the image CDN only touches inline Story images). `dist/` is git-ignored;
+regenerate it any time with `python3 make_bundles.py`.
