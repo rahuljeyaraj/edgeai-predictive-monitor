@@ -46,6 +46,11 @@ static bool has_pending;
 static enum portal_status status = PORTAL_STATUS_IDLE;
 static char status_detail[96];
 
+/* Scan results cache - see rescan_and_cache()/handle_scan() below for why
+ * this exists instead of scanning on every /scan request. */
+static String cached_networks[MAX_SCAN_RESULTS];
+static int cached_count;
+
 /* Shared dark-theme styling, matching the base station dashboard's own
  * palette (base-station/python/frontend/style.css: #0f172a page / #1e293b
  * card / #334155 border / #e2e8f0 text / #10b981 primary-action green) so a
@@ -345,25 +350,18 @@ static void handle_status(void)
 	web_server.send(200, "application/json", json);
 }
 
-/* Nearby-network chip list (send_form_page()'s JS), the ESP32-native
- * counterpart to the base station's Round 3 fix of replacing an unreliable
- * <datalist> dropdown with real tappable buttons
- * (docs/WIFI_ONBOARDING_PLAN.md's wifi-onboarding-round-3 notes) - built
- * that way here from the start rather than repeating the same mobile-
- * browser mistake. A synchronous WiFi.scanNetworks() blocks this one
- * request for a couple of seconds, same tradeoff attempt_sta_join() already
- * makes elsewhere in this firmware; unlike the base station's Linux radio,
- * ESP32 AP+STA scanning while hosting an active softAP is standard
- * ESP-IDF behavior, not a known limitation. */
-static void handle_scan(void)
+/* A synchronous WiFi.scanNetworks() while hosting an active softAP is
+ * standard ESP-IDF behavior, not a known limitation - but ESP32 AP+STA is
+ * one radio, so the scan drags the softAP's channel away from whoever is
+ * currently associated to it. Called only from contexts where that's known
+ * to be harmless: once at AP start (nobody's associated yet) and from
+ * handle_scan() itself, gated on the same condition. */
+static void rescan_and_cache(void)
 {
 	int n = WiFi.scanNetworks();
-	String seen[MAX_SCAN_RESULTS];
-	int seen_count = 0;
-	String json = "{\"networks\":[";
-	bool first = true;
 
-	for (int i = 0; i < n && seen_count < MAX_SCAN_RESULTS; i++) {
+	cached_count = 0;
+	for (int i = 0; i < n && cached_count < MAX_SCAN_RESULTS; i++) {
 		String ssid = WiFi.SSID(i);
 
 		if (ssid.length() == 0) {
@@ -372,8 +370,8 @@ static void handle_scan(void)
 
 		bool dup = false;
 
-		for (int j = 0; j < seen_count; j++) {
-			if (seen[j] == ssid) {
+		for (int j = 0; j < cached_count; j++) {
+			if (cached_networks[j] == ssid) {
 				dup = true;
 				break;
 			}
@@ -381,18 +379,42 @@ static void handle_scan(void)
 		if (dup) {
 			continue;
 		}
-		seen[seen_count++] = ssid;
+		cached_networks[cached_count++] = ssid;
+	}
+	WiFi.scanDelete();
+}
 
-		if (!first) {
+/* Nearby-network chip list (send_form_page()'s JS), the ESP32-native
+ * counterpart to the base station's Round 3 fix of replacing an unreliable
+ * <datalist> dropdown with real tappable buttons
+ * (docs/WIFI_ONBOARDING_PLAN.md's wifi-onboarding-round-3 notes) - built
+ * that way here from the start rather than repeating the same mobile-
+ * browser mistake.
+ *
+ * send_form_page()'s doScan() fires this on every page load, which used to
+ * mean the phone's own page load triggered a rescan that could kick it
+ * off-channel mid-load (see the satellite-provisioning-portal-page-wont-
+ * load memory) - a request reaching this handler at all means a client IS
+ * currently associated, so only rescan when the station count says
+ * otherwise; the rest of the time this just serves the cache filled by
+ * rescan_and_cache() at AP start. */
+static void handle_scan(void)
+{
+	if (WiFi.softAPgetStationNum() == 0) {
+		rescan_and_cache();
+	}
+
+	String json = "{\"networks\":[";
+
+	for (int i = 0; i < cached_count; i++) {
+		if (i) {
 			json += ",";
 		}
-		first = false;
 		json += "\"";
-		append_json_escaped(json, ssid.c_str());
+		append_json_escaped(json, cached_networks[i].c_str());
 		json += "\"";
 	}
 	json += "]}";
-	WiFi.scanDelete();
 
 	web_server.send(200, "application/json", json);
 }
@@ -420,6 +442,12 @@ int hal_provisioning_start(const char *ap_ssid_in, const char *broker_prefill_in
 	}
 
 	dns_server.start(DNS_PORT, "*", WiFi.softAPIP());
+
+	/* Nobody can be associated to the softAP yet - it was just brought up
+	 * above - so this first scan is always safe. Seeds handle_scan()'s
+	 * cache so the very first page load has real chips instead of an empty
+	 * list, without itself risking a kick. */
+	rescan_and_cache();
 
 	web_server.on("/", HTTP_GET, handle_root);
 	web_server.on("/save", HTTP_POST, handle_save);
