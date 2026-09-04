@@ -3463,13 +3463,39 @@ file reserved for test and never seen in training — the closest leakage-free
 approximation available under that constraint. This is a real methodological
 limitation and it is stated rather than papered over.
 
-**No accuracy figure is quoted for this model anywhere in this report.** The
-trained model, its data and its confusion matrix are public in the
-[Edge Impulse project](https://studio.edgeimpulse.com/studio/1092356) and can be
-read there directly. Transcribing the current numbers into this document is
-outstanding (`[FILL IN: accuracy and per-inference cost from Edge Impulse
-Studio]`). The figures in [§I.3](#appendix-i-classifier-research-history) belong
-to the abandoned public-dataset phase and must not be read as this model's.
+Read off the Edge Impulse Studio model page on **2026-09-04**, model version
+quantized (int8), EON Compiler:
+
+| Metric (validation set) | Value |
+|---|---|
+| Accuracy | **100.0%** |
+| Loss | 0.00 |
+| F1, each of the four classes | 1.00 |
+| Weighted precision / recall / F1 | 1.00 |
+| Area under ROC curve | 1.00 |
+
+| On-device cost | Value |
+|---|---|
+| Inferencing time | **1 ms** |
+| Peak RAM | **1.9 KB** |
+| Flash | **50.0 KB** |
+
+The confusion matrix has nothing off the diagonal.
+
+**Read that 100% against its constraints, not as a generalisation claim.** It is
+the *validation* split, which Edge Impulse takes out of the training data, not a
+held-out test set. The four conditions are deliberately induced on a bench rig
+and sit a long way apart in feature space — the data explorer shows four
+clusters with open ground between them — and the contiguous-tail split above is
+an approximation of a clean split, not a clean split. So it is a strong result
+for the *pipeline*, showing the 536-number representation separates these
+classes cleanly and cheaply, and a weak one for behaviour against four unseen
+faults on a machine in the field. This is precisely why the classifier is kept
+off the safety path ([§6.3](#chapter-6-naming-the-fault)): if it names the wrong
+fault, the machine still stops.
+
+The figures in [§I.3](#appendix-i-classifier-research-history) belong to the
+abandoned public-dataset phase and must not be read as this model's.
 
 > **[SCREENSHOT: the Edge Impulse project — data collection view and the confusion matrix]**
 
@@ -3587,10 +3613,11 @@ Stated here so the list above can be trusted.
   to load has had its cause identified and fixed twice, and neither fix has been
   confirmed on hardware. Every satellite path after provisioning is verified
   ([§12.7](#chapter-12-proof-not-promises)).
-* **The current classifier's accuracy figure** is not yet transcribed from Edge
-  Impulse Studio into this report (§I.5). No accuracy number is quoted anywhere
-  in this document for that reason — the figures in §I.3 belong to the abandoned
-  public-dataset phase and are not this model's.
+* **The classifier's 100% validation accuracy (§I.5) is not a generalisation
+  claim.** It is the validation split rather than a held-out test set, on four
+  deliberately induced bench conditions that sit far apart in feature space,
+  under a contiguous-tail split that approximates a clean one. The figures in
+  §I.3 belong to the abandoned public-dataset phase and are not this model's.
 * **The microphone's contribution to either model is unmeasured**, because it is
   muted ([§5.4](#chapter-5-teaching-it-what-normal-feels-like)). Nothing in this
   report claims a result from audio.

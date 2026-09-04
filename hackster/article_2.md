@@ -46,12 +46,25 @@
               - Planned Improvements is now chapter 5 and Conclusion is
                 chapter 6.
 
-              OUTSTANDING: 4.4 deliberately does NOT quote a classifier
-              accuracy figure, because none is recorded anywhere in the repo
-              (report/REPORT.md I.5 still says FILL IN). Read it off the Edge
-              Impulse Studio page and add one bullet to 4.4 with the accuracy
-              and the per-inference cost. The 59.82% and 69.64% in REPORT.md
-              I.3 are from the STALE Kaggle-replay phase and must not be used.
+              - 4.4 now carries the classifier's real numbers, read off the
+                Edge Impulse Studio model page on 2026-09-04: 100.0% accuracy
+                and 0.00 loss on the validation set, F1 1.00 on all four
+                classes, 1 ms per inference, 1.9 KB peak RAM, 50 KB flash,
+                int8 via the EON Compiler. The Edge Impulse screenshot MOVED
+                from 2.7 to 4.4 to sit with them. The 59.82% and 69.64% in
+                report/REPORT.md I.3 are from the STALE Kaggle-replay phase
+                and must never be used.
+              - The paragraph after those numbers states plainly why a 100%
+                score is not four unseen faults on a real machine. DO NOT cut
+                it while the 100% stands. A perfect number with no caveat
+                reads to a judge as undisclosed leakage, which is worth less
+                than no number at all.
+
+              OUTSTANDING: the figures above are Edge Impulse's VALIDATION
+              set, which is split out of the training data. If the Studio
+              project's "Model testing" tab has a result on the held-out test
+              set, that number is the stronger one to publish and should
+              replace the validation figure here.
 
               The video embed in 2.1 is NEW and not yet published.
 
@@ -184,10 +197,7 @@ Ravi struggled at first, but he understood the gist of it.
 
 "Exactly."
 
-[IMAGE: edge-impulse-model.png - Edge Impulse Studio model page for the pump fault classifier]
-*The trained fault identification model in Edge Impulse, built from recordings the dashboard uploaded: four fault classes, their confusion matrix, and the cost of one inference*
-
-The [Edge Impulse project](https://studio.edgeimpulse.com/studio/1092356) is public, so the impulse, the data and the trained model can all be inspected.
+The [Edge Impulse project](https://studio.edgeimpulse.com/studio/1092356) is public, so the impulse, the data and the trained model can all be inspected. What it scores, and what one inference costs, is in chapter 4.
 
 > The microphone is muted in both models for now. This rig is not acoustically isolated, so a machine running next to it is heard as if it belonged to this one, and the sound channel is therefore zeroed before the feature vector reaches either model. Every result in chapter 4 is vibration alone, and restoring sound is the first item in chapter 5.
 
@@ -306,9 +316,17 @@ The 536 numbers were not a guess. An offline harness replayed real captures thro
 
 # 4.4 Fault Identification
 
-The naming model was trained on **541 captures taken from this rig**, across four classes: healthy, bearing, loose mount and unbalanced. The trained model, its data and its confusion matrix are public in the [Edge Impulse project](https://studio.edgeimpulse.com/studio/1092356).
+The naming model was trained on **541 captures taken from this rig**, across four classes: healthy, bearing, loose mount and unbalanced.
 
-One methodological limit is stated rather than buried. Because each fault condition exists as one continuous recording rather than many independent short ones, a file-level train/test split was not available. A contiguous-tail split was used instead, with the last portion of each recording held out and never trained on. It is the closest leakage-free approximation available under that constraint, and it is why the classifier is kept out of the safety path.
+[IMAGE: edge-impulse-model.jpg - Edge Impulse Studio model page for the fault classifier]
+*The trained fault identification model in Edge Impulse: four fault classes, their confusion matrix, and the cost of one inference*
+
+- **100.0% accuracy** on the validation set, loss **0.00**. Every class scores an **F1 of 1.00**, the confusion matrix has nothing off the diagonal, and area under the ROC curve is **1.00**.
+- **1 ms per inference**, **1.9 KB peak RAM**, **50 KB flash**, quantized to int8 and built with Edge Impulse's EON Compiler. Naming the fault costs almost nothing next to producing the 536 numbers it reads, which is what makes running a second model per frame affordable on the board.
+
+A perfect score is a claim that deserves its caveat, so here it is. These four fault conditions are induced deliberately on a bench rig and they sit a long way apart in the feature space, which the data explorer shows as four clusters with open ground between them. Because each condition exists as one continuous recording rather than many independent short ones, a file-level train/test split was not available; a contiguous-tail split was used instead, with the last portion of each recording held out and never trained on. That is the closest leakage-free approximation available under the constraint, and it is not the same thing as four unseen faults on a real machine. It is also why the classifier is kept out of the safety path: if it ever names the wrong fault, the machine still stops.
+
+The model, its data and its confusion matrix are public in the [Edge Impulse project](https://studio.edgeimpulse.com/studio/1092356).
 
 # 4.5 The Costs, Measured
 
