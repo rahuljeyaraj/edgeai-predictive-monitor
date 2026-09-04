@@ -100,7 +100,7 @@ He shrugged. "We're too small to be a customer."
 
 Arjun, Ravi's son, was in his final year of engineering and had heard the compressor story at one family dinner too many. Over the holidays he decided to build his father a sensor himself.
 
-During his research he found an open-source project on GitHub. The [EdgeAI Predictive Monitor](https://github.com/rahuljeyaraj/edgeai-predictive-monitor), built on the Arduino UNO Q. He read the whole repository in one sitting, and the demo video made the rest of it clear.
+During his research he found an open-source project on GitHub. The [EdgeAI Predictive Monitor](https://github.com/rahuljeyaraj/edgeai-predictive-monitor) (EPM), built on the Arduino UNO Q. He read the whole repository in one sitting, and the demo video made the rest of it clear.
 
 [VIDEO: https://www.youtube.com/watch?v=8h05_KkEtwQ]
 *EdgeAI Predictive Monitor Demo Video.*
@@ -273,19 +273,16 @@ Arjun forked the repository that same evening and opened an issue list for his f
 - Add a relay per motor. Today's trip stops motion; a relay would remove power at the source as well. The trip message, the latch and the confirmation logic would not change.
 - Add hysteresis to the fault threshold, so a score sitting exactly on the line stops making the countdown flap.
 - Give each operating condition its own threshold. Training one machine across several conditions costs sensitivity, and the hard part is not the thresholds, it is knowing which condition the machine is in right now.
-- Fix the setup page a satellite serves from its own hotspot. Its Wi-Fi, MQTT, status dome, microphone and accelerometer are all verified on real hardware, but that one page does not load reliably, and it is the last gap between the satellite firmware and the base station's record.
 - Pre-train one shared healthy model per asset class, so commissioning the fortieth pump becomes calibration rather than training, and takes less time than the first one did.
 - Record more labelled fault data per class. The fault identification model's ceiling is set by how much genuinely different fault data exists, and the recording workflow is now good enough that this is a matter of time rather than tooling.
 - Trend severity, not just detect it. The anomaly score is already stored per machine, so the question after something is wrong is how fast it is getting worse.
 
-# 5 Too Small to Be a Customer
+# 5 Conclusion
 
 The compressor gave Ravi weeks of warning. Months, maybe. Nobody could feel it, because a machine that is failing slowly feels exactly like it did yesterday, every day, until the morning it does not turn.
 
-That is the gap this fills. Each machine is measured against what it felt like the day it was serviced, on the machine itself, by a board bolted to it. A bearing gets changed because a machine asked for it, not because a calendar came round. A light on the housing says which machine, from across the floor. A phone says it when nobody is on the floor at all. And at 02:40 on a Tuesday, with the shop shut and nobody standing there, the motor stops itself.
+That is the gap this fills. Each machine is measured against what it felt like the day it was serviced, on the machine itself, by a sensor node attached to it. A bearing gets changed because a machine asked for it, not because a calendar came round. A light on the housing says which machine to fix, from across the floor. A phone alerts you if a fault happened in your absence. And the motor stops itself to avoid further damage.
 
 Eleven machines was the number that ended every sales call. It is also the number that makes this worth building: a base station and ten satellites, roughly $350 of parts, no gateway, no subscription, no account, and nothing leaving the shop.
 
-Ravi was too small to be a customer. He was never too small to own the thing outright.
-
-All the code, the firmware, the wiring, the 3D models and the full engineering report are at [github.com/rahuljeyaraj/edgeai-predictive-monitor](https://github.com/rahuljeyaraj/edgeai-predictive-monitor). Fork it, as Arjun did.
+All the code, the firmware, the wiring, and the 3D models are at [github.com/rahuljeyaraj/edgeai-predictive-monitor](https://github.com/rahuljeyaraj/edgeai-predictive-monitor). Fork it, as Arjun did.
