@@ -96,7 +96,7 @@ During his research he found an open-source project on GitHub. The [EdgeAI Predi
 [VIDEO: https://www.youtube.com/watch?v=8h05_KkEtwQ]
 *EdgeAI Predictive Monitor Demo Video.*
 
-The whole system on a bench rig, start to finish. A machine commissioned from scratch, a fault induced and named, and the motor stopped by the system itself while nobody touched it.
+Three machines on a bench, watched live. Faults induced on camera one after another, an unbalanced rotor, a bad bearing, a loose mount, each one named within seconds, and each one ending with the system stopping that motor itself. The rest of it walks through commissioning a machine from scratch, training the models, and adding ten more nodes to the same base station.
 
 He watched it a second time.
 
