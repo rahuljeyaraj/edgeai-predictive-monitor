@@ -22,9 +22,10 @@
               names faults, stops the machine to protect it - no cloud, no
               subscription.
 
-     STATUS:  This is the REWRITE (article 2). It has diverged from the
-              currently published page and REPLACES it wholesale rather than
-              patching it. Differences from the live page, all unpublished:
+     STATUS:  This file is the SOURCE OF TRUTH. Where it disagrees with the
+              published page, the page is wrong and gets re-pasted from here.
+              A cross-check against the live page on 2026-09-04 found what is
+              listed under UNPUBLISHED below still missing or broken there.
 
               - Chapter 2 was restructured. The old 2.3, 2.4 and 2.5 (node,
                 base station, satellite) are merged into one 2.3, so Ch 2 now
@@ -66,8 +67,6 @@
               set, that number is the stronger one to publish and should
               replace the validation figure here.
 
-              The video embed in 2.1 is NEW and not yet published.
-
               The two appendices (Bill of Materials, Schematics) have been
               REMOVED. Hackster's own "Things used in this project" section
               already carries the full BOM with quantities, and the
@@ -77,6 +76,68 @@
               docs/BILL_OF_MATERIALS.md and docs/BUILD_GUIDE.md, and this
               chapter carries only what those cannot, which is photographs
               of the build.
+
+     PAGE FIXES REQUIRED, from the 2026-09-04 cross-check of the live page
+              against this file. Each one is a defect on the page, not here.
+
+       LINKS  13 of this file's 14 links did not survive the paste. The page
+              has exactly ONE working outbound link, the github.com URL in the
+              conclusion. Every other one is plain text. Re-apply with the link
+              button:
+                1.3   Fluke, Tractian, Augury, Murata, KCF (five links, and
+                      they are what makes the "I actually priced this" story
+                      credible)
+                2.1   EdgeAI Predictive Monitor -> the repo
+                2.7   Edge Impulse project -> studio.edgeimpulse.com/studio/1092356
+                3.1   all four bullets: BOM, Build guide, 3D models, KiCad
+                4.1   project report -> report/REPORT.md
+                4.4   Edge Impulse project -> studio URL
+              The conclusion's link also lost its display text: it reads
+              "edgeai-predictive-monitor" where it should read the full
+              "github.com/rahuljeyaraj/edgeai-predictive-monitor".
+
+       NUMBERS Section numbering on the page is stale in three places:
+                2.14 -> must be 2.12 (Physical AI, Not Just an Alert)
+                2.15 -> must be 2.13 (No Server, No Subscription)
+                5 Conclusion -> must be 6 Conclusion; the page currently has
+                      TWO chapter 5s, Planned Improvements and Conclusion.
+
+       MISSING 2.7 lost a whole paragraph. After "Exactly." and before the
+              microphone block quote it must read: "The Edge Impulse project is
+              public, so the impulse, the data and the trained model can all be
+              inspected. What it scores, and what one inference costs, is in
+              chapter 4."
+
+       BROKEN 4.4 has two formatting defects:
+                - Its first line shows the literal asterisks of
+                  **541 captures taken from this rig**. Delete the asterisks
+                  and use the B button.
+                - The "A perfect score is a claim that deserves its caveat"
+                  paragraph is swallowed inside the second bullet, running on
+                  from "...affordable on the board." with no break. It must be
+                  its own paragraph AFTER the list ends.
+              4.5's first bullet reads "widened the healthy spread 5.1." The
+              "x" is missing: it is 5.1x.
+
+       CAPTIONS Four captions on the page are the old wording:
+                2.3  "Every Machine Gets a Sensor Node (AI generated)"
+                     -> "Every machine gets a sensor node (AI generated)"
+                2.3  "Internal wiring of Base station and satellite nodes"
+                     -> "Internal wiring of the base station and satellite nodes"
+                2.4  "...page of base station (left) and satellite (right)"
+                     -> "...page of the base station (left) and a satellite (right)"
+                4.4  the old long caption ending "built from recordings the
+                     dashboard uploaded: ..." -> the short one in this file.
+
+       TYPOS  2.3 "so the system scales cheaply" paragraph: the page spells it
+              "license", this file uses "licence" and the article is British
+              throughout. 2.3 also drops the closing quotation mark after
+              "two boards and a wire between them."
+
+       OK     Verified correct on the page: the 2.1 video embed (it does carry
+              the real YouTube URL), the whole of chapter 4's numbers, the
+              muted-microphone block quote, all of 2.12's bullets, and every
+              item in Planned Improvements.
 
      VIDEO:   Section 2.1 carries the only video, the full demo walkthrough on
               YouTube (8h05_KkEtwQ, public, 12:53). It is the hook: Arjun
