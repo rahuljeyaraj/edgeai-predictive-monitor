@@ -281,7 +281,7 @@ Arjun forked the repository that same evening and opened an issue list for his f
 
 The compressor gave Ravi weeks of warning. Months, maybe. Nobody could feel it, because a machine that is failing slowly feels exactly like it did yesterday, every day, until the morning it does not turn.
 
-That is the gap this fills. Each machine is measured against what it felt like the day it was serviced, on the machine itself, by a sensor node attached to it. A bearing gets changed because a machine asked for it, not because a calendar came round. A light on the housing says which machine to fix, from across the floor. A phone alerts you if a fault happened in your absence. And the motor stops itself to avoid further damage.
+That is the gap this fills. Each machine is measured against what it felt like the day it was serviced, on the machine itself, by a sensor node attached to it. A bearing gets changed because a machine asked for it, not because a calendar came round. A light on the housing says which machine to fix, from across the floor. A phone says so when nobody is on the floor at all. And the motor stops itself to avoid further damage.
 
 Eleven machines was the number that ended every sales call. It is also the number that makes this worth building: a base station and ten satellites, roughly $350 of parts, no gateway, no subscription, no account, and nothing leaving the shop.
 
