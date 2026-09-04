@@ -95,9 +95,18 @@
               cursor before "A perfect", press Enter to break out of the list,
               and make sure the bullet button is OFF for that paragraph.
 
-       4 CAPTIONS, four of them. These are NOT body text: each one lives in
+       4 CAPTIONS, five of them. These are NOT body text: each one lives in
               the caption field of its image widget, so click the image in the
-              editor and edit the caption there. Current -> required:
+              editor and edit the caption there.
+
+              The status-light GIF in 2.9 (18-status-light.gif) is the only
+              image on the page with NO caption at all. Add:
+                "Every state the dome can show: seven for machine health on
+                 any node, four more while a satellite is getting connected.
+                 Blink and fade carry meaning as well as colour, which is how
+                 a tripped machine reads differently from a faulty one."
+
+              The other four are wrong rather than absent. Current -> required:
                 2.3  "Every Machine Gets a Sensor Node (AI generated)"
                   -> "Every machine gets a sensor node (AI generated)"
                 2.3  "Internal wiring of Base station and satellite nodes"
@@ -261,6 +270,7 @@ The dashboard is served from the UNO Q itself, so any phone or laptop on the sho
 *One glance down the row tells you which machine needs attention (AI generated)*
 
 [IMAGE: report/diagrams/18-status-light.gif]
+*Every state the dome can show: seven for machine health on any node, four more while a satellite is getting connected. Blink and fade carry meaning as well as colour, which is how a tripped machine reads differently from a faulty one.*
 
 A dashboard only helps somebody who is looking at one, and in a shop of six people nobody is spare to do that. So the answer had to be readable without opening anything.
 
