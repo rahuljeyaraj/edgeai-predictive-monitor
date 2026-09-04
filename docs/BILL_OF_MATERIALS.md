@@ -136,33 +136,37 @@ Colours are what this build used, not a requirement. Any PLA works.
 
 ## 5. 3D-printed parts
 
-All models are in [`3d-models/`](../3d-models/) as 3MF, split into print plates
-so each file is one plate in one colour.
+All models are in [`3d-models/`](../3d-models/), each supplied as both **3MF**
+(plated and ready to slice, colour already assigned) and **STL** (plain mesh).
+Thirteen parts in total. `a` is the base station, `b` is the satellite, `c` is
+the validation rig.
 
-| File | Contains | Colour |
-|---|---|---|
-| `base_station/base_station_1.3mf` | Shell, front and back halves | Silver |
-| `base_station/base_station_2.3mf` | Mount kit: left and right plates, leg, two stem connectors | Silver |
-| `base_station/base_station_3.3mf` | Front bezel: left and right rims, lens insert, foot | Orange |
-| `satellite/satellite_1.3mf` | Shell, front and back halves | Silver |
-| `satellite/satellite_2.3mf` | Mount kit, same pattern as the base station's | Silver |
-| `satellite/satellite_3.3mf` | Front bezel: left and right rims, foot. No lens insert | Orange |
-| `belt_drive_motor_rig/bracket.3mf` | Upright L-bracket with bearing bore | Grey |
-| `belt_drive_motor_rig/bracket_rings.3mf` | Two bearing rings and a stepper ring | Gold |
-| `belt_drive_motor_rig/shaft_assembly.3mf` | Toothed pulley, hex shaft, bearing holder | Gold |
-| `belt_drive_motor_rig/fly_wheel.3mf` | Rotor disc | Grey |
-| `belt_drive_motor_rig/fly_wheel_ring.3mf` | Bolt-on ring | Gold |
-| `direct_drive_motor_rig/bracket.3mf` | U-shaped pillow-block bracket | Grey |
-| `direct_drive_motor_rig/rings.3mf` | Two bearing rings and a stepper ring | Gold |
-| `direct_drive_motor_rig/shaft.3mf` | Coupling shaft | Gold |
-| `direct_drive_motor_rig/fly_wheel.3mf` | Rotor disc | Grey |
-| `direct_drive_motor_rig/fly_wheel_ring.3mf` | Bolt-on ring | Gold |
+| File | Contains | Colour | Needed for |
+|---|---|---|---|
+| `a1_base_station_silver` | Shell, front and back halves | Silver | Base station |
+| `a2_base_station_silver` | Mount kit: left and right plates, leg, two stem connectors | Silver | Base station |
+| `a3_base_station_orange` | Front bezel: left and right rims, lens insert, foot | Orange | Base station |
+| `b1_satellite_silver` | Shell, front and back halves | Silver | Each satellite |
+| `b2_satellite_silver` | Mount kit, same pattern as the base station's | Silver | Each satellite |
+| `b3_satellite_orange` | Front bezel: left and right rims, foot. No lens insert | Orange | Each satellite |
+| `c1_belt_drive_rig_grey` | Upright L-bracket with bearing bore | Grey | Belt-drive rig |
+| `c2_belt_drive_rig_gold` | Two bearing rings and a stepper ring | Gold | Belt-drive rig |
+| `c3_belt_drive_rig_gold` | Toothed pulley, hex shaft, bearing holder | Gold | Belt-drive rig |
+| `c6_direct_drive_rig_grey` | U-shaped pillow-block bracket | Grey | Direct-drive rig |
+| `c7_direct_drive_rig_gold` | Two bearing rings, stepper ring, coupling shaft | Gold | Direct-drive rig |
+| `c4_fly_wheel_grey` | Rotor disc | Grey | Both rigs |
+| `c5_fly_wheel_ring_gold` | Bolt-on ring | Gold | Both rigs |
+
+**For a deployment you only print `a1`–`a3` once, and `b1`–`b3` per satellite.**
+The `c` parts are the bench rig. Pick belt-drive or direct-drive, then add the
+shared flywheel either way.
 
 The optional embossed wordmark for the shell faces is in
 [`hardware/enclosure-logo/`](../hardware/enclosure-logo/), with its own README
 covering slicer settings.
 
-Print settings and assembly order are in
+Print settings, the per-plate part breakdown and assembly order are in
+[`3d-models/README.md`](../3d-models/README.md) and
 [`BUILD_GUIDE.md` §2](BUILD_GUIDE.md).
 
 ---

@@ -55,12 +55,14 @@ the breakout headers, and a multimeter if you are building the rig.
 
 ## 2. Print the enclosure
 
-Models are in [`3d-models/`](../3d-models/), one 3MF per plate per colour. The
-file-by-file map is in
-[`BILL_OF_MATERIALS.md` §5](BILL_OF_MATERIALS.md#5-3d-printed-parts).
+Models are in [`3d-models/`](../3d-models/), thirteen parts, each as a **3MF**
+(plated and ready to slice, colour already assigned) and an **STL**. Print the
+3MF unless you have a reason not to. The file-by-file map is in
+[`3d-models/README.md`](../3d-models/README.md).
 
-For one base station, print `base_station_1`, `_2` and `_3`. For each satellite,
-print `satellite_1`, `_2` and `_3`.
+For one base station, print `a1`, `a2` and `a3`. For each satellite, print `b1`,
+`b2` and `b3`. That is all a deployment needs; the `c` parts are the bench rig
+([§7](#7-optional-the-motor-test-rig)).
 
 Settings that worked here:
 
@@ -355,9 +357,10 @@ Back on the control page, the motor now carries a **PROTECTED** badge naming the
 asset. If the trip ever fires, its card turns red and locks until a human presses
 **Reset & re-arm**.
 
-The printed rig parts, including the flywheel used for imbalance injection, are
-in [`3d-models/`](../3d-models/). Moving or removing bolts from the flywheel's
-bolt circle is the fault-injection mechanism.
+The printed rig parts are in [`3d-models/`](../3d-models/). Pick belt-drive
+(`c1`, `c2`, `c3`) or direct-drive (`c6`, `c7`), then add the shared flywheel
+(`c4`, `c5`) either way. Moving or removing M6 bolts around the flywheel's bolt
+circle is the fault-injection mechanism.
 
 ---
 
@@ -458,6 +461,8 @@ python3 base-station/python/tools/gen_telemetry_schema.py
 ## Where to go next
 
 - [`BILL_OF_MATERIALS.md`](BILL_OF_MATERIALS.md) — what to buy
+- [`3d-models/README.md`](../3d-models/README.md) — what each printable file
+  contains, and which ones you need
 - [`SATELLITE_BRINGUP_GUIDE.md`](SATELLITE_BRINGUP_GUIDE.md) — stage-by-stage
   satellite debugging when a module does not come up
 - [`Dashboard_LAN_Access_Guide.md`](Dashboard_LAN_Access_Guide.md) — reaching the
