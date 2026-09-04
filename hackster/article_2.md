@@ -71,16 +71,19 @@ During his research he found [an open-source project on GitHub](https://github.c
 # 2.2 The Whole System in One Picture
 
 [IMAGE: report/diagrams/05-full-architecture.png]
-*Sensing on the left, the UNO Q in the middle, people and the motor on the right. Both of the UNO Q's processors sit inside the dashed box, and nothing in the picture leaves the workshop.*
+*Sensors on the left, the UNO Q in the middle, people and the motor on the right.*
 
 Arjun explained the system to his father, part by part.
 
 - **One Arduino UNO Q runs the whole shop.** The base station is built on the UNO Q and sits at the centre of the system. It monitors the machine it is attached to, and it monitors every other machine through satellite nodes.
-- **Two sensors on every node.** The base station and each satellite node carry an accelerometer and a microphone. The accelerometer measures physical vibration from 0 Hz to 6 kHz. The microphone listens to the sound the machine makes, from 0 Hz to 24 kHz. Both are sampled five times a second.
+- **Two sensors on every node.** The base station and each satellite node carry an accelerometer and a microphone. The accelerometer measures physical vibration from 0 Hz to 6 kHz. The microphone listens to the sound the machine makes, from 0 Hz to 24 kHz. 
 - **The network is whatever the shop already has.** If there is no Wi-Fi on the floor, the base station becomes the access point. The satellite nodes and the phone or laptop running the dashboard connect straight to it. If the shop does have Wi-Fi, everything joins it, base station included.
 - **Fault detection runs on the board.** Each node reduces its raw sensor data to 536 features, 128 frequency bins plus 6 scalar values for each of the 4 axes, and streams them to the Qualcomm Dragonwing processor on the UNO Q, which runs Linux. An autoencoder model, trained on the device during commissioning, measures how far the machine has drifted from its own normal and reports a fault. Every asset gets its own model, so Pump 1 and Pump 2 are each scored against themselves.
 - **Fault identification names what went wrong.** The same 536 features feed a second model, a classifier that names the type of fault. Training it needs labelled recordings of the machine healthy and in each fault condition. The dashboard collects them and uploads them to Edge Impulse in a few clicks. This model is trained per asset class, so one model covers every pump and another covers every turbine. Uploading the training data is the one step that needs an internet connection.
-- **Four ways to see a machine's status.** The RGB dome on top of each sensor node. The fleet summary scrolling on the UNO Q's LED matrix. The dashboard in any browser. A Telegram message on a phone.
+- **The dome on the machine.** Every sensor node has an RGB dome on top of it. The colour tells you that machine's status from across the floor, without opening anything.
+- **The LED matrix on the base station.** When the nodes are not in line of sight, the UNO Q's own LED matrix scrolls a one line summary of the whole fleet, worst status first. One glance on the way past tells you whether anything is wrong.
+- **The dashboard in any browser.** It is served from the UNO Q itself, so any phone or laptop on the shop network can open it and there is no app to install. It lists every machine with its status, and the status tiles at the top double as filters. Open a machine and you get its live anomaly score against its own thresholds, the fault name, the live vibration and sound spectra, and the recent history. A trip sits as a banner above every page.
+- **A Telegram message on a phone.** Scan the QR code on the dashboard once and that phone is subscribed. There is no account to create and no bot name to remember. Each person chooses what they hear about, warnings and above or faults only, and which machines, the whole shop or a named few. The message carries the machine's name and the fault name.
 - **Physical AI, not just an alert.** When a fault is confirmed, the system stops the machine to prevent further damage. The operator gets a 10 second window to hold the trip before it fires.
 - **No server, no subscription.** The models run on the UNO Q and the dashboard is served from it. Nothing has to talk to a server, and there is nothing to pay for after the build.
 
