@@ -24,129 +24,115 @@
 
      STATUS:  This file is the SOURCE OF TRUTH. Where it disagrees with the
               published page, the page is wrong and gets re-pasted from here.
-              A cross-check against the live page on 2026-09-04 found what is
-              listed under UNPUBLISHED below still missing or broken there.
 
-              - Chapter 2 was restructured. The old 2.3, 2.4 and 2.5 (node,
-                base station, satellite) are merged into one 2.3, so Ch 2 now
-                runs 2.1 to 2.13 instead of 2.1 to 2.15. Every section number
-                after 2.3 has shifted down by two.
-              - The Ravi/Arjun dialogue now stops after 2.7. Sections 2.8 to
-                2.12 are straight narration. Dialogue returns once at 3.1 as a
-                deliberate bookend to the sales calls in 1.3.
-              - 2.12 (Physical AI) is substantially expanded. It is the one
-                capability none of the commercial products in 1.3 have, and it
-                now says so explicitly, including the honest motion-not-power
-                limit.
-              - The muted-microphone block quote in 2.7 is cut to two
-                sentences and now points forward to chapters 4 and 5.
-              - Chapter 4 (Measured Results) is NEW. Every figure in it is
-                taken from report/REPORT.md ch 12, which recorded them off the
-                physical rig. Do not add a number to this chapter that is not
-                already measured and written down there.
-              - Planned Improvements is now chapter 5 and Conclusion is
-                chapter 6.
+              REVISION 2026-09-04, made after a judge's-eye review of the
+              LIVE page. The five changes below are the whole of it. Nothing
+              in chapters 1, 2, 5 or the Conclusion prose was touched.
 
-              - 4.4 now carries the classifier's real numbers, read off the
-                Edge Impulse Studio model page on 2026-09-04: 100.0% accuracy
-                and 0.00 loss on the validation set, F1 1.00 on all four
-                classes, 1 ms per inference, 1.9 KB peak RAM, 50 KB flash,
-                int8 via the EON Compiler. The Edge Impulse screenshot MOVED
-                from 2.7 to 4.4 to sit with them. The 59.82% and 69.64% in
-                report/REPORT.md I.3 are from the STALE Kaggle-replay phase
-                and must never be used.
-              - The paragraph after those numbers states plainly why a 100%
-                score is not four unseen faults on a real machine. DO NOT cut
-                it while the 100% stands. A perfect number with no caveat
-                reads to a judge as undisclosed leakage, which is worth less
-                than no number at all.
+              1. CHAPTER 3 IS REBUILT. It was four links and two enclosure
+                 photos, which is the single biggest scoring risk on the
+                 page: the rubric's documentation question is "could a
+                 beginner recreate this?" and the page is tagged "Full
+                 instructions provided". It now carries, on the page: both
+                 wiring pin lists (base station and satellite), both KiCad
+                 schematic renders inline, the provision/flash/deploy
+                 commands, the six commissioning steps, the five classifier
+                 steps, and a new 3.6 with three real code excerpts. The
+                 GitHub links stay, as the long version.
+              2. 4.1 now states plainly that Ravi and Arjun are a scenario
+                 and the rig is not. 4.2 gains one bullet answering the
+                 sharpest available criticism, which is that the live trip
+                 was fired with an overspeed rather than a mechanical fault;
+                 the ~80 sigma healthy-versus-imbalance figure already in
+                 4.3 is the answer and is now stated as detection evidence.
+              3. 4.4 gains the two worn-bearing photographs, which are the
+                 only proof on the page that a fault class is a real worn
+                 part rather than a synthetic signature.
+              4. NEW CHAPTER 6 "What It Saves". Judges are told to weigh
+                 sustainability and the page argued it without ever naming
+                 it. Conclusion becomes chapter 7.
+              5. 2.9 leads with the real status-light GIF and the AI render
+                 follows it, relabelled "illustration". 2.10's caption now
+                 explains that the ten offline entries are simulated nodes.
 
-              OUTSTANDING: the figures above are Edge Impulse's VALIDATION
-              set, which is split out of the training data. If the Studio
-              project's "Model testing" tab has a result on the held-out test
-              set, that number is the stronger one to publish and should
-              replace the validation figure here.
+              TWO CAPTIONS NEED RAHUL TO CONFIRM BEFORE PASTING:
+                - 4.4's two bearing captions assert the worn parts were
+                  fitted to the rig and recorded. Adjust the wording if the
+                  bearing class was induced some other way.
+                - 2.10's caption asserts the ten offline entries are
+                  simulated nodes. Correct it if they are something else.
 
-              The two appendices (Bill of Materials, Schematics) have been
-              REMOVED. Hackster's own "Things used in this project" section
-              already carries the full BOM with quantities, and the
-              Schematics and Custom-parts sections already carry the PDFs,
-              the KiCad zip and the 3D models. Chapter 3 does not repeat
-              any of it: the written instructions live in the repo's
-              docs/BILL_OF_MATERIALS.md and docs/BUILD_GUIDE.md, and this
-              chapter carries only what those cannot, which is photographs
-              of the build.
+              Do not add a number to chapter 4 that is not already measured
+              and written down in report/REPORT.md ch 12. The 100% in 4.4 is
+              the VALIDATION split and its caveat paragraph must stand while
+              the number does. The 59.82% and 69.64% in REPORT.md I.3 are
+              from the stale Kaggle-replay phase and must never be used.
 
-     PAGE FIXES REQUIRED, re-verified against the live page on 2026-09-04
-              after Rahul's first round of corrections. Only these remain.
+              The two appendices (Bill of Materials, Schematics) stay
+              REMOVED. Hackster's "Things used in this project" widget
+              carries the BOM, and the Schematics and Custom-parts sections
+              carry the PDFs, the KiCad zip and the 3D models.
 
-       1 NUMBERING. The Conclusion is still headed "5 Conclusion", so the page
-              has TWO chapter 5s, Planned Improvements and Conclusion. It must
-              read "6 Conclusion". 2.12 and 2.13 are already fixed.
+     WHAT TO PASTE, and nothing else. The live page is correct outside these
+              five places, so do not re-paste the whole article.
 
-       2 4.4 LITERAL ASTERISKS. Its first line still shows the raw
-              **541 captures taken from this rig**
-              Delete the four asterisks and bold that span with the B button.
+       A  CHAPTER 3, all of it. Delete every section from the "3 Build"
+              heading down to just above "4 Measured Results" and paste the
+              new chapter in its place. This is the big one.
+              Its two new images are repo files, uploaded as new images:
+                report/diagrams/02b-base-station-schematic-kicad.png  (in 3.2)
+                report/diagrams/03b-satellite-node-schematic-kicad.png (in 3.3)
+              Its four fenced blocks use the </> button. The existing 3.2
+              and 3.3 build PHOTOS stay where they are, at the top of their
+              sections; only the text around them changes.
 
-       3 4.4 PARAGRAPH TRAPPED IN A BULLET. The paragraph beginning
-              "A perfect score is a claim that deserves its caveat" runs on
-              from the end of the second bullet ("...affordable on the board.")
-              with no break, so it renders as part of that bullet. Put the
-              cursor before "A perfect", press Enter to break out of the list,
-              and make sure the bullet button is OFF for that paragraph.
+       B  4.1, add the second paragraph ("Ravi and Arjun are a scenario...").
 
-       4 CAPTIONS, five of them. These are NOT body text: each one lives in
-              the caption field of its image widget, so click the image in the
-              editor and edit the caption there.
+       C  4.2, add the fourth bullet ("The detector separates genuine
+              mechanical faults...").
 
-              The status-light GIF in 2.9 (18-status-light.gif) is the only
-              image on the page with NO caption at all. Add:
-                "Every state the dome can show: seven for machine health on
-                 any node, four more while a satellite is getting connected.
-                 Blink and fade carry meaning as well as colour, which is how
-                 a tripped machine reads differently from a faulty one."
+       D  4.4, add the two bearing images directly under the first line,
+              above the Edge Impulse screenshot. Both are new uploads:
+                hackster/assets/IMG20260901093820.jpg
+                hackster/assets/IMG20260901093909.jpg
 
-              The other four are wrong rather than absent. Current -> required:
-                2.3  "Every Machine Gets a Sensor Node (AI generated)"
-                  -> "Every machine gets a sensor node (AI generated)"
-                2.3  "Internal wiring of Base station and satellite nodes"
-                  -> "Internal wiring of the base station and satellite nodes"
-                2.4  "The Wi-Fi onboarding page of base station (left) and
-                       satellite (right)"
-                  -> "The Wi-Fi onboarding page of the base station (left) and
-                       a satellite (right)"
-                4.4  "The trained fault identification model in Edge Impulse,
-                       built from recordings the dashboard uploaded: four fault
-                       classes, their confusion matrix, and the cost of one
-                       inference"
-                  -> "The trained fault identification model in Edge Impulse:
-                       four fault classes, their confusion matrix, and the cost
-                       of one inference"
+       E  NEW CHAPTER 6 "What It Saves", pasted between Planned Improvements
+              and the Conclusion, and then the Conclusion heading edited
+              from "6 Conclusion" to "7 Conclusion".
 
-       VERIFIED CORRECT on the page, do not re-check: all 12 outbound links
-              (an earlier audit here wrongly reported them missing; Hackster
-              writes href with SINGLE quotes, so grep for href=' not href="),
-              the 2.1 video embed, every number in chapter 4, the
-              muted-microphone block quote, 2.12's bullets, all of Planned
-              Improvements, 4.5's "5.1x", 2.3's "licence" and its closing
-              quotation mark, and the 2.12 / 2.13 section numbers.
+       F  2.9, drag the AI render below the status-light GIF and change its
+              caption. 2.10, change its caption. Both captions are edited by
+              clicking the image, not the paragraph.
+
+     STILL MANUAL, not in this file:
+       - Add YouTube chapter markers to the demo video (12:53 is long, and
+         no judge watches all of it). Chapters make the trip findable.
+       - A photograph of the motor rig with a node magnet-mounted on it
+         would be the strongest image on the page and there is not one.
+         Every number in chapter 4 came off that rig.
+       - Confirm the Edge Impulse project at studio.edgeimpulse.com/studio/
+         1092356 opens for a LOGGED-OUT visitor.
+       - Confirm the cover image is a real photograph.
+
+     VERIFIED CORRECT on the live page, do not re-check: all 12 outbound
+              links (Hackster writes href with SINGLE quotes, so grep for
+              href=' not href="), the 2.1 video embed, every number in
+              chapter 4, the muted-microphone block quote, 2.12's bullets,
+              all of Planned Improvements, and every section number in
+              chapters 1, 2 and 4.
 
        BY DESIGN, not a defect: 2.7 ends at "Exactly." and carries no Edge
               Impulse paragraph. That paragraph was dropped deliberately
-              because 4.4 makes the same point beside the numbers. This file
-              matches the page.
+              because 4.4 makes the same point beside the numbers.
 
-     VIDEO:   Section 2.1 carries the only video, the full demo walkthrough on
-              YouTube (8h05_KkEtwQ, public, 12:53). It is the hook: Arjun
-              watches it, then calls his father over. Shot and uploaded, NOT
-              yet embedded on the published page. Paste the URL into the embed
-              itself, not just the caption. An embed with no URL is worth
-              nothing at judging time.
+     VIDEO:   Section 2.1 carries the only video, the full demo walkthrough
+              on YouTube (8h05_KkEtwQ, public, 12:53). Embedded and correct
+              on the live page.
 
      NOTE:    Image lines carry the caption exactly as published. Where the
-              published image is a photo or an AI-generated render rather than
-              a repo diagram, the [IMAGE: ...] line describes it instead of
-              naming a file.
+              published image is a photo or an AI-generated render rather
+              than a repo diagram, the [IMAGE: ...] line describes it
+              instead of naming a file.
      ========================================================================== -->
 
 # 1 Predictive Maintenance, Built for a Different Scale
@@ -266,11 +252,11 @@ The dashboard is served from the UNO Q itself, so any phone or laptop on the sho
 
 # 2.9 Status Light on Every Node
 
-[IMAGE: Row of nodes on machines, one showing red]
-*One glance down the row tells you which machine needs attention (AI generated)*
-
 [IMAGE: report/diagrams/18-status-light.gif]
 *Every state the dome can show: seven for machine health on any node, four more while a satellite is getting connected. Blink and fade carry meaning as well as colour, which is how a tripped machine reads differently from a faulty one.*
+
+[IMAGE: Row of nodes on machines, one showing red]
+*What that looks like on a floor: one glance down the row tells you which machine needs attention (illustration, AI generated)*
 
 A dashboard only helps somebody who is looking at one, and in a shop of six people nobody is spare to do that. So the answer had to be readable without opening anything.
 
@@ -279,7 +265,7 @@ Each sensor node carries an RGB dome on top. Green is healthy, amber is a warnin
 # 2.10 Fleet Summary on the Base Station
 
 [IMAGE: led_matrix_1.gif - UNO Q LED matrix scrolling the fleet summary]
-*1 Tripped(TRP), 1 Faulty(FLT), 10 Offline(OFF), 1 Healthy(OK)*
+*The base station's own LED matrix, worst status first: 1 Tripped (TRP), 1 Faulty (FLT), 10 Offline (OFF), 1 Healthy (OK). The ten offline entries are simulated nodes registered to test the display at fleet scale.*
 
 Nodes out of sight are covered by the base station itself. The UNO Q's own LED matrix scrolls a one line summary of the whole fleet, worst status first, so one glance on the way past says whether anything anywhere is wrong.
 
@@ -327,14 +313,53 @@ The models run on the UNO Q and the dashboard is served from it. Nothing has to 
 - [3D models](https://github.com/rahuljeyaraj/edgeai-predictive-monitor/tree/main/3d-models), thirteen printable parts as 3MF and STL, also under Custom parts and enclosures on this page
 - [KiCad schematics](https://github.com/rahuljeyaraj/edgeai-predictive-monitor/tree/main/hardware/kicad), editable projects for all three boards, also under Schematics on this page
 
+The rest of this chapter is the short version of that guide: the wiring, the commands and the commissioning steps, enough to get one base station and one satellite running without leaving this page. Every pin below is transcribed from the firmware itself rather than from a drawing, and named the way the board is silkscreened.
+
 # 3.2 Base Station
 
 [IMAGE: base-station-build.jpg - base station laid out and assembled, five views]
 *The base station: Arduino UNO Q, accelerometer, microphone and status ring, laid out and closed up.*
 
+Three peripherals hang off the real-time half of the UNO Q. Nothing hangs off the Linux half.
+
+- KX134 accelerometer, SPI clock / data out / data in: **D13 / D12 / D11**
+- KX134 chip select: **D8**
+- KX134 INT1, the buffer-full interrupt: **D9**
+- INMP441 microphone, BCLK / WS / SD: **SCL / D10 / A4**
+- WS2812B status ring, data in: **D3**
+
+The microphone's bit clock is the one signal without a D-number. It comes out on the dedicated **SCL** pin, so the I2C peripheral is disabled to free it. Nothing in this project uses I2C.
+
+[IMAGE: report/diagrams/02b-base-station-schematic-kicad.png]
+*Base station schematic. The editable KiCad project and a one-page PDF are under Schematics on this page.*
+
 Every sensor connects through its own crimped harness, so the pod can be opened and a part swapped without a soldering iron. The accelerometer sits on its own plate against the shell wall, which is what couples it to the machine rather than to the board.
 
 The white globe is the diffuser cap off a 9W LED bulb, and it is the status dome over the ring. The rectangular window on the top face holds a Fresnel lens over the UNO Q's own LED matrix, which is what makes the fleet summary readable from across the floor. The round hole on the bottom is the microphone port. The foot underneath takes the ring magnet, pressed in by hand.
+
+Where the finished pod goes matters as much as which sensor went into it. Mount it rigidly, as close to the bearing as the geometry allows. A soft or loose mount is a low-pass filter you did not ask for, and it removes exactly the high-frequency content that early bearing faults live in.
+
+Three scripts configure the board itself, once, outside the application container.
+
+```
+cd base-station
+./provision-spi.sh      # the MCU-to-Linux SPI bulk link
+./provision-baud.sh     # sets the serial link to 500000 baud on the Linux side
+./provision-wifi.sh     # Wi-Fi onboarding: hotspot fallback + captive portal
+```
+
+`provision-baud.sh` matters more than it looks. The Linux-side router's baud must match the firmware's, and a mismatch breaks the whole link silently, with no error anywhere.
+
+Then flash the real-time side: open `base-station/sketch/` in Arduino App Lab and flash it to the STM32U585. Then build, deploy and run the Linux side:
+
+```
+cd base-station
+./start_dashboard.sh
+```
+
+That builds, pushes the application, waits for its container and prints **the board's own LAN IP URL**. Use that link rather than a localhost one, because a real deployment has no port forwarding and testing over one hides problems you will meet later.
+
+Open it and the base station's own machine is already listed. Nothing has been trained yet, but the sensing half of the loop is live and watchable: vibration and audio spectra, time-domain traces, and a status ring that goes solid the moment real data starts flowing.
 
 # 3.3 Satellite Node
 
@@ -343,13 +368,120 @@ The white globe is the diffuser cap off a 9W LED bulb, and it is the status dome
 
 The satellite is deliberately the same build. Same sensors, similar harnesses, same status dome, one USB-C cable for power. The only difference you can see is the front face, which has no lens window, because a satellite has no LED matrix to magnify. The black sticker on the side is the Wi-Fi antenna.
 
-There is nothing to set per unit in software. A node takes its identity from its own Wi-Fi hardware address, so ten of these are ten distinct machines on the dashboard with no ID typed anywhere.
+- KX134 SPI clock / data out / data in: **D8 / D9 / D10**, the board's fixed hardware SPI pins
+- KX134 chip select: **D6**
+- KX134 INT1, buffer-full: **D7**
+- INMP441 microphone, BCLK: **D1**
+- INMP441 WS: **D2**
+- INMP441 SD, data out: **D3**
+- WS2812B ring data in: **D5**
+
+D0 and D4 are unused. The XIAO ESP32-S3 breaks out only 11 GPIOs, so every assignment above is chosen to keep the fixed hardware SPI lines free for the accelerometer, the one peripheral that genuinely needs them.
+
+The KX134 breakout's silkscreen will mislead you here. It is a dual-protocol part, and its three SPI pins are screen-printed with their I2C-mode names: `SCL` is the SPI clock, `ADR` is data out, `SDA` is data in. Wire by the electrical role above, not by the label you can read on the board.
+
+[IMAGE: report/diagrams/03b-satellite-node-schematic-kicad.png]
+*Satellite node schematic. Same sensor set as the base station, status ring only, no LED matrix.*
+
+```
+cd satellite
+pio run                # build
+pio run -t upload      # flash over USB
+pio device monitor     # optional serial console, 115200 baud
+```
+
+No credential is compiled in, and there is nothing to set per unit. A node with no saved credentials raises its own access point, named from its own hardware address, for example `EPM-SAT-a4cf12`, so ten unconfigured nodes on a bench are ten distinguishable networks. Join it from any phone, and the setup page opens by itself through the same captive-portal mechanism airport Wi-Fi uses. Three fields: the shop's Wi-Fi name, its password, and the broker address, pre-filled with `epm-base.local`. Submitting does not blindly save. The node tries the credentials first and writes them to storage only on success, so a typo cannot strand a device on a machine you now need a ladder to reach.
+
+A node takes its identity from its own Wi-Fi hardware address, so ten of these are ten distinct machines on the dashboard with no ID typed anywhere, no pairing step and no jumper to solder.
+
+# 3.4 Commissioning a Machine
+
+A node that is wired and online is not monitoring anything yet. Every asset is taught its own normal once, from the dashboard, in four to six minutes. Find it in the list and press **Set up**. Six steps:
+
+- **Name and class.** The name is what alerts print, and the class is what recordings group by.
+- **Off**, with the machine switched off. Captures this sensor's own noise floor, per frequency bin.
+- **Running conditions**, with the machine running, at least one. Produces the training batch, the running reference, and the labelled healthy recordings.
+- **Train.** Produces this asset's own model, its normalisation statistics and its two thresholds.
+- **Trip output**, optional. Establishes which motor stops this machine, confirmed by actually stopping it rather than guessed.
+- **Done.** A summary, and the asset goes live.
+
+Step 2 is the one instruction no computer can check. Nothing in the software can confirm the machine is actually switched off. A baseline captured while it runs teaches the system that its own vibration is silence, and the running/stopped gate will never work correctly until you re-measure it.
+
+# 3.5 Naming the Fault Type
+
+That is the whole of fault detection. Naming the fault needs the second model, and five more steps, only one of which happens outside the dashboard.
+
+- **Record.** On the machine's row, open the **Record** drawer, type a label such as `bearing_wear`, and capture the machine while that fault is present.
+- **Link.** On the **Classifier** tab, each asset class has a card. Press **Link to Edge Impulse** and sign in. A project is created for that class over the API; you never visit Studio to do it.
+- **Upload.** Push the labelled recordings to that project from the same card. This is the only step in the entire system that needs an internet connection.
+- **Train.** This one step is deliberately left in Edge Impulse Studio. Tuning DSP parameters and reading a confusion matrix is what Studio is for, and a button in this dashboard would only have frozen one architecture forever.
+- **Fetch.** Press **Fetch trained model**. It runs the build, downloads the deployment archive, extracts the `.tflite` and saves it under the class name.
+
+From the moment that file lands, every asset of that class is being classified, with no restart and no per-node action.
+
+# 3.6 The Code That Makes the Decision
+
+Three functions carry the parts of this that matter. They are lightly trimmed here to fit the page; the full versions, with their comments intact, are in the repository.
+
+The anomaly score itself is a mean squared reconstruction error, and it is five lines. This is the whole of fault detection, in [`pipeline/autoencoder.py`](https://github.com/rahuljeyaraj/edgeai-predictive-monitor/blob/main/base-station/python/pipeline/autoencoder.py):
+
+```
+def reconstruction_error(model, vector):
+    """Anomaly score: mean squared reconstruction error for one feature
+    vector -- low for data like what the model trained on ("healthy"),
+    high for data it never saw (candidate fault signatures)."""
+    model.eval()
+    with torch.no_grad():
+        x = torch.tensor([vector], dtype=torch.float32)
+        return nn.functional.mse_loss(model(x), x).item()
+```
+
+Turning that number into a status is where the care went, in [`pipeline/inference.py`](https://github.com/rahuljeyaraj/edgeai-predictive-monitor/blob/main/base-station/python/pipeline/inference.py). A stopped machine is not scored at all, and no single frame can change a status on its own:
+
+```
+def handle_frame(self, frame, confirm=True):
+    if self._gate.update(frame) != MotorState.RUNNING:
+        return None                 # a stopped machine must not read as a broken one
+    vector, spectral_dim = build_feature_vector(frame, self._sensor_config, self._expected_dim)
+    vector = standardize_scalars(vector, spectral_dim, self._scalar_mu, self._scalar_sigma)
+    score = reconstruction_error(self._model, vector)
+    raw_status = self._status_for_score(score)   # > fault line -> FAULT, > warning line -> WARNING
+    if raw_status == self._status:
+        self._candidate_status, self._candidate_count = None, 0   # in line again, drop any flip
+        return score
+    if raw_status == self._candidate_status:
+        self._candidate_count += 1
+    else:
+        self._candidate_status, self._candidate_count = raw_status, 1
+    if self._candidate_count >= self._debounce_frames:            # N frames must agree first
+        self._registry.set_status(self._node_id, raw_status)
+        self._status = raw_status
+    return score
+```
+
+And the trip, in [`protection/protection.py`](https://github.com/rahuljeyaraj/edgeai-predictive-monitor/blob/main/base-station/python/protection/protection.py). A confirmed FAULT starts the announced countdown; anything else cancels it:
+
+```
+def on_status_change(self, node_id, status):
+    if status == NodeStatus.FAULT:
+        self._start_countdown(node_id)   # 10 s, announced on the dashboard, Hold cancels it
+        return
+    # Any other status means the fault is no longer current -- recovered, paused,
+    # re-commissioned, already tripped. Cancel a pending trip rather than letting a
+    # countdown started under an old status fire against a machine that is no
+    # longer faulted.
+    self._cancel_countdown(node_id)
+```
+
+Nothing in that path reads the classifier. The fault name is display only, which is what makes a wrong name harmless.
 
 # 4 Measured Results
 
 # 4.1 What Was Measured, and How
 
 Every figure in this chapter came off the physical rig: a sensor node on a spinning motor, a trip that actually stopped that motor, a dashboard checked in a real browser against the live board. The microphone is muted, so all of it is vibration alone. The full record of how each was checked is in the [project report](https://github.com/rahuljeyaraj/edgeai-predictive-monitor/blob/main/report/REPORT.md).
+
+Ravi and Arjun are a scenario, written from the kind of shop this is built for. The hardware, the software, the numbers below and the trip are not. They were built and measured on a bench rig of three motors, and where that rig flatters the result, this chapter says so.
 
 # 4.2 Fault Detection
 
@@ -358,6 +490,7 @@ Numbers straight off the rig:
 - After training on the healthy running machine, its live anomaly score sat at **0.046**, against a warning line of **0.144** and a fault line of **0.288**. That is real daylight between a machine reading as itself and the line that means trouble.
 - Induced fault, a 2.4x overspeed: scored **1.851** against a fault threshold of **0.292**, and the motor **tripped in about 11 seconds**.
 - Ramping back down returned the node cleanly to Idle rather than to Fault.
+- **The detector separates genuine mechanical faults, not only speed changes.** An offline sweep of real captures through the production feature pipeline measured healthy-versus-imbalance separation at roughly **80 sigma** of the healthy score distribution. The warning line sits at 8 sigma of that same distribution and the fault line at 15, so an imbalance clears it with room to spare. The overspeed is what the live trip above was fired with, because it is the one fault this rig can induce and remove on command in seconds, without stopping to change a bearing.
 
 The running/stopped gate matters as much as the model, because a stopped machine must not read as a broken one:
 
@@ -374,6 +507,12 @@ The 536 numbers were not a guess. An offline harness replayed real captures thro
 # 4.4 Fault Identification
 
 The naming model was trained on **541 captures taken from this rig**, across four classes: healthy, bearing, loose mount and unbalanced.
+
+[IMAGE: IMG20260901093820.jpg - worn and new 6004 bearing side by side]
+*The bearing class is a real worn part, not a simulated signature: a used 6004 beside the new one, both fitted to the rig in turn and recorded.*
+
+[IMAGE: IMG20260901093909.jpg - two worn and two new 6201 bearings]
+*The same for the 6201s on the second rig. Recording a fault class means running the machine with the faulty part actually in it.*
 
 [IMAGE: edge-impulse-model.jpg - Edge Impulse Studio model page for the fault classifier]
 *The trained fault identification model in Edge Impulse: four fault classes, their confusion matrix, and the cost of one inference*
@@ -405,7 +544,20 @@ Arjun forked the repository that same evening and opened an issue list for his f
 - Record more labelled fault data per class. The fault identification model's ceiling is set by how much genuinely different fault data exists, and the recording workflow is now good enough that this is a matter of time rather than tooling.
 - Trend severity, not just detect it. The anomaly score is already stored per machine, so the question after something is wrong is how fast it is getting worse.
 
-# 6 Conclusion
+# 6 What It Saves
+
+Ravi's first complaint was not downtime. It was the bin.
+
+A calendar service changes a bearing whether it needed changing or not, and after the compressor his shop shortened the cycle, which only threw the parts away faster. Most of what comes out of a machine on a service schedule is still serviceable. The 6004 on the left of the photographs above is genuinely finished. The three that came out beside it over the years were not.
+
+- **Parts get replaced when the machine asks.** Condition tells you which bearing is going, so the other ten stay in the machine instead of in the bin.
+- **The machine survives its own fault.** A bearing caught early is a bearing. A bearing caught after the shaft has been running on it is a rotor, a housing and a week of work. Stopping the motor at the fault is what keeps a repair a repair.
+- **The monitor itself is repairable.** Every sensor is on its own crimped harness and every part of the enclosure is a printable file in this project. A dead microphone is a $3 part and a plug, not a scrapped node.
+- **Nothing is stranded by a subscription.** There is no service to switch off, so a node is worth the same on the day the project stops being maintained as it is today.
+
+None of that is measured, and it is not claimed as a number. It is the reason the trip exists rather than an alert.
+
+# 7 Conclusion
 
 The compressor gave Ravi weeks of warning. Months, maybe. Nobody could feel it, because a machine that is failing slowly feels exactly like it did yesterday, every day, until the morning it does not turn.
 
