@@ -281,16 +281,15 @@ save(c, "15e-trip-path", scale=SCALE)
 c = Canvas(460, 550, margin=20)
 
 STEPS = [
-    (20, "1 \u00b7 Name & class", "name the asset"),
-    (108, "2 \u00b7 Machine off", "learn what stopped looks like"),
-    (196, "3 \u00b7 Machine running", "collect healthy data"),
-    (284, "4 \u00b7 Train", "fit the model on the board"),
-    (372, "5 \u00b7 Stop output", "wire the trip \u2014 skippable"),
-    (460, "6 \u00b7 Done", "live and scoring"),
+    (20, "Name & class", "name the asset"),
+    (108, "Machine off", "learn the idle state of the machine"),
+    (196, "Machine running", "collect healthy data"),
+    (284, "Train", "fit the model on the board"),
+    (372, "Stop output", "wire the trip \u2014 skippable"),
+    (460, "Done", "live and scoring"),
 ]
 for y, title, sub in STEPS:
-    role = "ghost" if "skippable" in sub else "neutral"
-    c.box(30, y, 400, 70, title, [sub], role=role,
+    c.box(30, y, 400, 70, title, [sub], role="neutral",
           title_size=TITLE - 1, body_size=BODY - 0.5)
 
 for y in (20, 108, 196, 284, 372):
