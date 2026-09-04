@@ -631,6 +631,8 @@ fingerprint of that moment, not the raw waveform.
 
 ![Feature pipeline: raw window to feature vector to autoencoder to anomaly score to status](diagrams/04-feature-pipeline.png)
 
+*One frame's journey, run against each machine's own model.*
+
 For each sensing channel — vibration on X, Y and Z, plus audio — the system
 keeps two very different kinds of information:
 
@@ -882,6 +884,8 @@ the safety path. The trip cannot depend on a model it has no code path to read.
 ## 7.2 The round trip
 
 ![The Edge Impulse round trip: record on the machine, upload from the dashboard, train in Studio, fetch the built model back onto the board](diagrams/11-edge-impulse-flow.png)
+
+*One project per asset class, not one per machine.*
 
 Five steps, and only one of them happens outside the dashboard.
 
@@ -1336,6 +1340,8 @@ else. The trip output is configured in setup and only read back on the tile.
 ## 9.5 Fleet — *is anything wrong right now?*
 
 ![Anatomy of the Fleet page: tabs, status tiles that are also filters, one row per asset, and the expanded detail panel](diagrams/08-dashboard-anatomy.png)
+
+*The Fleet page, with one asset expanded.*
 
 **The status summary row.** One tile per status, each showing a count — and each
 tile is also a **filter**. Click *Faulty* and the list below shows only faulty

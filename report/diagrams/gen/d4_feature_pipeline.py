@@ -1,50 +1,46 @@
-"""04 -- one frame's journey from raw samples to a status (Chapter 4)."""
+"""04 -- one frame's journey from raw samples to a status (Chapter 4).
+
+Bare vertical flowchart: no title band, no footnote band, and no text
+outside the boxes. What used to hang beside each box as a grey caption is
+either folded into the box in short form or dropped -- the thresholds and
+the persistence rule are prose in Chapter 4, not part of the picture.
+"""
 import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from diagram_lib import Canvas, save, INK_SOFT  # noqa: E402
+from diagram_lib import Canvas, save  # noqa: E402
 
-c = Canvas(
-    1320, 520,
-    title="From a shaking sensor to a status, once per frame",
-    subtitle="The same four steps run for every monitored machine, on its own private model.",
-    footnotes=[
-        ("Thresholds are not constants. Each machine's warning and fault lines are placed above its own "
-         "healthy spread at commissioning: warning = μ + 8σ, fault = μ + 15σ.", None),
-        ("A fault has to persist to be believed — one noisy frame never flips the status on its own.", None),
-    ],
-)
+c = Canvas(566, 614)
 
-c.box(34, 180, 224, 136, "Raw window",
-      ["1024 accel samples", "per axis @ 12.8 kHz,", "2048 mic samples"], role="sense")
-c.box(296, 180, 252, 136, "Feature vector",
-      ["FFT spectrum, peak-", "normalised, plus six", "shape statistics per channel"], role="sense")
-c.box(586, 180, 224, 136, "Autoencoder",
-      ["squeeze it small,", "rebuild it, measure", "how badly that went"], role="brain")
-c.box(848, 180, 204, 136, "Anomaly score",
-      ["one number:", "how unlike normal", "this moment is"], role="brain")
+CX = 283          # every box shares one centre line, so the chain is straight
+W, H = 498, 84
 
-c.link([(258, 248), (296, 248)])
-c.link([(548, 248), (586, 248)])
-c.link([(810, 248), (848, 248)])
+c.box(34, 34, W, H, "Raw window",
+      ["1024 accel samples per axis @ 12.8 kHz,",
+       "2048 mic samples @ 96 kHz"], role="sense")
+c.box(34, 148, W, H, "Feature vector",
+      ["FFT spectrum + 6 shape stats per channel  =  536 numbers"], role="sense")
+c.box(34, 262, W, H, "Autoencoder",
+      ["squeeze it small, rebuild it, measure the error",
+       "trained on this machine's healthy data, on the UNO Q"], role="brain")
+c.box(34, 376, W, H, "Anomaly score",
+      ["one number: how unlike normal this moment is"], role="brain")
 
-# Centred on the score box, so the three outcomes fork from one point on the
-# chain instead of each peeling off at its own height.
-c.box(1092, 143, 194, 58, "Healthy", role="tell")
-c.box(1092, 219, 194, 58, "Warning", role="warn")
-c.box(1092, 295, 194, 58, "Fault", role="act")
+c.link([(CX, 118), (CX, 148)])
+c.link([(CX, 232), (CX, 262)])
+c.link([(CX, 346), (CX, 376)])
+
+# Left to right in severity order, the middle one sitting on the chain's own
+# centre line so the fan is symmetric about the trunk.
+c.box(34, 522, 150, 58, "Healthy", role="tell")
+c.box(208, 522, 150, 58, "Warning", role="warn")
+c.box(382, 522, 150, 58, "Fault", role="act")
 
 # Fault drawn first so the two neutral branches overdraw the shared stub --
 # otherwise the trunk picks up the red of whichever branch was drawn last.
-c.link([(1052, 248), (1072, 248), (1072, 324), (1092, 324)], kind="arrowAct")
-c.link([(1052, 248), (1072, 248), (1072, 172), (1092, 172)])
-c.link([(1052, 248), (1092, 248)])
-
-c.lines(422, 348, ["128 bins × (accel x, y, z + mic)",
-                   "+ 6 scalars each  =  536 numbers"], size=11.5, fill=INK_SOFT)
-c.lines(698, 348, ["trained on this one machine's healthy",
-                   "data, on the UNO Q itself"], size=11.5, fill=INK_SOFT)
-c.lines(950, 348, ["reconstruction error —", "big gap means unfamiliar"], size=11.5, fill=INK_SOFT)
+c.link([(CX, 460), (CX, 492), (457, 492), (457, 522)], kind="arrowAct")
+c.link([(CX, 460), (CX, 492), (109, 492), (109, 522)])
+c.link([(CX, 460), (CX, 522)])
 
 save(c, "04-feature-pipeline")
