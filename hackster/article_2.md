@@ -28,10 +28,9 @@
               are edited here and not yet edited on the page. The video embed
               in 2.1 is NEW and not yet published.
 
-              Chapters 4, 5 and 6 are NEW and not yet published: the
-              step-by-step workflow, the two open limits (muted microphone,
-              satellite setup page) and the fork roadmap that closes the
-              article.
+              Chapters 4 and 5 are NEW and not yet published, as is the block
+              quote at the end of 2.9 stating that the microphone is muted in
+              both models.
 
               The two appendices (Bill of Materials, Schematics) have been
               REMOVED. Hackster's own "Things used in this project" section
@@ -182,6 +181,8 @@ Ravi struggled at first, but he understood the gist of it.
 
 The [Edge Impulse project](https://studio.edgeimpulse.com/studio/1092356) is public, so the impulse, the data and the trained model can all be inspected.
 
+> The microphone is currently muted in both models. On this rig it is not acoustically isolated: sound from a machine standing next to it is picked up as if it belonged to this one, which produces false fault flags and wrong fault names. Until the mounting is fixed, the sound channel is zeroed out before the feature vector reaches either model, and every decision shown here is made on vibration alone. With the microphone active and nothing else running nearby, both models do well on the combined vibration and sound signal, but that mode is not usable on a floor where several machines run at once. The dashboard still shows the live sound spectrum, and the frame format is unchanged.
+
 # 2.10 Dashboard in Any Browser
 
 [IMAGE: report/diagrams/08-dashboard-anatomy.png]
@@ -264,85 +265,27 @@ The satellite is deliberately the same build. Same sensors, similar harnesses, s
 
 There is nothing to set per unit in software. A node takes its identity from its own Wi-Fi hardware address, so ten of these are ten distinct machines on the dashboard with no ID typed anywhere.
 
-# 4 The Whole Workflow on One Page
+# 4 Planned Improvements
 
-"Walk me through it once more, in order," Ravi said. "From the box on the bench to a machine stopping itself."
+Arjun forked the repository that same evening and opened an issue list for his father's build.
 
-Arjun wrote it out for him.
-
-# 4.1 Onboard
-
-- If the shop has Wi-Fi, the base station comes up as its own hotspot first. A phone connects to it and is redirected to the Network tab, where the operator picks the shop's network and enters the password.
-- Each satellite does the same on its own hotspot. The phone connects, the onboarding page appears, the operator picks the same network, and the broker address fills itself in as epm-base.local. Test, save, join, and the node appears on the Fleet page by itself.
-- If the shop has no Wi-Fi, nothing changes except which network everything joins. The base station stays the access point, and the satellites and the phone or laptop running the dashboard connect straight to it.
-
-# 4.2 Commission, One Machine at a Time
-
-Six guided steps on the dashboard, a few minutes per machine.
-
-- Name the machine and pick its class.
-- Switch the machine off. The node records its noise floor.
-- Run the machine. The node collects a training batch for each of its normal operating conditions.
-- Train. The autoencoder and this machine's own thresholds are fitted on the base station itself.
-- Confirm the trip by actually stopping the machine, so the wiring is proven before it is trusted.
-- Done. The machine moves from New to Healthy.
-
-# 4.3 Set Up Fault Identification, Once per Asset Class
-
-This step is per class, not per machine. One pump model covers every pump in the shop.
-
-- Record labelled healthy and faulty data from the dashboard.
-- Link the class to an Edge Impulse project, created from the dashboard.
-- Upload.
-- Train, in Edge Impulse Studio itself.
-- Fetch. One dashboard button pulls the trained model back down onto the base station.
-
-# 4.4 Sense
-
-- Every node samples its accelerometer on three axes and its microphone.
-- On the node itself, that raw signal is reduced to 128 frequency bins and 6 statistics per channel, 536 numbers in all.
-- Those numbers leave as one fused frame, every 64 ms from the base station node over SPI, every 200 ms from a satellite node over Wi-Fi and MQTT.
-
-# 4.5 Decide
-
-Two models run in parallel on the UNO Q, for every node.
-
-- The autoencoder scores how far the frame has drifted from this machine's own healthy baseline, and that score sets Healthy, Warning or Fault.
-- The fault identification model runs alongside it, naming the likely cause whenever a fault shows.
-
-# 4.6 Act
-
-- A confirmed fault starts a 10 second countdown on the dashboard. The operator can press Hold.
-- A Telegram alert goes out to every subscribed phone.
-- The trip command is published over MQTT naming the exact motor, the motor stops, and the node listens to confirm the machine actually went quiet.
-- The status becomes Tripped, or is flagged as a failed trip if the machine did not stop.
-- Every status change fans out at once, to the dashboard, the status dome on the node, the LED matrix on the base station and Telegram.
-
-# 5 What Is Not Finished
-
-# 5.1 The Microphone Is Muted Today
-
-Both models take the sound channel as part of their input, and with the microphone active and no other machine running nearby, they perform well on the combined vibration and sound signal.
-
-On this rig the microphone is not acoustically isolated. Sound from a machine standing next to it is picked up as if it belonged to this one, which produces false fault flags and wrong fault names. Until the mounting is fixed, the sound channel is zeroed out before the feature vector reaches either model, so the decisions shown in this article are made on vibration alone. The dashboard still shows the live sound spectrum, and the frame format is unchanged.
-
-This is a mounting problem rather than a model problem, and it is the first item on the list below.
-
-# 5.2 The Satellite's Setup Page
-
-Wi-Fi, MQTT, the status dome, the microphone and the accelerometer are all verified on real satellite hardware. The setup page the satellite serves from its own hotspot does not load reliably, and the working hypothesis is that its Wi-Fi scan drops the phone off its access point while the page is being fetched. The base station's onboarding page is a separate implementation and is verified on real phones.
-
-# 6 Arjun's Fork
-
-Arjun forked the repository the same evening and opened an issue list for the shop's own build.
-
-- Fix the microphone mounting, isolate it acoustically, and turn the sound channel back on for both models.
+- Isolate the microphone mounting acoustically and turn the sound channel back on for both models. It is the one thing holding back a signal both models already know how to use.
 - Add a relay per motor. Today's trip stops motion; a relay would remove power at the source as well. The trip message, the latch and the confirmation logic would not change.
 - Add hysteresis to the fault threshold, so a score sitting exactly on the line stops making the countdown flap.
 - Give each operating condition its own threshold. Training one machine across several conditions costs sensitivity, and the hard part is not the thresholds, it is knowing which condition the machine is in right now.
-- Close the satellite setup page bug, the last gap between the satellite firmware and the base station's verification record.
-- Pre-train one shared healthy model per asset class, so commissioning the fortieth pump becomes calibration rather than training, and is faster than the first.
+- Fix the setup page a satellite serves from its own hotspot. Its Wi-Fi, MQTT, status dome, microphone and accelerometer are all verified on real hardware, but that one page does not load reliably, and it is the last gap between the satellite firmware and the base station's record.
+- Pre-train one shared healthy model per asset class, so commissioning the fortieth pump becomes calibration rather than training, and takes less time than the first one did.
 - Record more labelled fault data per class. The fault identification model's ceiling is set by how much genuinely different fault data exists, and the recording workflow is now good enough that this is a matter of time rather than tooling.
-- Trend severity, not just detection. The anomaly score is already stored per machine, so the next question after something is wrong is how fast it is getting worse.
+- Trend severity, not just detect it. The anomaly score is already stored per machine, so the question after something is wrong is how fast it is getting worse.
 
-Everything above is a fork of a public repository, which is the point. Ravi could not buy this system at his scale. His son could build it in a fortnight, and change it afterwards.
+# 5 Too Small to Be a Customer
+
+The compressor gave Ravi weeks of warning. Months, maybe. Nobody could feel it, because a machine that is failing slowly feels exactly like it did yesterday, every day, until the morning it does not turn.
+
+That is the gap this fills. Each machine is measured against what it felt like the day it was serviced, on the machine itself, by a board bolted to it. A bearing gets changed because a machine asked for it, not because a calendar came round. A light on the housing says which machine, from across the floor. A phone says it when nobody is on the floor at all. And at 02:40 on a Tuesday, with the shop shut and nobody standing there, the motor stops itself.
+
+Eleven machines was the number that ended every sales call. It is also the number that makes this worth building: a base station and ten satellites, roughly $350 of parts, no gateway, no subscription, no account, and nothing leaving the shop.
+
+Ravi was too small to be a customer. He was never too small to own the thing outright.
+
+All the code, the firmware, the wiring, the 3D models and the full engineering report are at [github.com/rahuljeyaraj/edgeai-predictive-monitor](https://github.com/rahuljeyaraj/edgeai-predictive-monitor). Fork it, as Arjun did.
