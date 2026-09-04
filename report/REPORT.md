@@ -11,10 +11,10 @@
 | **Built on** | Arduino UNO Q — Qualcomm Dragonwing QRB2210 (Debian Linux) + STM32U585 (Zephyr) |
 | **Entered in** | Arduino Physical AI Challenge India 2026 — *Industrial & Sustainability AI*<br>Invent the Future with Arduino UNO Q and App Lab (Hackster.io) — *Industrial IoT* |
 | **AI stack** | PyTorch on-device (anomaly) · Edge Impulse (fault classifier, TFLite on-device) |
-| **Team / author** | `[FILL IN: team or author name]` |
-| **Date** | `[FILL IN: submission date]` |
-| **Source** | `[FILL IN: GitHub URL]` — open source under the MIT licence |
-| **Demo video** | `[FILL IN: video URL]` |
+| **Team / author** | Rahul Jeyaraj |
+| **Date** | September 2026 |
+| **Source** | [github.com/rahuljeyaraj/edgeai-predictive-monitor](https://github.com/rahuljeyaraj/edgeai-predictive-monitor) — open source under the MIT licence |
+| **Demo video** | [youtube.com/watch?v=8h05_KkEtwQ](https://www.youtube.com/watch?v=8h05_KkEtwQ) — 12:53, the full walkthrough |
 
 > **[PHOTO: cover image — the assembled base station clipped to the test rig, machine running, status ring lit, dashboard visible on a laptop behind it]**
 
@@ -50,9 +50,9 @@
 
 | | Chapter | What's in it |
 |---|---|---|
-| 10 | [Under the hood](#chapter-10-under-the-hood) | The software architecture layer by layer · one frame's journey · the two chip-to-chip links · what runs as what · what is stored where |
+| 10 | [Under the hood](#chapter-10-under-the-hood) | The software architecture layer by layer · one frame's journey · the two chip-to-chip links · what runs as what · what is stored where · what makes it smooth, and the throughput ceiling that is left |
 | 11 | [Why we built it this way](#chapter-11-why-we-built-it-this-way) | Ten decisions, the alternatives, and what each one cost |
-| 12 | [Proof, not promises](#chapter-12-proof-not-promises) | Measured results · a real setup run · the measured cost of multi-condition training · known limitations · the status ledger |
+| 12 | [Proof, not promises](#chapter-12-proof-not-promises) | Measured results · a real setup run · the measured cost of multi-condition training · the satellite on real hardware · known limitations · the status ledger |
 | 13 | [What's next](#chapter-13-whats-next) | The near-term roadmap, in build order |
 
 **Appendices**
@@ -66,10 +66,10 @@
 | E | [Network and transport selection rationale](#appendix-e-network-and-transport-selection-rationale) | BLE beacon vs BLE GATT vs Wi-Fi, and why the third won |
 | F | [Wire protocol specification](#appendix-f-wire-protocol-specification) | Message types, both framings, QoS, and the schema that keeps three codebases in step |
 | G | [Sensor configuration envelope](#appendix-g-sensor-configuration-envelope) | How fast and how finely this hardware can actually be pushed, what we run at, and why |
-| H | [Motor-state gate calibration](#appendix-h-motor-state-gate-calibration) | The full investigation: three wrong layers, the real cause, and the fix that doubled the margin |
+| H | [Motor-state gate calibration](#appendix-h-motor-state-gate-calibration) | The full investigation: three wrong layers, the real cause, the fix that doubled the margin, and the three further layers a second node and a longer run exposed |
 | I | [Classifier research history](#appendix-i-classifier-research-history) | The road to the current model, including two data-integrity bugs caught before they could inflate a number |
 | J | [Test suite and verification record](#appendix-j-test-suite-and-verification-record) | What is covered by automated tests, and how each live claim was checked |
-| K | [3D-printed test rigs](#appendix-k-3d-printed-test-rigs) | Printed fixtures used to induce repeatable faults — *placeholder, to be filled in* |
+| K | [3D-printed parts and the fault-injection rig](#appendix-k-3d-printed-parts-and-the-fault-injection-rig) | The thirteen printable parts, the two enclosures, and the flywheel that makes an induced fault repeatable |
 | L | [Reading the source](#appendix-l-reading-the-source) | Repository layout, the conventions the code holds to, and where to start reading |
 | M | [Sustainability, scale and running cost](#appendix-m-sustainability-scale-and-running-cost) | What it saves, what it costs to run, and how it behaves at forty machines |
 | N | [Glossary](#appendix-n-glossary) | Every term used in this report, in one place |
@@ -90,11 +90,12 @@ as much as a machine that only says "I'm fine."*
 
 ## 1.1 The problem, in one page
 
-> **Month 0.** Ravi signs a lease on a shed off the highway and, a week later,
-> watches a brand-new CNC lathe come off the back of a truck. It is the biggest
-> single thing he has ever bought and the thing his entire order book now
-> depends on. He puts his hand on the housing while it runs its first job,
-> because that is the only diagnostic tool he owns.
+> **Month 0.** Ravi signs a lease on a shed off the highway. The CNC lathe
+> arrives first and he stands at it all day, hand on the housing, because that
+> is the only diagnostic tool he owns. The air compressor goes outside, under a
+> tin sheet, where it cycles on its own pressure switch and nobody stands near
+> it at all. The lathe is the machine he watches. The compressor is the one
+> that will fail.
 
 Machines don't send a text before they fail. They get a little louder, run a
 little hotter, vibrate a little wrong — for days, sometimes weeks — and then one
@@ -105,6 +106,13 @@ weeks of a dead machine and a slipped order book is the real one.
 Large plants solve this with condition-monitoring systems that cost more than
 Ravi's lathe. Small shops solve it by putting a hand on the housing, which works
 right up until the day nobody happens to be standing there.
+
+That day is most days, for most machines. A lathe has an operator at it, so a
+lathe screams and somebody hears it. A compressor under a tin sheet, a borewell
+pump on a night timer, a dust blower at the far end of the shed — those run for
+hours with nobody within earshot, and they are the machines this report is
+about. Every machine monitored from here on is one that runs unattended,
+because a trip at 02:40 only means anything on a machine nobody is watching.
 
 **EdgeAI Predictive Monitor** is a sensor pod that clips onto a machine, listens
 to how it vibrates and sounds, and learns what normal is *for that specific
@@ -138,7 +146,7 @@ watching at the moment it matters.
 * **Diagnoses.** A second, separate model — trained in Edge Impulse, running
   on-device — names *which kind* of fault it is hearing: a bearing going, an
   imbalance, a loose mount. That one is trained per **machine type**, so five
-  identical lathes share one model instead of five training runs.
+  identical pumps share one model instead of five training runs.
 * **Knows when the machine is off.** A dedicated gate tells running from
   stopped, so a switched-off machine reads as *idle*, not as *broken*. This
   turned out to be the single hardest measurement in the project
@@ -162,11 +170,12 @@ watching at the moment it matters.
 | Trip-output mapping confirmed by really stopping the machine | Built · live-verified on hardware |
 | Physical motor stop on confirmed fault, latched | Built · live-verified on hardware, both directions |
 | Fault-type classifier (Edge Impulse, per machine type) | Built · runs on-device · trained on 541 real captures from this rig |
+| Microphone channel in the two models | **Muted** — measured, live in the UI, zeroed in the model input ([§5.4](#chapter-5-teaching-it-what-normal-feels-like)) |
 | Live dashboard (5 tabs, live charts, controls, global trip banner) | Built · live-verified on hardware |
 | Status ring + on-board LED matrix | Built · live-verified on hardware |
 | Wi-Fi onboarding via captive portal (base station) | Built · live-verified on real phones |
-| Satellite sensor nodes over Wi-Fi/MQTT | Built |
-| Phone alerts (Telegram) | Built · demonstrated against a real bot; currently switched off pending one config value |
+| Satellite sensor nodes over Wi-Fi/MQTT | Built · live-verified on a physical XIAO ESP32-S3, sensor by sensor |
+| Phone alerts (Telegram) | Built · live-verified against a real bot and a real phone |
 | Per-motor relay (cutting electrical power, not just motion) | **Not built** — [Chapter 13](#chapter-13-whats-next) |
 
 ## 1.4 Why this counts as Physical AI
@@ -192,11 +201,11 @@ obvious what the engineering is *for*.
 
 | | | Chapter |
 |---|---|---|
-| **Month 0** | One lathe arrives. Nobody is monitoring anything. | [1](#chapter-1-the-machine-that-never-complains-until-its-too-late) |
-| **Month 1** | One sensor pod goes on the lathe. | [3](#chapter-3-building-the-base-station) |
-| **Month 1, day 2** | The lathe is commissioned: "just let it run for a bit." | [5](#chapter-5-teaching-it-what-normal-feels-like) |
-| **Month 7** | A compressor and a drill press, across the yard, out of cable reach. | [4](#chapter-4-growing-the-fleet) |
-| **Month 9** | A second lathe. One classifier now covers both. | [6](#chapter-6-naming-the-fault), [7](#chapter-7-training-the-classifier-with-edge-impulse) |
+| **Month 0** | The shed opens. Nobody is monitoring anything. | [1](#chapter-1-the-machine-that-never-complains-until-its-too-late) |
+| **Month 1** | One sensor pod goes on the air compressor. | [3](#chapter-3-building-the-base-station) |
+| **Month 1, day 2** | The compressor is commissioned: "just let it run for a bit." | [5](#chapter-5-teaching-it-what-normal-feels-like) |
+| **Month 7** | A borewell pump and a dust blower, across the yard, out of cable reach. | [4](#chapter-4-growing-the-fleet) |
+| **Month 9** | A second pump. One classifier now covers both. | [6](#chapter-6-naming-the-fault), [7](#chapter-7-training-the-classifier-with-edge-impulse) |
 | **Month 11** | 02:40 on a Tuesday. Something stops itself. | [8](#chapter-8-the-day-it-stopped-itself) |
 | **Month 12** | Ravi runs more machines than he can personally watch. | [13](#chapter-13-whats-next) |
 
@@ -329,8 +338,8 @@ person doesn't have to rediscover them.
 # Chapter 3. Building the base station
 
 > **Month 1.** One pod, one machine, one afternoon. Ravi does not want a pilot
-> programme. He wants to know whether the lathe he is still paying for is going
-> to be fine.
+> programme. He wants to know whether the compressor out under the tin sheet is
+> going to be fine, because that is the one nobody is standing next to.
 
 ## 3.1 One board, one machine
 
@@ -410,10 +419,11 @@ has the framing.
 
 # Chapter 4. Growing the fleet
 
-> **Month 7.** The shed now holds a second lathe, a drill press, and a
-> compressor that lives outside under a tin roof because it is loud and it
-> smells. None of them is within cable reach of the first machine, and Ravi is
-> not running conduit across a yard for a monitoring system.
+> **Month 7.** The yard now holds a borewell pump on a night timer, a coolant
+> pump, and a dust blower at the far end of the shed. None of them is within
+> cable reach of the compressor, and Ravi is not running conduit across a yard
+> for a monitoring system. None of them has anybody standing near it either,
+> which is exactly why they are on the list.
 
 ## 4.1 Machine number two
 
@@ -437,8 +447,9 @@ the difference between a demo and something a shop can actually adopt.
 ![Onboarding a node: power up, join its hotspot from a phone, fill three fields, it tests and switches over, and the asset appears on the dashboard](diagrams/09-onboarding.png)
 
 **1. Power it up.** A node with no saved credentials does not sit there blinking
-an error. It raises **its own Wi-Fi access point**, named from its own hardware
-address — `EPM-SAT-a4cf12`. The name is unique per node, so ten unconfigured
+an error. Its ring goes steady magenta — *waiting for setup* — and it raises
+**its own Wi-Fi access point**, named from its own hardware address —
+`EPM-SAT-a4cf12`. The name is unique per node, so ten unconfigured
 nodes on a bench are ten distinguishable networks, not one collision.
 
 **2. Join it from any phone.** No app. The moment the phone joins, the setup
@@ -496,9 +507,9 @@ That is deliberate, and it buys three things:
 * The scoring pipeline never learns which kind of node a machine is behind. It
   routes, validates and scores one frame shape.
 * Adding a satellite is a wiring-and-power task, not a software task.
-* It is what makes "one trained classifier covers every lathe of this type"
-  possible at all — a base-station-monitored lathe and a satellite-monitored
-  lathe hand the model data shaped exactly the same way.
+* It is what makes "one trained classifier covers every pump of this type"
+  possible at all — a base-station-monitored pump and a satellite-monitored
+  pump hand the model data shaped exactly the same way.
 
 The frame layout, both framings and the schema that keeps the three codebases
 from drifting apart are in
@@ -509,16 +520,16 @@ from drifting apart are in
 
 # Chapter 5. Teaching it what normal feels like
 
-> **Month 1, day 2.** The pod is on the lathe and the dashboard is up. Ravi
+> **Month 1, day 2.** The pod is on the compressor and the dashboard is up. Ravi
 > asks the obvious question — *so what does it think?* — and the honest answer
 > is: nothing yet. It has never met this machine. Give it four minutes.
 
 ## 5.1 "Just let it run for a bit"
 
 Before this system can say something is wrong, it has to know what *right*
-sounds like — and every machine's right is different. A new lathe hums
+sounds like — and every machine's right is different. A new compressor hums
 differently from one that has run for a decade; a compressor's normal vibration
-looks nothing like a drill press's.
+looks nothing like a borewell pump's.
 
 So the first thing that happens with a new machine isn't detection, it's
 listening. An operator opens the machine's setup drawer and works down a short
@@ -654,6 +665,38 @@ whole pipeline, and it came out of measurement rather than intuition.
 The result is a 536-number vector: 128 spectral bins × 4 channels, plus 6
 statistics × 4 channels.
 
+**The microphone's 134 of those numbers are currently zeroed, deliberately.**
+The rig's machines sit close enough together that one motor's noise reaches
+another node's microphone, and that crosstalk pushed a node into Fault while its
+own accelerometer read perfectly healthy. Vibration does not travel across a
+bench that way; sound does. So `features.MUTED_CHANNELS` makes the microphone
+contribute a constant 0.0 to every vector the one shared builder produces —
+which is the input to the autoencoder, to the Edge Impulse classifier and to
+every saved capture alike.
+
+Three things about that choice are worth stating, because it is the single
+largest caveat on every result in this report:
+
+* **Muted, not removed.** The columns still exist, so the vector is still 536
+  numbers wide, the Edge Impulse project keeps its axes, and the capture schema
+  is byte-identical. Dropping the microphone from the sensor configuration
+  instead would have changed the input dimension to 402 and invalidated every
+  recording already taken.
+* **Only the model input is muted.** The microphone is still sampled, still
+  plotted live on the dashboard's spectrum view, and still recorded in captures.
+  Nothing about the sensing path changed.
+* **Every capture records what was muted when it was taken**, because a muted
+  channel's zeros are indistinguishable from a genuinely silent one after the
+  fact — so a dataset recorded muted can never be silently pooled with one
+  recorded unmuted.
+
+The running/stopped gate ([§5.8](#chapter-5-teaching-it-what-normal-feels-like))
+had already excluded the microphone for the same reason; this closed the
+remaining path. It also means **every measured result in
+[Chapter 12](#chapter-12-proof-not-promises) is vibration alone.** Re-enabling
+it is a mounting problem rather than a software one — it is one constant — and
+it is item 1 in [Chapter 13](#chapter-13-whats-next).
+
 ## 5.5 The autoencoder, and why an unsupervised model
 
 An **autoencoder** is a small neural network whose only job is to squeeze its
@@ -673,14 +716,18 @@ campaign.
 The network is deliberately small — a symmetric dense encoder/decoder whose
 hidden and bottleneck widths scale from the input dimension rather than being
 hardcoded, so the same code fits a mic-only node and a full four-channel one.
+That scaling is why muting a channel rather than removing it costs nothing: the
+network's shape is set by the input dimension, and the input dimension does not
+move.
 Training a fresh model takes seconds on the QRB2210, with live percentage
 progress pushed to the browser, and the operator is explicitly told they can
 walk away: *"You can leave this page — it finishes on its own."*
 
 ## 5.6 More than one kind of normal
 
-A machine does not have one healthy state. A lathe idling, a lathe cutting
-aluminium and a lathe cutting steel vibrate differently, and all three are fine.
+A machine does not have one healthy state. A compressor idling, a compressor
+pumping up to pressure and a compressor holding it vibrate differently, and all
+three are fine.
 Show the model only one of them and the other two are off-manifold — which means
 the machine reads as faulty every time the shift changes what it is doing.
 
@@ -807,9 +854,9 @@ customer is larger than one shop.
 
 # Chapter 6. Naming the fault
 
-> **Month 9.** A second lathe arrives, same model as the first. Ravi's
+> **Month 9.** A second borewell pump goes in, same model as the first. Ravi's
 > reasonable expectation is that the system already knows something about
-> lathes. He is right, and that is the whole point of this chapter.
+> pumps. He is right, and that is the whole point of this chapter.
 
 ## 6.1 Beyond "something's wrong"
 
@@ -833,11 +880,11 @@ the two models are built completely differently.
 The anomaly model is **per machine**, because it models *this unit's normal* and
 normal is a property of one physical installation. The classifier is **per
 machine type**, because what distinguishes a bearing fault from an imbalance is
-a property of the *fault*, not of the unit — and pooling every lathe's data
-gives it far more to learn from than any one lathe could.
+a property of the *fault*, not of the unit — and pooling every pump's data
+gives it far more to learn from than any one pump could.
 
-Concretely: every asset carries an **asset class** (`cnc lathe`, `conveyor
-motor`, …), set in step 1 of setup. Recordings are grouped by that class, one
+Concretely: every asset carries an **asset class** (`pump`, `conveyor motor`,
+…, the dashboard's own field placeholders), set in step 1 of setup. Recordings are grouped by that class, one
 Edge Impulse project is linked per class, and the trained model that comes back
 applies to every asset in it. Train once, cover the whole line.
 
@@ -900,7 +947,7 @@ offered as suggestions so a fleet doesn't accumulate `bearing`, `Bearing` and
 Capture runs **server-side**. Closing the drawer doesn't stop it. Closing the
 browser doesn't stop it. The row's record button just keeps pulsing until you
 come back — which matters because the useful captures are the long ones, and
-nobody wants to babysit a tab for four minutes next to a running lathe.
+nobody wants to babysit a tab for four minutes next to a running machine.
 
 Setup contributes to this automatically: every running condition collected in
 step 3 is also saved as a `healthy` recording
@@ -964,7 +1011,7 @@ happens underneath is more careful than the button suggests.
 * **The baseline is pooled across the whole class, not per node.** An earlier
   version standardised each capture against its own node's commissioning
   statistics. That silently produced inconsistent data across nodes — five
-  identical lathes each pulling the model a slightly different way — and it made
+  identical pumps each pulling the model a slightly different way — and it made
   uploading depend on commissioning, which capture and upload were never
   supposed to require. The baseline is now fitted once per asset class from
   every local recording of that class, and **saved to disk**, so anything that
@@ -1077,10 +1124,11 @@ honest result where a classical method beat the neural one on the same data — 
 
 # Chapter 8. The day it stopped itself
 
-> **Month 11, 02:40 on a Tuesday.** Nobody is in the building. The compressor's
-> anomaly score has been drifting up for two days — nothing a person would catch
-> by ear yet — and it crosses the line. The system does not send an email and
-> hope.
+> **Month 11, 02:40 on a Tuesday.** Nobody is in the building. The borewell
+> pump is running because its night timer says so, and its anomaly score has
+> been drifting up for two days — nothing a person would catch by ear yet, and
+> nobody is out there to hear it anyway. It crosses the line. The system does
+> not send an email and hope.
 
 ## 8.1 It doesn't just alert. It acts.
 
@@ -1242,8 +1290,18 @@ machine, per sensor.** It is more setup than a constant in a config file, and it
 is the difference between something that works on the bench and something that
 works on the fortieth machine in a fleet.
 
-The full investigation — including the two reasonable hypotheses that turned out
-to be wrong, and two alternative approaches that measured *worse* — is
+And it was not the last layer either. Subtracting a measured floor is correct
+but not sufficient: on a jittery mounting the floor's own frame-to-frame spread
+swallows the margin again, and over hours the floor drifts *bodily* — measured
+at 1.11–1.13× an hour after a capture, which was enough to hold one node's gate
+at RUNNING for 290 of 290 stopped frames and report a trip that had genuinely
+worked as **failed**. The shipped gate therefore averages six frames' spectra
+before measuring them, and scales the stored floor to the frame before
+subtracting it.
+
+The full investigation — the two reasonable hypotheses that turned out to be
+wrong, two alternative approaches that measured *worse*, and all three later
+layers with their numbers — is
 [Appendix H](#appendix-h-motor-state-gate-calibration).
 
 ---
@@ -1252,8 +1310,8 @@ to be wrong, and two alternative approaches that measured *worse* — is
 # Chapter 9. What the operator actually sees
 
 > **Month 11, 06:15.** Ravi opens the shed. Before he has taken his jacket off
-> he already knows something happened: the ring on the compressor is blinking
-> slow red, and there is a message on his phone from four hours ago. Neither of
+> he already knows something happened: the ring on the borewell pump is
+> pulsing slow red, and there is a message on his phone from four hours ago. Neither of
 > those required him to open a laptop.
 
 ## 9.1 Three channels, none depending on the others
@@ -1314,7 +1372,7 @@ Performance and Alerts alike, and it carries one line per affected asset:
 | Countdown | *Pump 1 — tripping in 8s* · with a **Hold** button | No. It is still true and still needs a decision |
 | Trip failed | *Pump 1 — trip failed, machine still running* | **No.** The most severe thing this system can report |
 | Tripped | *Tripped — Pump 1 at 02:40, confirmed stopped* | Yes — the event is settled |
-| Faulty, unarmed | *Drill press — faulty, no trip output wired* | Yes, quieter, and no Hold, because there is nothing to hold |
+| Faulty, unarmed | *Dust blower — faulty, no trip output wired* | Yes, quieter, and no Hold, because there is nothing to hold |
 
 The countdown and the Hold button used to live inside the Protection section of
 an expanded asset row. Ten seconds is not enough time to remember which asset it
@@ -1358,7 +1416,7 @@ that came out of using it rather than designing it:
 
 **One row per asset.** Compact by design: nickname, node ID, asset class,
 status. The node ID is always shown underneath the name, so identity is never
-ambiguous even after somebody names two machines "Lathe". The asset-class pill
+ambiguous even after somebody names two machines "Pump". The asset-class pill
 is colour-keyed and links back to setup rather than offering a second live
 editor for the same value.
 
@@ -1508,14 +1566,14 @@ colour alone tells the story from across the room:
 
 | State | Ring |
 |---|---|
-| New | Cyan, steady |
+| New, or mid-setup | Cyan, steady |
 | Healthy | Green, steady |
-| Warning | Amber, slow breathing pulse |
-| Fault | Red, fast strobe |
-| Tripped | Red, **slow** strobe — deliberate rather than urgent: *I already acted* |
-| Idle | Magenta, steady |
-| Paused | Mid grey |
-| Offline | Dark grey |
+| Warning | Amber, strobing once a second |
+| Fault | Red, fast strobe (200 ms) |
+| Tripped | Red, **slow breathe** — deliberate rather than urgent: *I already acted* |
+| Idle | White, steady |
+| Paused | Amber, steady |
+| Offline | Off |
 
 The colours are hand-tuned for real WS2812 LEDs and are **not** copied from the
 dashboard's palette, because that was tried and looked wrong. On an uncorrected
@@ -1523,26 +1581,67 @@ WS2812 any weak secondary channel shows up disproportionately, so a
 screen-friendly emerald rendered visibly bluish and a screen-friendly red
 rendered pink. Near-primary values avoid that.
 
-Idle is the one status where the ring and the screen share an exact value —
-`#ff00ff` in both — because a magenta ring and a magenta tile should read as one
-status. It got there the hard way: idle was pure blue until a bench test showed
-it was indistinguishable from the cyan used for *new*, which is a genuinely bad
-pair of meanings to confuse. Magenta is a full-strength two-channel mix, so it
-obeys the near-primary rule, and no machine has ever been accused of being
-magenta by accident.
+Two pairs deliberately share a hue and are separated by **pattern shape**
+rather than by a second colour, because there are only so many hues an
+uncorrected LED renders unambiguously:
 
-Tripped reuses fault's red and differs only in strobe period — 200 ms reads as
-an alarm, 1000 ms as a latched decision. That is deliberately not a new blink
-mode: const, breathe and strobe is the entire vocabulary the wire protocol and
-every node's firmware understand, so inventing a fourth would mean reflashing
-every node in the shop to change one light.
+* **Paused reuses warning's amber, steady where warning strobes.** An operator
+  switching a machine off for maintenance is a normal, non-urgent condition.
+* **Tripped reuses fault's red, breathing where fault strobes.** This was
+  originally two strobe speeds, 200 ms against 1000 ms, and telling two blink
+  *rates* apart across a room turns out to be much harder than telling a strobe
+  from a breathe. Shape carries further than timing.
+
+`const`, `breathe` and `strobe` is the entire vocabulary the wire protocol and
+every node's firmware share, so inventing a fourth mode to disambiguate a colour
+would mean reflashing every node in the shop to change one light.
+
+Idle took the longest to settle and its history is the argument for auditing a
+colour scheme as a whole rather than a state at a time. It was pure blue until a
+bench test showed it was indistinguishable from the cyan used for *new* — a
+genuinely bad pair of meanings to confuse. It became magenta, which was correct
+until the satellite's own ring needed a language for *provisioning* and
+*connectivity trouble* that exists before any status is known: magenta for the
+setup family (steady while waiting for setup, breathing while actively testing
+credentials) and blue for the connectivity family (steady when Wi-Fi is fine but
+the broker is unreachable, breathing when Wi-Fi itself has dropped). That
+reassignment would have left three unrelated states sharing one hue with only a
+blink pattern between them, so idle moved again, to white. Paused and offline
+moved off grey in the same pass, since the greys had meant "no data from this
+node".
+
+A satellite that is connected with its broker reachable is given **no colour of
+its own at all** — the base station is about to push the real status, so the
+ring simply keeps showing what it last showed rather than flashing a
+"connected" state nobody needs to see.
 
 The base station adds a readout most sensor nodes don't have: the **8×13 LED
 matrix already on the board**, scrolling a one-line fleet summary — counts only,
-worst first. `FFLT,WWRN,OOFF,HOK` reads as *1 fault, 1 warning, 1 offline, the
-rest healthy*. Idle and Paused are excluded from it entirely, because that
-display exists to answer one question — *is anything wrong* — and a machine
-somebody switched off is not.
+worst first. `1TRP,1FLT,10OFF,1OK` reads as *one machine tripped, one faulted,
+ten offline, one healthy*.
+
+The severity order is **tripped, fault, warning, offline, healthy, idle,
+paused**, and two positions in it are deliberate. **Tripped leads**, ahead of
+fault, because a machine this system has physically stopped is the one state
+that already had a real-world consequence. **Idle and paused trail healthy**,
+which is a revision of the original design: they were excluded entirely on the
+grounds that this display answers *is anything wrong* and a machine somebody
+switched off is not. That turned out to be the wrong question by one word. A
+stopped machine is still a machine not producing, and "nothing is wrong" and
+"nothing is running" are different answers that the board was silent about the
+difference between. They count now, and they rank last.
+
+Nodes still in setup are excluded, and that exclusion has held: a machine
+mid-commissioning is already on a screen in front of the person commissioning
+it.
+
+The formatting is dictated by the hardware in a way worth knowing before
+designing for a display this small. Every glyph, a space included, costs a fixed
+six-column slot in the firmware's font. On a thirteen-column matrix one space
+blanks nearly half the visible window at any scroll position — so separators are
+dropped entirely rather than merely shortened, and the status words are trimmed
+to three letters to keep the healthy count in the message instead of dropping
+it.
 
 > **[PHOTO: the status ring in each colour state, and the LED matrix mid-scroll]**
 
@@ -1553,12 +1652,23 @@ on the Alerts tab — and a confirmed fault arrives as a message carrying the
 machine's nickname and, when there is one, the classifier's read. Nobody has to
 go looking.
 
-This was built and demonstrated working against a real Telegram bot and a real
-phone. It is switched off in the current build for one reason only: the bot
-token is a managed App Lab secret that has to be re-entered through App Lab's
-interface after some device-testing housekeeping, and the on-device build fails
-if the brick is declared with no value behind it. Nothing about the feature is
-unfinished; a value is missing.
+This is live-verified end to end against a real Telegram bot and a real phone.
+
+It cost one recurring operational bug to get there, and the fix is worth
+recording because it is the kind that looks like a feature regression every
+time. The bot token is a managed App Lab secret, and App Lab stores it by
+writing it **inline into the deployed configuration file** — there is no
+separate secret store. A deploy that shipped the repository's copy of that file
+therefore deleted the token every time, and the next build failed with a missing
+required variable. The permanent fix is that deploys never ship that file at
+all: the device's copy is the source of truth, the deploy compares the two and
+warns when their *shape* has drifted, and a one-command reset script recovers a
+board whose token was lost to an earlier deploy.
+
+The general lesson is one worth carrying to any platform with managed secrets:
+if the secret lives inside a file your deployment pipeline also owns, your
+pipeline will eventually overwrite it, and the failure will look like a broken
+feature rather than a broken deploy.
 
 > **[SCREENSHOT: a real Telegram fault alert]**
 
@@ -1763,6 +1873,81 @@ class of bug only appears against real hardware, which is why the verification
 record in [Appendix J](#appendix-j-test-suite-and-verification-record) matters
 as much as the test list.
 
+## 10.9 Four bottlenecks that presented as one symptom
+
+The single most misleading bug report in this project was *"the satellite is at
+0.5 fps, the base station drops out, and the charts are stuck."* It reads as one
+fault. It was four unrelated ones, in four different languages, and each had to
+be measured separately before any of them could be fixed.
+
+**1. Half of every message was a field nothing read.** The base station's
+WebSocket payload carried a fused accelerometer channel that per-axis channels
+had superseded — 8.4 KB of a 17.5 KB message, dropped by an explicit line in the
+browser code. Trimming it, and rounding broadcast floats to six significant
+digits instead of writing 32-bit data out as `37008.37109375`, took a message
+from 17.0 KB to **4.9 KB**. The lesson is cheap and general: check what the
+frontend actually consumes before assuming a field earns its bandwidth.
+
+**2. The broadcast had no backpressure.** Every frame queued one unbounded send
+per client. A browser that could not keep up accumulated a permanent backlog of
+*stale* frames and never recovered — it did not degrade to a lower frame rate,
+it degraded to showing the past. The fix is a latest-wins outbox per
+`(message type, node)` with one writer task per socket, so a slow client gets
+current data less often rather than old data on time. State transitions are
+exempt from coalescing, because those must all arrive.
+
+**3. The charts redrew in one synchronous burst.** Every chart, every tick,
+~265 ms of blocking work — and the timer that started it fired again regardless
+of whether the last burst had finished. Redraws are now queued jobs drained
+under a **10 ms budget per animation frame**, off-screen charts are skipped
+entirely, and the loop schedules its own next run so it cannot overlap itself.
+Measured in a real browser against the live device, main-thread blocking went
+from **47% to roughly 0–5%**.
+
+**4. The satellite's Wi-Fi radio was asleep.** The ESP32 Arduino layer leaves a
+station in modem power-save, and the join call re-applies that default every
+time — so setting it once at startup is not enough. Its broker socket measured a
+congestion window of 2, a retransmit timeout of 8.7 s and 9.2 kbps. With sleep
+disabled after **every** join: 21 ms minimum round trip, 268 ms retransmit
+timeout, 463 kbps.
+
+End to end: the satellite went from **0.27 fps to 4.9 fps**, and the base
+station's periodic freezes disappeared — those had a fifth cause of their own,
+an interrupt-driven wait in the microcontroller's link code that held the bus
+busy for a full second on a single timeout, answering every request in that
+window with *busy*.
+
+The reason this is in the report at all is the diagnostic method rather than any
+one fix. What separated four problems from one was classifying every stall as
+**shared or producer-only** — did other messages keep flowing during the gap? —
+and counting frames at the broker and at the browser *simultaneously*. Equal
+counts mean nothing is being dropped and the fault is upstream. That one
+comparison is what stopped four days of looking in the wrong layer.
+
+## 10.10 The ceiling that is left
+
+One number is worth stating because it bounds everything above it: the frame
+worker that runs inference, classification and the history write is a single
+thread, and it sustains about **47 frames per second across the whole fleet.**
+Ten simulated nodes plus two real ones at 5 fps each is 64 — over the ceiling.
+
+Going over it does not produce an error. It produces *latency*, everywhere at
+once. The queue in front of that worker was originally 500 frames deep and
+dropped the newest frame when full, so it sat permanently full and always fed
+the worker the stalest frame available: every frame reaching a browser was about
+ten seconds old. It presented as *"the panel takes ten seconds to reflect on the
+dashboard"*, which looks exactly like a frontend bug and is not one. Coalescing
+that queue latest-wins per node took the forwarding delay from **11.95 s to
+0.32 s**.
+
+The ceiling itself is still there, and it is the honest constraint on this
+design: **any per-frame work added — a second model, more statistics, a heavier
+history write — comes out of that 47 frames per second**, and will reappear as
+seconds of dashboard lag rather than as a failure. The count of frames superseded
+before processing is exposed as a metric for exactly that reason. At today's
+fleet size it is headroom; it is the first thing to profile before the fortieth
+machine.
+
 ---
 
 # Chapter 11. Why we built it this way
@@ -1801,7 +1986,7 @@ autoencoder?*
 
 **Why it is per-machine today.** The autoencoder models "normal for this unit",
 and its output is a reconstruction error measured in units set by that unit's own
-spectrum. Two nominally identical lathes differ in mounting stiffness, sensor
+spectrum. Two nominally identical pumps differ in mounting stiffness, sensor
 placement, foundation, load and wear. Sharing weights would mean sharing a score
 scale, and the thresholds ([§5.7](#chapter-5-teaching-it-what-normal-feels-like))
 are absolute distances in that scale.
@@ -1891,6 +2076,11 @@ spinning motor, a trip actually stopping that motor, a dashboard checked against
 a live device in a real browser. Where a figure appears, it came out of that
 hardware. [Appendix J](#appendix-j-test-suite-and-verification-record) records
 how each was checked.
+
+One caveat applies to the whole chapter and is stated once here rather than
+repeated under every figure: **the microphone is muted in both models**
+([§5.4](#chapter-5-teaching-it-what-normal-feels-like)), so every detection and
+classification result below is from vibration alone.
 
 > **[SCREENSHOT: the dashboard mid-trip — status, countdown, anomaly chart and console log together]**
 
@@ -1996,7 +2186,47 @@ it belongs in the results chapter as much as in the design one:
 Pooling conditions widened the healthy spread **5.1×**. The feature is real and
 useful; so is the cost, and per-condition thresholds are the open question.
 
-## 12.7 Known limitations, stated plainly
+## 12.7 The satellite node, on real hardware
+
+The satellite firmware is no longer a simulator claim. It was brought up on a
+physical XIAO ESP32-S3 one module at a time — heartbeat, Wi-Fi/MQTT link, status
+ring, microphone, accelerometer — with each stage checked in the serial log and
+on the dashboard before the next was enabled. That order is not ceremony; every
+stage but the first found a real bug that the simulator could not have found.
+
+| Stage | Verified | What it cost to get there |
+|---|---|---|
+| Heartbeat | Yes | Pin remap for the new wiring |
+| Wi-Fi + MQTT link | Yes | The node could not join channel-13 access points until the regulatory country was set — twice, because setting it before *joining* still left the *scan* blind to those channels |
+| Status ring | Yes | Colour collisions between status and connectivity states; the ring is now driven from current state rather than from events |
+| Microphone | Yes | Sample rate and FFT window brought in line with the base station's; the 25× amplitude difference against the UNO Q is bit depth, not a defect |
+| Accelerometer | Yes | A missing SPI initialisation and an undersized MQTT buffer — neither visible as anything but "no data" |
+
+Four failures worth naming individually, because each produced a symptom that
+pointed somewhere else entirely:
+
+* **Five consecutive SPI timeouts parked the accelerometer task permanently**,
+  while the microphone kept publishing. The node looked alive and half-blind
+  rather than broken.
+* **A blocking publish starved the MQTT keepalive.** The write timeout was 30 s
+  against a keepalive kill at 22.5 s, so the broker dropped a node that was
+  working.
+* **One dead sensor aborted the whole node's boot**, silencing a node whose
+  other sensor was fine. A node now boots with what it has. The same node later
+  published a stream of frames that were structurally perfect and entirely
+  zero — which is what a dead sensor looks like from the dashboard, and which
+  was initially chased as a dashboard bug.
+* **A silent accelerometer FIFO overrun** spliced discontinuous samples into one
+  window, which is invisible in a spectrum and looks exactly like a noisy
+  mounting. Fixing it, and pinning the sampling tasks to their own core, is what
+  made that node's idle baseline fittable at all — see
+  [Appendix H](#appendix-h-motor-state-gate-calibration).
+
+The general point is the one the report keeps arriving at from different
+directions: a frame arriving is not proof that a sensor is working, and a node
+that is publishing is not proof that it is publishing anything real.
+
+## 12.8 Known limitations, stated plainly
 
 * **The test rig's three motors share one vibration sensor.** Trip one motor
   while the others keep running and that shared sensor still reads *running* —
@@ -2010,24 +2240,45 @@ useful; so is the cost, and per-condition thresholds are the open question.
   by a measured 5.1× on this rig.
 * **A score sitting exactly on the fault threshold makes the countdown flap**
   ([§12.4](#chapter-12-proof-not-promises)). Correct behaviour, unpleasant to
-  watch, and fixable with hysteresis.
+  watch, and fixable with hysteresis. The running/stopped gate has had
+  hysteresis added since ([Appendix H](#appendix-h-motor-state-gate-calibration));
+  the *fault* threshold has not, and that is [Chapter 13](#chapter-13-whats-next)
+  item 3.
 * **The classifier is not the safety path**, by construction
   ([§6.3](#chapter-6-naming-the-fault)). If it names the wrong fault, the machine
   still stops — the label is just wrong.
 * **The trip stops motion, not power.** See
   [§11.5](#chapter-11-why-we-built-it-this-way).
+* **The ingest path sustains about 47 frames per second across the whole
+  fleet** ([§10.10](#chapter-10-under-the-hood)). Past that it does not fail, it
+  lags — and the lag appears everywhere, looking like a frontend fault. It is
+  headroom at today's fleet size and the first thing to profile before a large
+  one.
 * **Faults above roughly bin 24 look alike on this rig.** A direct consequence
   of [§12.2](#chapter-12-proof-not-promises): above the motor's own signature,
   every class is looking at the same sensor noise. On a machine with genuine
   high-frequency fault content — which the sensor can see, see
   [Appendix G](#appendix-g-sensor-configuration-envelope) — this constraint
   lifts.
-* **Satellite nodes are built and decode-verified but have not yet been run on a
-  physical XIAO ESP32-S3.** Everything in [Chapter 4](#chapter-4-growing-the-fleet)
-  is implemented and exercised through the node simulator against the real base
-  station; the hardware bring-up is the outstanding item.
+* **The microphone is muted in both models** ([§5.4](#chapter-5-teaching-it-what-normal-feels-like)).
+  Every number in this chapter is vibration alone. The channel is still sampled,
+  plotted and recorded; it contributes a constant zero to the model input,
+  because acoustic crosstalk between machines on one bench pushed a node into
+  Fault while its own accelerometer read healthy. This is a property of an
+  unisolated bench, and re-enabling it is item 1 in
+  [Chapter 13](#chapter-13-whats-next).
+* **A satellite's provisioning portal is the one satellite path not yet
+  confirmed on hardware.** The node raises its access point and the page has
+  been fixed twice — a background Wi-Fi retry was kicking portal clients off,
+  and the scan results are now cached — but the fixed version has not been
+  re-tested on a phone. Everything after provisioning is verified.
+* **One satellite could not join one particular Wi-Fi access point** — a
+  Windows-hosted hotspot — while joining every other tested network normally.
+  Six hypotheses were eliminated; the conclusion is an access-point interop
+  quirk rather than a node defect, and it is recorded here rather than dropped
+  because "it works on my network" is not a verification.
 
-## 12.8 Status ledger
+## 12.9 Status ledger
 
 | Subsystem | Status |
 |---|---|
@@ -2043,9 +2294,10 @@ useful; so is the cost, and per-condition thresholds are the open question.
 | Status ring + LED matrix | Live-verified on hardware |
 | Wi-Fi onboarding, base station (captive portal) | Live-verified on real phones, three rounds |
 | Fault classifier, on-device | Built, running on-device, trained on 541 real captures |
+| Microphone channel in both models | Muted — sampled and displayed, zeroed in the model input |
 | Edge Impulse link / upload / fetch | Built and exercised against a real Edge Impulse account |
-| Satellite sensor nodes | Built; no physical hardware run yet |
-| Telegram alerts | Built and demonstrated; off pending one config value |
+| Satellite sensor nodes | Live-verified on a physical XIAO ESP32-S3, stage by stage; the provisioning portal is the one path not re-tested since its fix |
+| Telegram alerts | Live-verified against a real bot and a real phone |
 | Per-motor relay | Not built — [Chapter 13](#chapter-13-whats-next) |
 | Automated test suite | 34 test modules, run on every change — [Appendix J](#appendix-j-test-suite-and-verification-record) |
 
@@ -2055,26 +2307,35 @@ useful; so is the cost, and per-condition thresholds are the open question.
 
 In the order they would be built.
 
-**1. A relay per motor.** Today's trip stops a motor from moving; a relay would
+**1. Acoustic isolation, and the microphone back in both models.** The channel
+is sampled, displayed and recorded today, and zeroed in the model input because
+one machine's noise reaches another machine's node on an unisolated bench
+([§5.4](#chapter-5-teaching-it-what-normal-feels-like)). It is first on this
+list because it is the largest signal the system already knows how to use and is
+currently choosing not to: the fix is a mounting change plus one constant, and
+nothing downstream of it has to move, since the muted channel still occupies its
+full width in the feature vector.
+
+**2. A relay per motor.** Today's trip stops a motor from moving; a relay would
 remove its power at the source as well. Held back by a no-new-hardware
 constraint during this build window, not by any design uncertainty — the trip
 message, the latch and the confirmation logic are all already in place and would
 not change.
 
-**2. Hysteresis on the fault threshold.** [§12.4](#chapter-12-proof-not-promises)
+**3. Hysteresis on the fault threshold.** [§12.4](#chapter-12-proof-not-promises)
 recorded a countdown starting and cancelling three times before a real trip
 fired. The behaviour is correct and the display is alarming; separating the
-"enter fault" and "leave fault" levels fixes it without weakening the trip.
+"enter fault" and "leave fault" levels fixes it without weakening the trip. The
+running/stopped gate already works this way
+([Appendix H](#appendix-h-motor-state-gate-calibration)), including the part
+that matters most — applying the leniency only where it is safe, and not to the
+gate protection uses to confirm a trip. The same discipline applies here.
 
-**3. Per-condition thresholds.** The 5.1× sensitivity cost measured in
+**4. Per-condition thresholds.** The 5.1× sensitivity cost measured in
 [§12.6](#chapter-12-proof-not-promises) is the single largest known weakness in
 the detection path. The hard part is not the thresholds, it is knowing which
 condition a machine is currently in — which nothing detects today, and which the
 same gate machinery is well placed to answer.
-
-**4. Satellite hardware bring-up.** The firmware is built and decode-verified;
-what remains is running it on a physical XIAO ESP32-S3 with real sensors on a
-real machine, and closing the one gap in this report's verification record.
 
 **5. A shared anomaly model per asset class.** The scoped version from
 [§11.4](#chapter-11-why-we-built-it-this-way): pre-train one autoencoder per
@@ -2111,6 +2372,11 @@ the whole assignment.
 
 **This is the only parts list in this document.** Every chapter that mentions a
 component links here rather than repeating it.
+
+**The canonical list lives in the repository**, at
+[`docs/BILL_OF_MATERIALS.md`](../docs/BILL_OF_MATERIALS.md). That file is
+maintained against the build and says so itself; this appendix is here so the
+report stands on its own. Where the two ever disagree, that file is right.
 
 Quantities assume one base station, one satellite node, and the three-motor
 rig used to validate this report. Scale the satellite block by however many
@@ -2192,7 +2458,7 @@ The other half of a bill of materials. Everything below is free unless marked.
 | | `adb`, `usbipd` | Getting onto the board from a Windows/WSL host | — |
 | **Hardware tools** | Multimeter, small screwdriver set | Setting each stepper driver's current limit ([Appendix B](#appendix-b-wiring-and-pinout-reference)) | — |
 | | USB-UART adapter | Optional: the STM32's separate debug console | ≈ ₹200 |
-| | 3D printer | Optional: the fixtures in [Appendix K](#appendix-k-3d-printed-test-rigs) | — |
+| | 3D printer | Optional: the enclosures and rig fixtures in [Appendix K](#appendix-k-3d-printed-parts-and-the-fault-injection-rig) | — |
 
 **Nothing in the production path needs a paid service.** Edge Impulse's free
 tier covers the classifier work described in
@@ -2208,7 +2474,7 @@ entirely on the board with no account of any kind.
 | Three machines monitored | Base station + 2 satellites | 12,605 |
 | Ten machines monitored | Base station + 9 satellites | 28,320 |
 
-For context: a single unplanned bearing failure on a small CNC lathe — parts,
+For context: a single unplanned bearing failure on one compressor or pump — parts,
 labour and two weeks of lost capacity — comfortably exceeds the ten-machine
 figure. The economics of this category are not subtle.
 
@@ -2327,7 +2593,17 @@ it before buying anything.
 | [C.5 Motor-driver rig](#appendix-c-build-one-yourself) | Uno + CNC shield + steppers | ~2 hours | Reproducing the trip and this report's measurements |
 
 Parts for C.3–C.5 are in [Appendix A](#appendix-a-bill-of-materials); pins are
-in [Appendix B](#appendix-b-wiring-and-pinout-reference).
+in [Appendix B](#appendix-b-wiring-and-pinout-reference); printable parts are in
+[Appendix K](#appendix-k-3d-printed-parts-and-the-fault-injection-rig).
+
+**The step-by-step build instructions live in the repository**, at
+[`docs/BUILD_GUIDE.md`](../docs/BUILD_GUIDE.md) — from an empty bench to a
+commissioned machine, including the same five paths and the harness and
+enclosure steps this appendix does not repeat. Satellite bring-up has its own
+stage-by-stage guide at
+[`docs/SATELLITE_BRINGUP_GUIDE.md`](../docs/SATELLITE_BRINGUP_GUIDE.md), which is
+the procedure [§12.7](#chapter-12-proof-not-promises) reports the results of.
+This appendix is the report's self-contained summary of those documents.
 
 **If you are starting from nothing, do C.1 first.** It takes ten minutes, needs
 no purchase, and everything you learn about the dashboard there is true of the
@@ -2792,6 +3068,13 @@ scored on worst-case fault separation. The winning configuration was per-axis
 accelerometer, 128 bins, 128 microphone bins, all six statistics, giving a
 536-dimension input vector at **+38.5σ** worst-case separation.
 
+That sweep included the microphone. The shipped models do not use it: it is
+sampled, transmitted and displayed exactly as described here, and zeroed at the
+model input because of acoustic crosstalk on an unisolated bench
+([§5.4](#chapter-5-teaching-it-what-normal-feels-like)). The 536 columns are
+unchanged either way — muting is a value, not a shape — so nothing in this
+appendix moves when the microphone is switched back on.
+
 ## G.4 Throughput
 
 | | Base station | Satellite |
@@ -2903,10 +3186,11 @@ same noise. See [Appendix I](#appendix-i-classifier-research-history).
 ## H.5 The fix
 
 Rather than trusting a formula to separate signal from noise, each node now
-measures its own noise floor directly: it captures **≥30 frames with its machine
-deliberately off**, fits a per-bin median floor, and the gate thereafter counts
-only the *excess* over that floor. That measurement is step 2 of the guided setup
-([§5.2](#chapter-5-teaching-it-what-normal-feels-like)).
+measures its own noise floor directly: it captures **50 frames with its machine
+deliberately off** (about ten seconds), fits a per-bin median floor, and the gate
+thereafter counts only the *excess* over that floor. It reads RUNNING at
+**1.75×** that floor's own residual energy. That measurement is step 2 of the
+guided setup ([§5.2](#chapter-5-teaching-it-what-normal-feels-like)).
 
 | Method | Stopped | Running | Worst-case margin |
 |---|---:|---:|---:|
@@ -2921,7 +3205,155 @@ Two properties of the fix matter as much as the number:
 * Energy and threshold are always derived **together, on the same basis**, from
   the same measurement — so the two numbers are never compared across scales.
 
-## H.6 Alternatives that measured worse
+Subtracting a measured floor was the fix that made the gate work. It was not
+the last one it needed. Three more layers came out of running it on a second
+node, on a different mounting, for longer than a demo — and each is in the
+shipped code.
+
+## H.6 The floor is jittery, so average across time
+
+The floor is only constant *on average*. Node `e36428`, mounted on a different
+machine, measured a 1.91× frame-to-frame spread across a 30-frame window against
+another node's 1.37× in the same room in the same minute — and that was *after*
+its firmware-side FIFO-overrun bug was fixed, so the residual is that mounting's
+own jitter rather than a bug still to find.
+
+That fails in both directions at once. The baseline fitter refuses to fit a
+floor it cannot place a threshold above; force one through and real running
+frames flicker either side of a line scaled up from an inflated floor, and get
+silently dropped from whatever is collecting.
+
+The fix is to average consecutive frames' **spectra** before measuring them at
+all. Lag-1 autocorrelation of the excess energy measured only **+0.17**, so the
+frames are near-independent and a K-frame mean cuts jitter by roughly 1/√K.
+Measured on 251 live frames off that node with the machine off, scored as the
+sliding 150-frame captures an operator would actually take:
+
+| Frames averaged | Baselines accepted | Median spread | Energy reference | Gate threshold |
+|---:|---:|---:|---:|---:|
+| 1 | 0 of 21 | 2.11× | 2,705 | 4,734 |
+| 4 | 15 of 21 | 1.70× | 1,333 | 2,333 |
+| **6** | **21 of 21** | **1.56×** | **1,089** | **1,906** |
+
+Six, not four, and chosen by measurement rather than by the 1/√K arithmetic:
+K=4 works on a good capture and fails on an unlucky one. Above six the returns
+flatten and the worst case starts drifting back up, because the residual is not
+purely white — there is a slower wander a longer average cannot cancel.
+
+The right-hand column is the half that matters most, and it is why this is a
+real fix rather than a way to squeak a bad baseline past its own check.
+Averaging the spectra *before* the excess is clamped at zero means the rectified
+noise the floor leaves behind shrinks with K, while a motor line present in
+every frame does not. So the gate threshold falls **2.5×** — 4,734 to 1,906 —
+while the running energy that has to clear it stays exactly where it was. The
+two states move apart instead of the line moving up. Averaging the resulting
+*energies* after the clamp would have done none of that.
+
+Six frames is about 1.2 s at a satellite's ~4.9 fps, against a trip delay of
+10 s, so it costs nothing that was not already there by design.
+
+Two smaller measures ride alongside it. Frames whose raw energy exceeds **3×**
+the capture's own median are dropped before anything is fitted — the knock
+against the bench, the trolley going past; one was measured on that node as a
+13-second burst at 5–25× the median, uncorrelated (r = −0.04) with another node
+on the same frame, so genuinely local and genuinely transient. And the spread
+check reads a percentile rather than the maximum, so one surviving outlier
+cannot fail an entire long capture.
+
+Capture length matters more than any threshold here, and it is the one knob
+that is a deliberate compromise rather than a measured optimum:
+
+| Capture length | Baselines accepted | Median spread | Worst |
+|---:|---:|---:|---:|
+| 30 frames | 32 of 45 | 1.65× | 2.10× |
+| 100 frames | 30 of 31 | 1.60× | 1.77× |
+| 150 frames | 21 of 21 | 1.56× | 1.64× |
+
+A six-second capture is a coin toss on a jittery mounting, not because the floor
+is unfittable but because six seconds is one draw from a wander that takes
+several seconds to average out — an operator who reran it got a different answer
+each time. **The shipped default is 50 frames, about ten seconds**, which is
+interpolated between the 30-frame and 100-frame rows rather than measured, and
+chosen for demo pacing. If a baseline capture fails its spread check, that
+trade-off is what is showing, not a defect; the fix is to retry or to raise the
+frame count toward 100.
+
+## H.7 The floor drifts bodily, so scale it before subtracting
+
+Averaging fixes the jitter the floor has frame to frame. It does nothing about
+the floor moving *as a whole*, which it also does.
+
+Measured on node `194584` an hour after its baseline was captured, machine
+genuinely stopped: every bin of all three accelerometer channels sat at a flat
+**1.11–1.13×** its stored reference — low bins and high bins alike, no peak
+anywhere in 0–6.4 kHz. That is the accelerometer's own broadband floor drifting,
+not the machine moving.
+
+A uniform drift is exactly what a fixed subtraction cannot absorb, and the
+tolerance is far thinner than it looks. On that node the residual the threshold
+scales from was **7.8%** of the floor it was subtracted from (397 against a
+floor RMS of 5,102), so the gate reads RUNNING at 13.6% of the floor — and a
+drift above about **1.14×** pins it to RUNNING permanently. A measured 1.12×
+already put the median stopped frame at 929 against a 695 threshold: **290 of
+290 stopped frames read RUNNING.**
+
+That is not a slow gate, it is a blind one, and it failed in the worst possible
+direction. Protection confirms a trip by watching this gate go quiet, so a
+machine this system had genuinely stopped kept reading RUNNING and **the trip
+was reported as failed.** Confirmation arrived only when three consecutive
+frames happened to jitter under the line — about one such run per 30–180 s,
+which is what produced a ~75-second confirm latency that no confirm-window value
+could have fixed. Widening the confirm window was in fact the first thing tried,
+and it was the wrong knob.
+
+The fix is to measure the drift and scale the floor to the frame before
+subtracting it: the median of bin ÷ reference over every bin. That works because
+the machine's signature is narrow — under 10 of the 384 bins an accelerometer
+frame carries — so a median over all of them lands on the floor even at full
+speed. Measured with a motor running, the low bins lifted to 1.23–1.64× while
+everything above ~2.5 kHz stayed at 1.15×, and the median tracked the floor.
+
+The correction is **bounded at 1.5×**, and that bound is the whole safety
+argument. An unbounded median-of-ratios cannot tell "the floor rose 12%" from
+"the machine came on and lifted every bin equally", and would divide both out
+and report silence for a running machine — the one error this module must never
+make. Against a measured drift of 1.12× that is roughly 4× the headroom needed,
+while a real running machine on this rig measured 6.7× its own stopped floor,
+far outside it. There is a wide gap between the two populations and the bound
+sits in it.
+
+The assumption to check first on a new machine type is that its vibration is
+*narrowband*. A genuinely broadband machine leaves no bins for the median to
+find the floor in — though such a machine already defeats the running-reference
+path for the same reason, so it is not a regression.
+
+## H.8 One last flap: hysteresis, but only where it is safe
+
+The last symptom was not a wrong state, it was a slow one: *"recording is
+slow"*. Node `e36428` produced 2.8 frames per second while only about one per
+second landed in the commissioning count — a **~65% loss** with no error and no
+visible symptom, because the live spectrum view shows every frame whether the
+gate kept it or not.
+
+The cause is that real running energy on a shared rig is not flat. A stopped
+baseline that picked up some crosstalk from a neighbouring motor leaves the
+threshold close enough to real running energy that a few quiet-looking frames
+happen naturally while the motor keeps turning — which reads as STOPPED, and
+both commissioning and capture keep only RUNNING-confirmed frames.
+
+The fix is hysteresis: once RUNNING is confirmed, energy has to fall to **half**
+the threshold before the gate reads STOPPED again.
+
+What matters is where it is *not* applied. The same factory builds protection's
+trip-detection gate, and there the entire point is noticing a real stop
+promptly; loosening the exit from RUNNING would delay confirming a motor that
+genuinely stopped. So the system builds two gates from the same code with
+different settings — the lenient one wired only to commissioning and capture,
+where an operator has deliberately pressed *Start*, and the strict one wired to
+protection. The gate's own default is the strict behaviour, and leniency has to
+be asked for explicitly.
+
+## H.9 Alternatives that measured worse
 
 Both were implemented and measured rather than reasoned about:
 
@@ -2933,7 +3365,7 @@ Both were implemented and measured rather than reasoned about:
 * **Reference-free peakiness / spectral-flatness metrics:** every one of them
   overlapped between stopped and running in the worst case observed.
 
-## H.7 Live verification
+## H.10 Live verification
 
 All of the above ran against real hardware, not simulation: baseline captured
 with the rig confirmed physically off (65 frames, reference 1,533.1, spread
@@ -2944,7 +3376,7 @@ against a warning threshold of 0.144; ramping down returned cleanly to idle
 rather than fault; and the dashboard was checked against the live device in a
 real browser with zero console errors throughout.
 
-## H.8 A known, accepted limitation
+## H.11 A known, accepted limitation
 
 The test rig's three motors share one physical vibration sensor. With motor 1
 tripped and motors 2 and 3 still spinning, that shared sensor still reads
@@ -3031,7 +3463,13 @@ file reserved for test and never seen in training — the closest leakage-free
 approximation available under that constraint. This is a real methodological
 limitation and it is stated rather than papered over.
 
-`[FILL IN: current model's accuracy / confusion matrix from Edge Impulse Studio]`
+**No accuracy figure is quoted for this model anywhere in this report.** The
+trained model, its data and its confusion matrix are public in the
+[Edge Impulse project](https://studio.edgeimpulse.com/studio/1092356) and can be
+read there directly. Transcribing the current numbers into this document is
+outstanding (`[FILL IN: accuracy and per-inference cost from Edge Impulse
+Studio]`). The figures in [§I.3](#appendix-i-classifier-research-history) belong
+to the abandoned public-dataset phase and must not be read as this model's.
 
 > **[SCREENSHOT: the Edge Impulse project — data collection view and the confusion matrix]**
 
@@ -3040,7 +3478,7 @@ limitation and it is stated rather than papered over.
 The dashboard's classifier workflow was reworked around one card per **asset
 class** rather than per node, with a pooled per-class normalisation baseline
 fitted from every recording of that class. That is what turns "train once, cover
-every identical lathe" from an aspiration into a built capability
+every identical pump" from an aspiration into a built capability
 ([§6.2](#chapter-6-naming-the-fault)).
 
 ## I.7 A bug only the real service could find
@@ -3061,10 +3499,12 @@ differently the moment it meets the real external system it was built against.
 
 ## J.1 Automated tests
 
-The backend carries **34 test modules**, exercised on every change. Each is a
-standalone script declaring the import path it needs, rather than a framework
-suite — see [Appendix C](#appendix-c-build-one-yourself) for how to run them.
-About 8,900 lines of test code against roughly 13,000 lines of backend.
+The backend carries **37 test modules**, exercised on every change, plus two
+more alongside the motor-driver rig. Each is a standalone script declaring the
+import path it needs, rather than a framework suite — see
+[Appendix C](#appendix-c-build-one-yourself) for how to run them. About 10,500
+lines of test code against roughly 15,700 lines of Python and 6,400 lines of
+browser code.
 
 Coverage, by area:
 
@@ -3079,9 +3519,11 @@ Coverage, by area:
 | Ingestion and routing | `pipeline_manager_test`, `mqtt_subscriber_test` |
 | Classifier and the Edge Impulse path | `classifier_test`, `ei_client_test`, `ei_controller_test`, `ei_projects_test`, `ei_scaling_test` |
 | Capture and history | `capture_test`, `history_test` |
-| Displays | `display_rgb_test`, `display_matrix_test`, `matrix_status_test`, `matrix_status_device_test`, `status_color_test` |
+| Displays | `display_rgb_test`, `display_matrix_test`, `matrix_status_test`, `matrix_status_device_test`, `status_color_test`, `led_keeper_test` |
 | Sampling | `accel_sampler_test`, `mic_sampler_test` |
-| API, alerts, performance, simulator | `api_test`, `alert_store_test`, `telegram_alerts_test`, `perf_test`, `satellite_node_sim_test` |
+| Networking and onboarding | `wifi_bridge_monitor_test` |
+| API, alerts, performance, simulator | `api_test`, `connection_manager_test`, `alert_store_test`, `telegram_alerts_test`, `perf_test`, `satellite_node_sim_test` |
+| Motor-driver rig (separate tree) | `control_page_test`, `rig_trip_test` |
 
 Some of these are built from **real captured sensor data rather than synthetic
 numbers**, and that is deliberate: a hand-written "quiet" spectrum was too clean
@@ -3095,6 +3537,16 @@ will confirm whatever you already believe.
 once wrong: that training hands on to the trip-output step rather than jumping
 straight to Done. Reordering the steps once silently skipped the relocated one,
 because the training code had the final step's name hardcoded.
+
+Three of these modules exist only because a bug survived every other kind of
+review. `connection_manager_test` pins the rule that a browser which cannot keep
+up must be given *current* data at a lower frame rate rather than a growing
+backlog of stale frames. `led_keeper_test` covers the restart case where the
+dashboard showed a status above a ring that had never been lit. And
+`wifi_bridge_monitor_test` covers the access-point fallback policy behind a
+symptom reported as *"the base station loses its Wi-Fi credentials on every
+reboot"* — it had not lost anything; the system's own fallback was taking the
+radio away mid-join.
 
 A small, documented subset needs on-device-only libraries and is therefore
 excluded from off-hardware runs. Those are expected gaps, not failures.
@@ -3118,44 +3570,110 @@ excluded from off-hardware runs. Those are expected gaps, not failures.
 | Trip banner, all four states, on all five tabs | Live, with the failure state staged deliberately |
 | Wi-Fi onboarding captive portal | Real phones, three rounds of live testing |
 | GPU speed-up ≈ 1.0× | Live benchmark on the board, single vector through 256-node batch, output verified bit-exact against CPU |
+| Baseline smoothing: 0 of 21 windows accepted at K=1, 21 of 21 at K=6 | 251 live frames off a satellite with its machine off, scored as the sliding captures an operator would take |
+| Floor drift 1.11–1.13×, 290 of 290 stopped frames reading RUNNING | Live capture on a stopped machine an hour after its baseline; the trip it broke was a real one, reported as failed |
+| Collection gate losing ~65% of frames without hysteresis | Live on a satellite: 2.8 frames/s produced against ~1/s reaching the commissioning count |
+| Satellite bring-up, stage by stage | Physical XIAO ESP32-S3, one module enabled at a time, serial log and dashboard checked at each stage ([§12.7](#chapter-12-proof-not-promises)) |
+| Telegram alert delivery | Real bot, real phone, real fault |
+| Satellite 0.27 → 4.9 fps, browser blocking 47% → ~0–5% | Live rig; WebSocket rates and message sizes measured from a raw socket client, browser cost from a real Chromium against the live device with the collapsible panels open |
+| Ingest ceiling ~47 frames/s; forwarding delay 11.95 s → 0.32 s | Broker and dashboard socket subscribed simultaneously and first-arrival compared, on the real board with twelve nodes publishing |
 
 ## J.3 What is *not* verified on hardware
 
 Stated here so the list above can be trusted.
 
-* **Satellite nodes have not been run on a physical XIAO ESP32-S3.** The
-  firmware builds, and its frames decode correctly against the base station's
-  parser, and the whole fleet path has been exercised through the node simulator
-  against the real device. The hardware bring-up itself is outstanding.
+* **A satellite's provisioning portal has not been re-tested on a phone since
+  its last two fixes.** The node raises its access point; the page that failed
+  to load has had its cause identified and fixed twice, and neither fix has been
+  confirmed on hardware. Every satellite path after provisioning is verified
+  ([§12.7](#chapter-12-proof-not-promises)).
 * **The current classifier's accuracy figure** is not yet transcribed from Edge
-  Impulse Studio into this report (§I.5).
-* **Telegram alerts** were demonstrated live earlier, but are switched off in
-  the current build pending one configuration value
-  ([§9.11](#chapter-9-what-the-operator-actually-sees)).
+  Impulse Studio into this report (§I.5). No accuracy number is quoted anywhere
+  in this document for that reason — the figures in §I.3 belong to the abandoned
+  public-dataset phase and are not this model's.
+* **The microphone's contribution to either model is unmeasured**, because it is
+  muted ([§5.4](#chapter-5-teaching-it-what-normal-feels-like)). Nothing in this
+  report claims a result from audio.
 
 ---
 
-# Appendix K. 3D-printed test rigs
+# Appendix K. 3D-printed parts and the fault-injection rig
 
-> **[PLACEHOLDER — to be written]**
->
-> This appendix will cover the 3D-printed fixtures used to hold sensors and to
-> induce repeatable, known faults on the bench: what each part is, why it is
-> shaped the way it is, print settings, and the source models.
->
-> To fill in:
->
-> * **[MODEL: sensor mounting bracket]** — the rigid coupling between the
->   accelerometer and the machine housing, and why rigidity here changes what
->   the sensor can see (see [Appendix A](#appendix-a-bill-of-materials)).
-> * **[MODEL: motor mount / test bed]** — the frame holding the three NEMA-17
->   motors.
-> * **[MODEL: fault-induction fixtures]** — the parts used to produce
->   repeatable imbalance and loose-mount conditions for the labelled captures in
->   [Appendix I](#appendix-i-classifier-research-history).
-> * **[PHOTO: printed parts, assembled and in use on the rig]**
-> * Print settings: material, layer height, infill, orientation.
-> * Source files and licence.
+**Thirteen printable parts**, each supplied as both 3MF (plated, colour
+assigned, oriented so nothing needs supports) and STL. They live in
+[`3d-models/`](../3d-models), whose `README.md` is the authoritative list —
+every file, what it contains, and what needs printing for what. This appendix
+covers only what that list cannot: why the parts are shaped the way they are.
+
+The file names encode the assembly: `a` is the base station, `b` is the
+satellite, `c` is the validation rig.
+
+## K.1 The two enclosures
+
+Both pods are the same design at two scales — a snap-fit two-piece shell, a
+mount kit of two backplates with a standoff leg, and a front bezel. The one
+visible difference is that the base station's bezel carries a **lens insert**
+over its status window and the satellite's does not, because a satellite has no
+LED matrix behind it to magnify.
+
+Two shape decisions carry engineering rather than styling:
+
+* **The accelerometer sits on its own plate against the shell wall, not on the
+  board.** That plate is the coupling between the sensor and the machine
+  housing, and it is what decides what the sensor can see at all. A sensor
+  coupled to a circuit board that is coupled to a plastic box measures the box.
+* **Every sensor connects through its own crimped harness.** The pod opens and a
+  part swaps without a soldering iron, which matters when the failure being
+  diagnosed might *be* the sensor. This project paid for that lesson twice:
+  once chasing a microphone capture failure through the firmware that turned out
+  to be a loose connector, and once on a satellite whose sensor read all-zeroes
+  while its frames stayed perfectly valid
+  ([§12.7](#chapter-12-proof-not-promises)).
+
+The magnet is a ring pressed by hand into the foot underneath, which is what
+lets a pod move between machines during characterisation without remounting
+hardware.
+
+## K.2 The validation rig, and how a fault is induced repeatably
+
+The `c` parts are the bench rig. Nothing in a deployment needs them; every
+labelled fault recording behind the classifier came off them.
+
+There are two rigs and the choice matters, because it is the choice a real
+floor makes. A **belt-drive** rig stands in for a belt-driven machine such as a
+compressor; a **direct-drive** rig stands in for a pump. Both carry the same
+bolt-on flywheel.
+
+The flywheel is the fault injector, and it is the reason the labelled data is
+worth anything. Its rotor disc and bolt-on ring share a bolt circle taking
+M6 × 18 mm bolts. **Adding, removing or moving bolts around that circle produces
+a known, repeatable, measurable imbalance** — the same fault, the same
+magnitude, on demand, as many times as a dataset needs. That repeatability is
+what separates a labelled fault capture from a recording of one afternoon's
+particular wobble.
+
+Loose-mount conditions are produced the same way, by slackening a bracket's own
+mounting bolts to a defined degree rather than by improvising.
+
+## K.3 Printing them
+
+| | |
+|---|---|
+| Material | PLA+ |
+| Nozzle | 0.4 mm |
+| Layer height | 0.2 mm |
+| Infill | 20% for shells and bezels, 40% or more for rig brackets and the flywheel |
+| Supports | none — the plates are oriented to avoid them |
+
+The higher infill on the rig parts is not caution. A bracket that flexes is a
+bracket that adds its own resonance to every capture taken on it, and that
+resonance would be learned as part of the machine's normal.
+
+Colours are what this build used, not a requirement.
+[`hardware/enclosure-logo/`](../hardware/enclosure-logo) carries emboss-ready
+artwork for the shell faces, sized separately for the two pods.
+
+> **[PHOTO: printed parts, assembled and in use on the rig]**
 
 ---
 
@@ -3198,13 +3716,17 @@ base-station/
     monitoring/            performance metrics
     network/               Wi-Fi bridge client
     common/                wire protocol + generated telemetry codec
-    frontend/              index.html, style.css, and five JS modules
+    frontend/              index.html, style.css, and one JS module per tab
     tools/                 code generation and one-off utilities
   host/                    privileged host-side bridges (SPI, Wi-Fi, GPU)
-  tests/                   34 standalone test modules
+  tests/                   37 standalone test modules
+  deploy.sh                deploys everything except app.yaml, deliberately
 satellite/                 PlatformIO project — XIAO ESP32-S3 node firmware
 motor-driver/              PlatformIO project (Uno) + the rig host + control page
 hardware/kicad/            three real KiCad schematics, generated from Python
+hardware/enclosure-logo/   emboss-ready artwork for the printed shells
+3d-models/                 thirteen printable parts, 3MF and STL
+docs/                      the canonical build guide, parts list and bring-up guides
 report/                    this document, and the generators for every diagram in it
 ```
 
@@ -3319,7 +3841,7 @@ that would break first are known:
 |---|---|---|
 | **Cost** | Close to linear: one base station plus ≈₹2,245 per additional machine ([Appendix A](#appendix-a-bill-of-materials)) | Nothing — this is the design's strongest axis |
 | **Setup effort** | Four to six minutes per machine, unchanged from the first to the fortieth | Today's per-machine training is the reason it does not get *faster*; [§11.4](#chapter-11-why-we-built-it-this-way) is how it would |
-| **Compute** | One pipeline per asset, each reporting its own time-budget usage on the Performance tab | That percentage is the real headroom signal. It is measured, not extrapolated |
+| **Compute** | One pipeline per asset, each reporting its own time-budget usage on the Performance tab | That percentage is the real headroom signal, and it is measured rather than extrapolated. The hard number behind it is ~47 frames/s across the whole fleet through one worker ([§10.10](#chapter-10-under-the-hood)) — at 5 fps per node that is roughly nine nodes before frames start being superseded, and it degrades into latency rather than into an error, which makes it the ceiling most worth watching |
 | **Network** | ~164 kbps per satellite on ordinary Wi-Fi | Access-point capacity long before bandwidth |
 | **The operator's attention** | Status tiles that are also filters, and an LED matrix that summarises counts worst-first | This is the axis that actually breaks first in real deployments, and it is why the matrix shows counts rather than names |
 | **Models** | One anomaly model per machine, one classifier per *type* | Classifier effort is per machine type, so it flattens as the fleet grows |
@@ -3340,7 +3862,7 @@ says so.
   deploys and runs both halves of this application and manages its one secret.
 * **Asset** — one monitored machine's entry in the system, whether sensed by the
   base station directly or by a satellite node.
-* **Asset class** — what *kind* of machine an asset is (`cnc lathe`, `conveyor
+* **Asset class** — what *kind* of machine an asset is (`pump`, `conveyor
   motor`). The grouping key for recordings, and the scope of one trained fault
   classifier.
 * **Autoencoder** — a small neural network trained only on a machine's healthy
