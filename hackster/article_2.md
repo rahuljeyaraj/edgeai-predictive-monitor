@@ -220,15 +220,15 @@ Ravi raised his concern. "But we do not have a person to spare to monitor the da
 [IMAGE: base-station-build.jpg - base station laid out and assembled, five views]
 *The base station: Arduino UNO Q, accelerometer, microphone and status ring, laid out and closed up.*
 
-Every sensor plugs in on its own crimped harness, so the pod can be opened and a part swapped without a soldering iron. The accelerometer sits on its own plate against the shell wall, which is what couples it to the machine rather than to the board.
+Every sensor connects through its own crimped harness, so the pod can be opened and a part swapped without a soldering iron. The accelerometer sits on its own plate against the shell wall, which is what couples it to the machine rather than to the board.
 
-The white globe is the diffuser cap off a 9W LED bulb, and it is the status dome over the ring. The rectangular window on the top face holds a Fresnel lens over the UNO Q's own LED matrix, which is what makes the fleet summary readable from across a floor. The round port on the front is the microphone. The foot underneath takes the ring magnet, pressed in by hand.
+The white globe is the diffuser cap off a 9W LED bulb, and it is the status dome over the ring. The rectangular window on the top face holds a Fresnel lens over the UNO Q's own LED matrix, which is what makes the fleet summary readable from across the floor. The round hole on the bottom is the microphone port. The foot underneath takes the ring magnet, pressed in by hand.
 
 # 3.3 Satellite Node
 
 [IMAGE: satellite-build.jpg - satellite node laid out and assembled, five views]
 *The satellite node: the same shell pattern and the same three sensors, scaled down for the XIAO ESP32-S3.*
 
-The satellite is deliberately the same build. Same sensors, same harnesses, same status dome, one USB-C cable for power. The only difference you can see is the front face, which has no lens window, because a satellite has no LED matrix to magnify.
+The satellite is deliberately the same build. Same sensors, similar harnesses, same status dome, one USB-C cable for power. The only difference you can see is the front face, which has no lens window, because a satellite has no LED matrix to magnify.
 
-There is nothing to set per unit. A node takes its identity from its own Wi-Fi hardware address, so ten of these are ten distinct machines on the dashboard with no ID typed anywhere.
+There is nothing to set per unit in software. A node takes its identity from its own Wi-Fi hardware address, so ten of these are ten distinct machines on the dashboard with no ID typed anywhere.
