@@ -75,19 +75,112 @@ During his research he found [an open-source project on GitHub](https://github.c
 
 Arjun explained the system to his father, part by part.
 
-- **One Arduino UNO Q runs the whole shop.** The UNO Q is the base station. It sits at the centre of the system and it is the only part that decides anything. It carries two processors on one board. The microcontroller does the real time work of reading the sensors and turning the raw signal into numbers. The Linux processor runs the AI models, the dashboard and the alerts. Doing this on any other board means buying two boards and wiring them together.
-- **Every machine gets a sensor node.** A node is an accelerometer and a microphone in a small printed case, mounted on the machine housing with a strong magnet. The accelerometer feels vibration up to 6 kHz. The microphone hears sound up to 24 kHz. The base station is itself a node, monitoring the machine it is attached to.
-- **Machines further away get a satellite node.** A satellite is that same pair of sensors connected to a XIAO ESP32-S3. It watches its own machine and sends the readings to the base station over Wi-Fi. The base station costs around $100. Every satellite node after that costs about $25, so the system scales cheaply.
-- **The network is whatever the shop already has.** If there is Wi-Fi on the floor, everything joins it, base station included. If there is none, the base station becomes the access point itself, and the satellite nodes and the phone or laptop running the dashboard connect straight to it.
-- **Each machine is taught its own normal.** Every new machine is commissioned once from the dashboard, and it takes only a few minutes. The node records the machine while it is idle and again while it runs under each of its normal operating conditions, and a model is trained on the base station from those recordings. Nothing is downloaded and no factory average is used. Different assets such as Pump 1 and Pump 2 end up with their own models, each judged against itself.
-- **Fault detection is drift away from that normal.** Each node reduces its raw signal to 536 numbers, five times a second. That is 128 frequency bins and 6 summary values for each of four channels, the three vibration axes and the sound. During commissioning the model on the UNO Q learned to rebuild the healthy version of those numbers. Every reading after that, it rebuilds what it expects and compares it with what actually arrived. The bigger the difference, the further the machine has moved from healthy. Past a threshold set from that machine's own data, it reports a fault.
-- **Fault identification names the fault.** The same 536 numbers feed a second model that names the type of fault, such as bearing wear, imbalance or a loose mount. This one is trained per asset class instead of per machine, so a single model covers every pump in the shop. It needs recordings labelled with each fault, which the dashboard collects and uploads to Edge Impulse in a few clicks. That upload is the only step in the whole system that needs an internet connection.
-- **Status light on every node.** Each sensor node has an RGB dome on top of it. Green is healthy, amber is a warning, red is a fault. You read it from across the floor without opening anything.
-- **Fleet summary on the base station.** When the nodes are not in line of sight, the UNO Q's own LED matrix scrolls a one line summary of the whole fleet, worst status first. One glance on the way past tells you whether anything is wrong.
-- **Dashboard in any browser.** It is served from the UNO Q itself, so any phone or laptop on the shop network can open it and there is no app to install. It lists every machine with its status, and the status tiles at the top double as filters. Open a machine and you see how far it has drifted, plotted live against its own warning and fault lines, along with the fault name, the live vibration and sound spectra, and the last half hour of history. If a machine has been stopped, a banner says so above every page.
-- **Telegram alert on a phone.** Scan the QR code on the dashboard once and that phone is subscribed. There is no account to create and no bot name to remember. Each person picks what they hear about, either warnings and faults or faults only, and which machines, either the whole shop or a named few. The message carries the machine's name and the fault name.
-- **Physical AI, not just an alert.** When a fault is confirmed, the system stops the machine itself to prevent further damage, and it stays stopped until someone clears it. It announces itself first: a banner counts down for 10 seconds, names the machine, and offers a Hold button for the case where the machine has to keep running.
-- **No server, no subscription.** The models run on the UNO Q and the dashboard is served from it. Nothing has to talk to a server, and there is nothing to pay for after the build.
+# 2.3 Every Machine Gets a Sensor Node
+
+[IMAGE: Sensor node on a machine housing, held by its magnet.]
+*A node goes on in a second and comes off just as fast*
+
+"A node is an accelerometer and a microphone in a small printed case, mounted on the machine housing with a strong magnet. The accelerometer feels vibration up to 6 kHz. The microphone hears sound up to 24 kHz. There are two types of node, a base station node and satellite nodes," he explained.
+
+# 2.4 One Arduino UNO Q Runs the Whole Shop
+
+[IMAGE: report/diagrams/14-two-brains.png]
+*Two processors on one board, and the work each one does*
+
+"What is a base station?" Ravi asked with curiosity.
+
+"The base station is the central node that takes all the decisions. It is built around the powerful Arduino UNO Q board, which carries two processors. The microcontroller listens to the asset it is attached to through its sensors. The Linux processor receives that sensor data and runs the AI models for every node to detect faults. It also serves the dashboard and sends the alerts. Doing this on any other board means buying two boards and wiring them together," Arjun replied.
+
+# 2.5 Machines Further Away Get a Satellite Node
+
+[IMAGE: report/diagrams/03-satellite-node-wiring.png]
+*A satellite node: the same sensors, a smaller processor, and Wi-Fi to the base station*
+
+"A satellite, on the other hand, is that same pair of sensors connected to a XIAO ESP32-S3. It watches its own asset and sends the readings to the base station over Wi-Fi. The base station costs around $100. Every satellite node after that costs about $25, so the system scales cheaply," Arjun continued.
+
+# 2.6 The Network Is Whatever the Shop Already Has
+
+[IMAGE: report/diagrams/09-onboarding.png]
+*Bringing a node onto the network from a phone*
+
+"I guess we would need to set up a Wi-Fi network on the floor," Ravi said.
+
+"Not exactly," Arjun corrected his father. "If there is Wi-Fi on the floor, everything joins it, base station included. If there is none, the base station becomes the Wi-Fi access point itself, and the satellite nodes and the phone or laptop running the dashboard connect straight to it."
+
+# 2.7 Each Machine Is Taught Its Own Normal
+
+[IMAGE: report/diagrams/15f-setup-steps.png]
+*Commissioning an asset, step by step*
+
+Ravi liked the flexibility of the system. He needed to know more, so he asked, "How do we set up the sensor nodes with our machines?"
+
+"Every new asset is commissioned once from the dashboard, and it takes only a few minutes. The node records the asset while it is idle and again while it runs under each of its normal operating conditions, and a model is trained on the base station from those recordings. Nothing is downloaded and no factory average is used. Different assets such as Pump 1 and Pump 2 end up with their own models, each judged against itself," Arjun replied patiently.
+
+# 2.8 Fault Detection Is Drift Away From That Normal
+
+[IMAGE: report/diagrams/04-feature-pipeline.png]
+*From raw vibration and sound to the 536 numbers the models read*
+
+"Each node reduces its raw signal to 536 numbers, five times a second. That is 128 frequency bins and 6 summary values for each of four channels, the three vibration axes and the sound. During commissioning the model on the UNO Q learned to rebuild the healthy version of those numbers. Every reading after that, it rebuilds what it expects and compares it with what actually arrived. The bigger the difference, the further the machine has moved from healthy. Past a threshold set from that machine's own data, it reports a fault," he continued.
+
+Ravi struggled at first, but he understood the gist of it.
+
+# 2.9 Fault Identification Names the Fault
+
+[IMAGE: report/diagrams/11-edge-impulse-flow.png]
+*Recording a fault, labelling it, and training the model that names it*
+
+"The same 536 numbers feed a second model that names the type of fault, such as bearing wear, imbalance or a loose mount. This one is trained per asset class instead of per machine, so a single model covers every pump in the shop. It needs recordings labelled with each fault, which the dashboard collects and uploads to Edge Impulse in a few clicks. That upload is the only step in the whole system that needs an internet connection," Arjun explained.
+
+"So we need to induce a fault and record that data, and later, when a similar fault happens, the system will alert us with the type of fault?" Ravi asked.
+
+"Exactly."
+
+# 2.10 Dashboard in Any Browser
+
+[IMAGE: report/diagrams/08-dashboard-anatomy.png]
+*The dashboard, and what an open machine shows*
+
+"So how will we monitor the health of the assets? Do we need to put it up on a monitor?" Ravi enquired.
+
+"Yes, the system has a dashboard. It is served from the UNO Q itself, so any phone or laptop on the shop network can open it and there is no app to install. It lists every machine with its status, and the status tiles at the top double as filters. Open a machine and you see how far it has drifted, plotted live against its own warning and fault lines, along with the fault name, the live vibration and sound spectra, and the last half hour of history. If a machine has been stopped, a banner says so above every page," Arjun answered.
+
+# 2.11 Status Light on Every Node
+
+[IMAGE: Node domes lit green, amber and red.]
+*Green, amber, red. The whole status of one machine*
+
+"But we do not have a person to spare to monitor the dashboard all day. All six of us are out on the floor, working alongside the machines." Ravi raised his concern.
+
+"EPM has a solution for that too. Each sensor node has an RGB dome on top of it. Green is healthy, amber is a warning, red is a fault. So you can read it from across the floor without opening anything," Arjun replied with a smile.
+
+# 2.12 Fleet Summary on the Base Station
+
+[IMAGE: UNO Q LED matrix scrolling the fleet summary.]
+*The whole shop in one line, worst machine first*
+
+"And when some nodes are out of sight, you can still read the status of every machine without opening the dashboard. The UNO Q's own LED matrix scrolls a one line summary of the whole fleet, worst status first. One glance on the way past tells you whether anything is wrong," Arjun went on, encouraged by the happiness on his father's face.
+
+# 2.13 Telegram Alert on a Phone
+
+"Scan the QR code on the dashboard once and that phone is subscribed to telegram notificatons. There is no account to create and no bot name to remember. We can select what alerts we need, either warnings and faults or faults only, and which machines, either the whole shop or a named few. The message carries the machine's name and the fault name."
+
+"So I can know if something went wrong while I am at home."
+
+"Exactly."
+
+# 2.14 Physical AI, Not Just an Alert
+
+[IMAGE: report/diagrams/07-trip-sequence.png]
+*From a confirmed fault to a stopped machine*
+
+"It also has the feature you were looking for. When a fault is confirmed, the system stops the machine itself to prevent further damage, and it stays stopped until someone clears it. It announces itself first: a banner counts down for 10 seconds, names the machine, and offers a Hold button for the case where the machine has to keep running."
+
+# 2.15 No Server, No Subscription
+
+"The models run on the UNO Q and the dashboard is served from it. Nothing has to talk to a server, and there is nothing to pay for after the build," Arjun concluded.
+
+"You found a gem," Ravi said with excitement.
 
 # Appendix A: Bill of Materials
 **Base station components**
