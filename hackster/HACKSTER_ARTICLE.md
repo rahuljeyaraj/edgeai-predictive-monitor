@@ -55,12 +55,17 @@
                  follows it, relabelled "illustration". 2.10's caption now
                  explains that the ten offline entries are simulated nodes.
 
-              TWO CAPTIONS NEED RAHUL TO CONFIRM BEFORE PASTING:
-                - 4.4's two bearing captions assert the worn parts were
-                  fitted to the rig and recorded. Adjust the wording if the
-                  bearing class was induced some other way.
-                - 2.10's caption asserts the ten offline entries are
-                  simulated nodes. Correct it if they are something else.
+              6. 4.1 gains the rig photograph itself, which was the one
+                 piece of evidence missing from the page: three motors,
+                 three nodes lit red/green/amber, the LED matrix and the
+                 live dashboard, all in one frame. Nothing in chapter 4
+                 could be checked against reality without it.
+
+              BOTH CAPTIONS CONFIRMED BY RAHUL 2026-09-04: the worn bearings
+              in 4.4 were fitted to the rig and recorded as the bearing
+              class, and the offline entries in 2.10 are simulated nodes
+              (the 4.1 photo shows Sim 1 to Sim 7 in the asset list behind
+              the rig, which is the same evidence).
 
               Do not add a number to chapter 4 that is not already measured
               and written down in report/REPORT.md ch 12. The 100% in 4.4 is
@@ -96,6 +101,10 @@
                 hackster/assets/IMG20260901093820.jpg
                 hackster/assets/IMG20260901093909.jpg
 
+       G  4.1, add the rig photograph at the very top of the section, above
+              the first paragraph. New upload:
+                hackster/assets/rig-three-nodes-live.jpg
+
        E  NEW CHAPTER 6 "What It Saves", pasted between Planned Improvements
               and the Conclusion, and then the Conclusion heading edited
               from "6 Conclusion" to "7 Conclusion".
@@ -107,12 +116,18 @@
      STILL MANUAL, not in this file:
        - Add YouTube chapter markers to the demo video (12:53 is long, and
          no judge watches all of it). Chapters make the trip findable.
-       - A photograph of the motor rig with a node magnet-mounted on it
-         would be the strongest image on the page and there is not one.
-         Every number in chapter 4 came off that rig.
-       - Confirm the Edge Impulse project at studio.edgeimpulse.com/studio/
-         1092356 opens for a LOGGED-OUT visitor.
-       - Confirm the cover image is a real photograph.
+
+     SETTLED 2026-09-04, do not reopen:
+       - The Edge Impulse project opens for a logged-out visitor. Checked.
+       - THE COVER STAYS AS IT IS. It is the real rig photograph with its
+         background cleaned up, and in a hardware contest a real photograph
+         of the built system is the single strongest cover available. It
+         was considered and rejected to replace it with a Gemini render of
+         three motors in a clean plant room: a rendered cover on a hardware
+         entry invites a judge to wonder what else is rendered, and the
+         page's own credibility argument (4.1, the bearings in 4.4) works
+         against it. Renders stay where they are labelled as illustrations,
+         in 2.3 and 2.9, and never at the top.
 
      VERIFIED CORRECT on the live page, do not re-check: all 12 outbound
               links (Hackster writes href with SINGLE quotes, so grep for
@@ -265,7 +280,7 @@ Each sensor node carries an RGB dome on top. Green is healthy, amber is a warnin
 # 2.10 Fleet Summary on the Base Station
 
 [IMAGE: led_matrix_1.gif - UNO Q LED matrix scrolling the fleet summary]
-*The base station's own LED matrix, worst status first: 1 Tripped (TRP), 1 Faulty (FLT), 10 Offline (OFF), 1 Healthy (OK). The ten offline entries are simulated nodes registered to test the display at fleet scale.*
+*The base station's own LED matrix, worst status first: 1 Tripped (TRP), 1 Faulty (FLT), 10 Offline (OFF), 1 Healthy (OK). The offline entries are simulated nodes, registered alongside the real ones to exercise the display at fleet scale.*
 
 Nodes out of sight are covered by the base station itself. The UNO Q's own LED matrix scrolls a one line summary of the whole fleet, worst status first, so one glance on the way past says whether anything anywhere is wrong.
 
@@ -478,6 +493,9 @@ Nothing in that path reads the classifier. The fault name is display only, which
 # 4 Measured Results
 
 # 4.1 What Was Measured, and How
+
+[IMAGE: rig-three-nodes-live.jpg - the three-motor rig, three nodes lit red, green and amber, dashboard behind]
+*The rig every number below came off: three motors, three nodes, three states at once. Red is a fault, green is healthy, amber is a warning. The base station in the middle scrolls the fleet summary on its LED matrix, and the dashboard behind is the live one, being served from that board.*
 
 Every figure in this chapter came off the physical rig: a sensor node on a spinning motor, a trip that actually stopped that motor, a dashboard checked in a real browser against the live board. The microphone is muted, so all of it is vibration alone. The full record of how each was checked is in the [project report](https://github.com/rahuljeyaraj/edgeai-predictive-monitor/blob/main/report/REPORT.md).
 
