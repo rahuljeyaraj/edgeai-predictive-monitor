@@ -93,14 +93,14 @@ PATTERN_WORDS = {
 
 # ---------------------------------------------------------------------------
 # Layout (1x units).
-W = 1000
+W = 1120
 MARGIN = 40
-TITLE_H = 96
-LAMP_R = 33          # lit disc
-DOME_R = 41          # diffuser housing around it
-GLOW = 26            # halo reach beyond the disc
-CELL_H = 196
-LAMP_DY = 60         # lamp centre below the cell top
+TITLE_H = 102
+LAMP_R = 37          # lit disc
+DOME_R = 46          # dark bezel around it
+GLOW = 28            # halo reach beyond the disc
+CELL_H = 218
+LAMP_DY = 64         # lamp centre below the cell top
 
 ROW_A1, ROW_A2 = SHARED[:4], SHARED[4:]
 COLS = 4
@@ -145,28 +145,28 @@ def build_background():
 
     d.rectangle([0, 0, W * S, TITLE_H * S], fill=BAND)
     d.line([MARGIN * S, TITLE_H * S, (W - MARGIN) * S, TITLE_H * S], fill=HAIRLINE, width=S)
-    d.text((MARGIN * S, 30 * S), "What the light on a node means",
-           font=font(27, bold=True), fill=INK, anchor="ls")
-    d.text((MARGIN * S, 56 * S), "One ring on the base station, one on every satellite. Same colours as the dashboard.",
-           font=font(15.5), fill=INK_SOFT, anchor="ls")
+    d.text((MARGIN * S, 31 * S), "What the light on a node means",
+           font=font(30, bold=True), fill=INK, anchor="ls")
+    d.text((MARGIN * S, 60 * S), "One ring on the base station, one on every satellite. Same colours as the dashboard.",
+           font=font(17.5), fill=INK_SOFT, anchor="ls")
 
     d.text((MARGIN * S, SEC_A_Y * S), "Machine health  ·  every node",
-           font=font(18, bold=True), fill=INK, anchor="ls")
+           font=font(20, bold=True), fill=INK, anchor="ls")
     d.line([MARGIN * S, DIV_Y * S, (W - MARGIN) * S, DIV_Y * S], fill=HAIRLINE, width=S)
     d.text((MARGIN * S, SEC_B_Y * S), "Getting connected  ·  satellite only",
-           font=font(18, bold=True), fill=INK, anchor="ls")
+           font=font(20, bold=True), fill=INK, anchor="ls")
 
     rows = [(ROW_A1, ROW_A1_Y), (ROW_A2, ROW_A2_Y), (SATELLITE, ROW_B_Y)]
     lamps = []
-    f_name, f_desc, f_pat = font(19, bold=True), font(15), font(13.5)
+    f_name, f_desc, f_pat = font(22, bold=True), font(18), font(16.5)
     for items, row_y in rows:
         for (cx, cy), (label, desc, rgb, mode, period) in zip(cell_positions(items, row_y), items):
             ly = cy + LAMP_DY
             d.ellipse([(cx - DOME_R) * S, (ly - DOME_R) * S, (cx + DOME_R) * S, (ly + DOME_R) * S],
                       fill=BEZEL, outline=BEZEL_EDGE, width=int(1.6 * S))
-            d.text((cx * S, (cy + 128) * S), label, font=f_name, fill=INK, anchor="ms")
-            d.text((cx * S, (cy + 151) * S), desc, font=f_desc, fill=INK_SOFT, anchor="ms")
-            d.text((cx * S, (cy + 173) * S), PATTERN_WORDS[(mode, period)],
+            d.text((cx * S, (cy + 140) * S), label, font=f_name, fill=INK, anchor="ms")
+            d.text((cx * S, (cy + 168) * S), desc, font=f_desc, fill=INK_SOFT, anchor="ms")
+            d.text((cx * S, (cy + 194) * S), PATTERN_WORDS[(mode, period)],
                    font=f_pat, fill=INK_FAINT, anchor="ms")
             lamps.append((cx, ly, hex_rgb(rgb), mode, period))
     return img, lamps
