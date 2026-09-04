@@ -82,19 +82,19 @@ for entry in (186, 286, 386, 486):
     c.link([(1110, 460), (1220, 460), (1220, entry), (1300, entry)],
            kind="arrowTell")
 
-c.box(1300, 695, 500, 130, "Stop the machine",
+c.box(1300, 720, 500, 130, "Stop the machine",
       ["10 second countdown, then the motor stops",
        "stays stopped until someone clears it"],
       role="act", title_size=TITLE, body_size=BODY)
-c.link([(1110, 545), (1270, 545), (1270, 760), (1300, 760)],
+c.link([(1110, 545), (1270, 545), (1270, 785), (1300, 785)],
        kind="arrowAct", width=2.4)
 
 # ----------------------------------------------------------- the one link
 # that leaves the building, drawn dashed and grey so it reads as optional.
-c.box(800, 740, 380, 110, "Edge Impulse",
-      ["training the fault classifier", "the only step that needs internet"],
+c.box(844, 740, 340, 110, "Edge Impulse",
+      ["training the fault classifier", "the one step needing internet"],
       role="ghost", title_size=TITLE, body_size=BODY, dashed=True)
-c.link([(990, 570), (990, 740)], label="fault recordings",
+c.link([(1014, 570), (1014, 740)], label="fault recordings",
        kind="arrowSoft", dashed=True, label_size=12)
 
 save(c, "16-system-overview")
