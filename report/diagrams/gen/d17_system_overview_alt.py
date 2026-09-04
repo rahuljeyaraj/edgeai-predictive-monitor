@@ -84,7 +84,7 @@ for i, word in enumerate(("Status", "dome")):
 c.link([(280, 810), (350, 810)], label="SPI", label_size=12)
 c.link([(280, 920), (350, 920)], label="I²S", label_size=12)
 c.link([(600, 865), (640, 865)], kind="arrowTell")
-c.link([(475, 780), (475, 600)], label="Wi-Fi · MQTT", label_size=12)
+c.link([(560, 780), (560, 600)], label="Wi-Fi · MQTT", label_size=12)
 
 # ------------------------------------------------- what is not a node yet
 # Both boxes share the output column's x, so every consequence of a frame,
