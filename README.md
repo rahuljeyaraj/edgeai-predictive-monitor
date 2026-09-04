@@ -77,6 +77,8 @@ It prints two URLs: the dashboard, and the simulated node's own control page.
 | [`motor-driver/`](motor-driver/) | The validation rig: Arduino Uno + CNC Shield firmware, the rig host, and its control page |
 | [`hardware/kicad/`](hardware/kicad/) | Three real KiCad schematics, generated from Python |
 | [`report/`](report/) | The full report and the generators for every diagram in it |
+| [`docs/BILL_OF_MATERIALS.md`](docs/BILL_OF_MATERIALS.md) | The canonical parts list: what to buy, per build scale, with links |
+| [`docs/BUILD_GUIDE.md`](docs/BUILD_GUIDE.md) | Build one yourself, from printed shell to a commissioned machine |
 | [`docs/`](docs/) | Design plans and investigation records — the long-form version of the report's appendices |
 
 ## Status
