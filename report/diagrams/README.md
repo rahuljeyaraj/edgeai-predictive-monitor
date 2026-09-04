@@ -50,6 +50,18 @@ for f in d*.py; do ../.venv/bin/python "$f"; done
 | `gen/d15_code_structure.py` | `15a`…`15f` (six figures) | S5 (code structure) |
 | `gen/d16_system_overview.py` | `16-system-overview.png` | Hackster article, sec. 2.2 |
 | `gen/d17_system_overview_alt.py` | `17-system-overview-alt.png` | variant B of 16, not placed yet |
+| `gen/d18_status_light.py` | `18-status-light.gif` + `.png` | Hackster article, sec. 2.11 |
+
+`gen/d18_status_light.py` is the other exception: it is raster, not SVG, and
+it does not use `diagram_lib` or cairosvg at all. It draws with Pillow +
+numpy and writes an **animated GIF**, because the thing being documented is
+the blink pattern — a still frame cannot tell a WARNING strobe from a PAUSED
+const, both being the same amber. It also writes a matching still PNG (every
+ring lit) for print, where a GIF cannot animate. Its colours, modes and
+periods are read from `registry/status_color.py` and
+`satellite/src/threads/transport_task.cpp`; its blink maths is copied from
+the two ring drivers. It needs `numpy` in the venv:
+`.venv/bin/pip install numpy`.
 
 `gen/d15_code_structure.py` is the exception to one-script-one-diagram: it
 emits six figures (`15a-tiers`, `15b-wire-format`, `15c-linux-packages`,

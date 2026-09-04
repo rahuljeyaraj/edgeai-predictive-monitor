@@ -144,8 +144,8 @@ Ravi struggled at first, but he understood the gist of it.
 
 # 2.11 Status Light on Every Node
 
-[IMAGE: Node domes lit green, amber and red.]
-*Green, amber, red. The whole status of one machine*
+[IMAGE: report/diagrams/18-status-light.gif]
+*Every colour and blink a node's ring can show*
 
 Ravi raised his concern. "But we do not have a person to spare to monitor the dashboard all day. All six of us are out on the floor, working alongside the machines."
 
