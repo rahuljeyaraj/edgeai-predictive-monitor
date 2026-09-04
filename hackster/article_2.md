@@ -25,8 +25,8 @@
      STATUS:  This is the REWRITE (article 2). Chapters 1 to 3 match the
               currently published article, synced from the live page on
               2026-09-04, except for three small wordings in 3.2 and 3.3 that
-              are edited here and not yet edited on the page. Chapter 4 is NEW
-              and not yet published.
+              are edited here and not yet edited on the page. The video embed
+              in 2.1 is NEW and not yet published.
 
               The two appendices (Bill of Materials, Schematics) have been
               REMOVED. Hackster's own "Things used in this project" section
@@ -44,8 +44,9 @@
               base-station-build.jpg and satellite-build.jpg before
               uploading.
 
-     VIDEO:   Chapter 4 carries the only video, one continuous unedited take of
-              a real trip on the rig. Not yet shot, not yet published. Shoot it
+     VIDEO:   Section 2.1 carries the only video, one continuous unedited take
+              of a real trip on the rig. Not yet shot, not yet published. It is
+              the hook: Arjun watches it, then calls his father over. Shoot it
               in one run: healthy, fault induced on camera, drift crossing the
               fault line, the countdown with Hold offered, the motor stopping,
               the dome going red. Upload it and paste the URL into the embed.
@@ -91,7 +92,14 @@ He shrugged. "We're too small to be a customer."
 
 Arjun, Ravi's son, was in his final year of engineering and had heard the compressor story at one family dinner too many. Over the holidays he decided to build his father a sensor himself.
 
-During his research he found an open-source project on GitHub. The [EdgeAI Predictive Monitor](https://github.com/rahuljeyaraj/edgeai-predictive-monitor), built on the Arduino UNO Q. He read the whole repository in one sitting.
+During his research he found an open-source project on GitHub. The [EdgeAI Predictive Monitor](https://github.com/rahuljeyaraj/edgeai-predictive-monitor), built on the Arduino UNO Q. He read the whole repository in one sitting, and the last thing he opened was the demo video.
+
+[VIDEO: demo of one real trip, continuous and unedited, fault induced on camera. Upload it and paste the URL. A marker with no URL scores nothing.]
+*One take, from healthy to a named fault to a stopped motor.*
+
+One take, no cuts. A rig running healthy, a fault introduced on camera, the drift line climbing past the fault line, the banner naming the fault and counting down with a Hold button offered, and the motor stopping on its own. The dome on the node turned red and stayed red.
+
+He watched it a second time.
 
 "Dad, come look at this," he called out.
 
@@ -241,14 +249,3 @@ The white globe is the diffuser cap off a 9W LED bulb, and it is the status dome
 The satellite is deliberately the same build. Same sensors, similar harnesses, same status dome, one USB-C cable for power. The only difference you can see is the front face, which has no lens window, because a satellite has no LED matrix to magnify. The black sticker on the side is the Wi-Fi antenna.
 
 There is nothing to set per unit in software. A node takes its identity from its own Wi-Fi hardware address, so ten of these are ten distinct machines on the dashboard with no ID typed anywhere.
-
-# 4 Demonstration
-
-"That is a box on a bench," Ravi said. "Does it actually stop a machine?"
-
-Arjun scrolled down and pressed play. One take, no cuts. The rig runs healthy, a fault is introduced on camera, the drift line climbs past the fault line, the banner names the fault and counts down with Hold offered, nobody presses it, and the motor stops on its own. The dome on the node turns red and stays red.
-
-[VIDEO: demo of one real trip, continuous and unedited, fault induced on camera. Upload it and paste the URL. A marker with no URL scores nothing.]
-*One take, from healthy to a named fault to a stopped motor.*
-
-Ravi watched it a second time. "Order the parts."
