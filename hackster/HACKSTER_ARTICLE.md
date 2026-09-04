@@ -566,7 +566,7 @@ Arjun forked the repository that same evening and opened an issue list for his f
 
 Ravi's first complaint was not downtime. It was the bin.
 
-A calendar service changes a bearing whether it needed changing or not, and after the compressor his shop shortened the cycle, which only threw the parts away faster. Most of what comes out of a machine on a service schedule is still serviceable. The 6004 on the left of the photographs above is genuinely finished. The three that came out beside it over the years were not.
+A calendar service changes a bearing whether it needed changing or not, and after the compressor his shop shortened the cycle, which only threw the parts away faster. Most of what comes out of a machine on a service schedule is still serviceable. The worn bearings in the photographs above are genuinely finished, and they were kept because a finished bearing is what a fault class needs. The ones that come out beside them on a calendar mostly are not.
 
 - **Parts get replaced when the machine asks.** Condition tells you which bearing is going, so the other ten stay in the machine instead of in the bin.
 - **The machine survives its own fault.** A bearing caught early is a bearing. A bearing caught after the shaft has been running on it is a rotor, a housing and a week of work. Stopping the motor at the fault is what keeps a repair a repair.
