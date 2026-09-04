@@ -47,6 +47,7 @@ for f in d*.py; do ../.venv/bin/python "$f"; done
 | `gen/d12_software_architecture.py` | `12-software-architecture.png` | Ch. 10 |
 | `gen/d13_tab_map.py` | `13-dashboard-tabs.png` | Ch. 9 |
 | `gen/d14_two_brains.py` | `14-two-brains.png` | Ch. 2 |
+| `gen/d16_system_overview.py` | `16-system-overview.png` | Hackster article, sec. 2.2 |
 | `gen/d15_code_structure.py` | `15a`…`15f` (six figures) | S5 (code structure) |
 
 `gen/d15_code_structure.py` is the exception to one-script-one-diagram: it

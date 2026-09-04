@@ -70,8 +70,8 @@ During his research he found [an open-source project on GitHub](https://github.c
 
 # 2.2 The Whole System in One Picture
 
-[IMAGE: report/diagrams/05-full-architecture.png]
-*Sensors on the left, the UNO Q in the middle, people and the motor on the right.*
+[IMAGE: report/diagrams/16-system-overview.png]
+*Sensor nodes on the left, the UNO Q in the middle, what it tells you and what it stops on the right.*
 
 Arjun explained the system to his father, part by part.
 
