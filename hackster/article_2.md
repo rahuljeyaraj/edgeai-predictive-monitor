@@ -44,13 +44,12 @@
               base-station-build.jpg and satellite-build.jpg before
               uploading.
 
-     VIDEO:   Section 2.1 carries the only video, one continuous unedited take
-              of a real trip on the rig. Not yet shot, not yet published. It is
-              the hook: Arjun watches it, then calls his father over. Shoot it
-              in one run: healthy, fault induced on camera, drift crossing the
-              fault line, the countdown with Hold offered, the motor stopping,
-              the dome going red. Upload it and paste the URL into the embed.
-              An embed with no URL is worth nothing at judging time.
+     VIDEO:   Section 2.1 carries the only video, the full demo walkthrough on
+              YouTube (8h05_KkEtwQ, public, 12:53). It is the hook: Arjun
+              watches it, then calls his father over. Shot and uploaded, NOT
+              yet embedded on the published page. Paste the URL into the embed
+              itself, not just the caption. An embed with no URL is worth
+              nothing at judging time.
 
      NOTE:    Image lines carry the caption exactly as published. Where the
               published image is a photo or an AI-generated render rather than
@@ -92,12 +91,12 @@ He shrugged. "We're too small to be a customer."
 
 Arjun, Ravi's son, was in his final year of engineering and had heard the compressor story at one family dinner too many. Over the holidays he decided to build his father a sensor himself.
 
-During his research he found an open-source project on GitHub. The [EdgeAI Predictive Monitor](https://github.com/rahuljeyaraj/edgeai-predictive-monitor), built on the Arduino UNO Q. He read the whole repository in one sitting, and the last thing he opened was the demo video.
+During his research he found an open-source project on GitHub. The [EdgeAI Predictive Monitor](https://github.com/rahuljeyaraj/edgeai-predictive-monitor), built on the Arduino UNO Q. He read the whole repository in one sitting, and the demo video made the rest of it clear.
 
-[VIDEO: demo of one real trip, continuous and unedited, fault induced on camera. Upload it and paste the URL. A marker with no URL scores nothing.]
-*One take, from healthy to a named fault to a stopped motor.*
+[VIDEO: https://www.youtube.com/watch?v=8h05_KkEtwQ]
+*EdgeAI Predictive Monitor Demo Video.*
 
-One take, no cuts. A rig running healthy, a fault introduced on camera, the drift line climbing past the fault line, the banner naming the fault and counting down with a Hold button offered, and the motor stopping on its own. The dome on the node turned red and stayed red.
+The whole system on a bench rig, start to finish. A machine commissioned from scratch, a fault induced and named, and the motor stopped by the system itself while nobody touched it.
 
 He watched it a second time.
 
