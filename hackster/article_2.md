@@ -22,12 +22,14 @@
               names faults, stops the machine to protect it - no cloud, no
               subscription.
 
-     STATUS:  This is the REWRITE (article 2). Chapter 1, the components list
-              and Appendix B below are transcribed verbatim from the currently
-              published article. Chapter 2 is new. Later chapters still to come.
+     STATUS:  This is the REWRITE (article 2). Chapters 1 and 2 and both
+              appendices below match the currently published article, synced
+              from the live page on 2026-09-04. Later chapters still to come.
 
-     NOTE:    On the live page the components list sits with NO heading above
-              it, directly after 1.3. Copied here as published. Needs a heading.
+     NOTE:    Image lines carry the caption exactly as published. Where the
+              published image is a photo or an AI-generated render rather than
+              a repo diagram, the [IMAGE: ...] line describes it instead of
+              naming a file.
      ========================================================================== -->
 
 # 1 Predictive Maintenance, Built for a Different Scale
@@ -48,7 +50,7 @@ He looked out over the floor.
 
 # 1.3 Sized for the Enterprise Floor
 
-"Every solution out there is built for a factory I don't have, " Ravi said. "You can't buy one sensor for the one machine that matters. [Fluke](https://www.fluke.com/en/product/condition-monitoring/vibration/3563) quoted me sixteen sensors, two gateways and sixteen software subscriptions." He shook his head. "[Tractian](https://tractian.com/en/solutions/condition-monitoring/vibration-sensor), [Augury](https://www.augury.com/machine-health-solutions/se/), same story, except they won't print a price at all. You fill in a form and wait for the call."
+"Every solution out there is built for a factory I don't have," Ravi said. "You can't buy one sensor for the one machine that matters. [Fluke](https://www.fluke.com/en/product/condition-monitoring/vibration/3563) quoted me sixteen sensors, two gateways and sixteen software subscriptions." He shook his head. "[Tractian](https://tractian.com/en/solutions/condition-monitoring/vibration-sensor), [Augury](https://www.augury.com/machine-health-solutions/se/), same story, except they won't print a price at all. You fill in a form and wait for the call."
 
 "And none of them decide anything at the machine. [Murata](https://video.murata.com/en-global/detail/video/6245856062001), [KCF](https://kcftech.com/solutions/smartsensing-suite/wireless-vibration-sensor/), all of them. The sensor talks to a gateway, the gateway talks to a computer in another country, and the answer comes back to me. There's no Wi-Fi past my office door. The compressor sits outside under a tin sheet." He opened his hand. "If the line drops, I'd have eleven glorified paperweights attached to my machines. Paperweights I'd still be paying a subscription on."
 
@@ -58,7 +60,7 @@ He looked out over the floor.
 
 He shrugged. "We're too small to be a customer."
 
-# 2 A Monitor Sized for small workshops
+# 2 Predictive Maintenance Using the Arduino UNO Q
 
 # 2.1 An Open-Source Build Instead of a Quote
 
@@ -70,7 +72,7 @@ During his research he found an open-source project on GitHub. The [EdgeAI Predi
 
 # 2.2 The Whole System in One Picture
 
-[IMAGE: report/diagrams/16-system-overview.png]
+[IMAGE: 17-system-overview-alt.png]
 *System overview*
 
 Arjun explained the system to his father, part by part.
@@ -78,7 +80,7 @@ Arjun explained the system to his father, part by part.
 # 2.3 Every Machine Gets a Sensor Node
 
 [IMAGE: Sensor node on a machine housing, held by its magnet.]
-*A node goes on in a second and comes off just as fast*
+*Every Machine Gets a Sensor Node (AI generated)*
 
 "A node is an accelerometer and a microphone in a small printed case, mounted on the machine housing with a strong magnet," he began. "The accelerometer feels vibration up to 6 kHz. The microphone hears sound up to 24 kHz. There are two types of node, a base station node and satellite nodes."
 
@@ -90,24 +92,24 @@ Arjun explained the system to his father, part by part.
 
 # 2.5 Machines Further Away Get a Satellite Node
 
-[IMAGE: report/diagrams/03-satellite-node-wiring.png]
-*A satellite node: the same sensors, a smaller processor, and Wi-Fi to the base station*
+[IMAGE: base station and satellite internal wiring, side by side]
+*Internal wiring of Base station and satellite nodes*
 
 "A satellite, on the other hand, is that same pair of sensors connected to a XIAO ESP32-S3," he went on. "It watches its own asset and sends the readings to the base station over Wi-Fi. The base station costs around $100. Every satellite node after that costs about $25, so the system scales cheaply."
 
 # 2.6 The Network Is Whatever the Shop Already Has
 
-[IMAGE: report/diagrams/09-onboarding.png]
-*Bringing a node onto the network from a phone*
+[IMAGE: Wi-Fi onboarding pages, base station and satellite side by side]
+*The Wi-Fi onboarding page of base station (left) and satellite (right)*
 
 "I guess we would need to set up a Wi-Fi network on the floor," Ravi said.
 
-"Not exactly," Arjun corrected. "If there is Wi-Fi on the floor, everything joins it, base station included. If there is none, the base station becomes the Wi-Fi access point itself, and the satellite nodes and the phone or laptop running the dashboard connect straight to it."
+"No," Arjun corrected. "If there is Wi-Fi on the floor, everything joins it, base station included. If there is none, the base station becomes the Wi-Fi access point itself, and the satellite nodes and the phone or laptop running the dashboard connect straight to it."
 
 # 2.7 Each Machine Is Taught Its Own Normal
 
 [IMAGE: report/diagrams/15f-setup-steps.png]
-*Commissioning an asset, step by step*
+*Commissioning steps*
 
 Ravi liked the flexibility of the system. He needed to know more. "How do we set up the sensor nodes with our machines?"
 
@@ -116,7 +118,7 @@ Ravi liked the flexibility of the system. He needed to know more. "How do we set
 # 2.8 Fault Detection Is Drift Away From That Normal
 
 [IMAGE: report/diagrams/04-feature-pipeline.png]
-*From raw vibration and sound to the 536 numbers the models read*
+*From raw vibration and sound to fault detection*
 
 "Each node reduces its raw signal to 536 numbers, five times a second," he continued. "That is 128 frequency bins and 6 summary values for each of four channels, the three vibration axes and the sound. During commissioning the model on the UNO Q learned to rebuild the healthy version of those numbers. Every reading after that, it rebuilds what it expects and compares it with what actually arrived. The bigger the difference, the further the machine has moved from healthy. Past a threshold set from that machine's own data, it reports a fault."
 
@@ -125,7 +127,7 @@ Ravi struggled at first, but he understood the gist of it.
 # 2.9 Fault Identification Names the Fault
 
 [IMAGE: report/diagrams/11-edge-impulse-flow.png]
-*Recording a fault, labelling it, and training the model that names it*
+*Fault identification steps*
 
 "The same 536 numbers feed a second model that names the type of fault, such as bearing wear, imbalance or a loose mount," Arjun said. "This one is trained per asset class instead of per machine, so a single model covers every pump in the shop. It needs recordings labelled with each fault, which the dashboard collects and uploads to Edge Impulse in a few clicks. That upload is the only step in the whole system that needs an internet connection."
 
@@ -136,7 +138,7 @@ Ravi struggled at first, but he understood the gist of it.
 # 2.10 Dashboard in Any Browser
 
 [IMAGE: report/diagrams/08-dashboard-anatomy.png]
-*The dashboard, and what an open machine shows*
+*Dashboard depiction*
 
 "So how will we monitor the health of the assets? Do we need to put it up on a monitor?" Ravi asked.
 
@@ -144,8 +146,10 @@ Ravi struggled at first, but he understood the gist of it.
 
 # 2.11 Status Light on Every Node
 
+[IMAGE: Row of nodes on machines, one showing red]
+*One glance down the row tells you which machine needs attention (AI generated)*
+
 [IMAGE: report/diagrams/18-status-light.gif]
-*Every colour and blink a node's ring can show*
 
 Ravi raised his concern. "But we do not have a person to spare to monitor the dashboard all day. All six of us are out on the floor, working alongside the machines."
 
@@ -153,12 +157,15 @@ Ravi raised his concern. "But we do not have a person to spare to monitor the da
 
 # 2.12 Fleet Summary on the Base Station
 
-[IMAGE: UNO Q LED matrix scrolling the fleet summary.]
-*The whole shop in one line, worst machine first*
+[IMAGE: led_matrix_1.gif - UNO Q LED matrix scrolling the fleet summary]
+*1 Tripped(TRP), 1 Faulty(FLT), 10 Offline(OFF), 1 Healthy(OK)*
 
 "And when some nodes are out of sight, you can still read the status of every machine without opening the dashboard," he added, encouraged by the happiness on his father's face. "The UNO Q's own LED matrix scrolls a one line summary of the whole fleet, worst status first. One glance on the way past tells you whether anything is wrong."
 
 # 2.13 Telegram Alert on a Phone
+
+[IMAGE: Alerts page next to a phone showing a Telegram alert]
+*The Alerts page, and what lands on a subscribed phone*
 
 "Scan the QR code on the dashboard once and that phone is subscribed to Telegram notifications. There is no account to create and no bot name to remember. We can select what alerts we need, either warnings and faults or faults only, and which machines, either the whole shop or a named few. The message carries the machine's name and the fault name."
 
@@ -169,7 +176,7 @@ Ravi raised his concern. "But we do not have a person to spare to monitor the da
 # 2.14 Physical AI, Not Just an Alert
 
 [IMAGE: report/diagrams/07-trip-sequence.png]
-*From a confirmed fault to a stopped machine*
+*Fault detected and named Unbalanced, 10 seconds to press Hold; if not held it trips, and stays tripped until acknowledged*
 
 "It also has the feature you were looking for," Arjun said. "When a fault is confirmed, the system stops the machine itself to prevent further damage, and it stays stopped until someone clears it. It announces itself first: a banner counts down for 10 seconds, names the machine, and offers a Hold button for the case where the machine has to keep running."
 
