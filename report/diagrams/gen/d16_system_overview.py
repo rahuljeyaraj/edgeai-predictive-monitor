@@ -38,52 +38,55 @@ c.box(460, 180, 650, 180, "Microcontroller",
       ["reads the sensors", "FFT + statistics"],
       role="sense", title_size=TITLE, body_size=BODY)
 c.box(460, 400, 650, 170, "Linux processor",
-      ["detection model, one per machine",
-       "identification model, one per machine type",
+      ["detection model, one per asset",
+       "identification model, one per asset class",
        "dashboard web server", "alerts and trip logic"],
       role="brain", title_size=TITLE, body_size=BODY)
 
 c.link([(370, 240), (460, 240)], label="SPI", label_size=12)
 c.link([(370, 340), (460, 340)], label="I²S", label_size=12)
-c.link([(785, 360), (785, 400)], label="536 numbers, 5 times a second",
-       label_size=12)
+c.link([(785, 360), (785, 400)], label="UART · SPI", label_size=12, both=True)
 
 # --------------------------------------------------------- satellite node
 # Same two sensors, a different board. The only thing that changes is how the
 # numbers reach the Linux processor.
-c.group(34, 690, 740, 250, "Satellite node", role="sense")
+for off in (32, 16):
+    c.raw(f'<rect x="{34 + off}" y="{670 + off}" width="740" height="250" rx="13" '
+          f'fill="#FFFFFF" stroke="#8C9AA8" stroke-width="1.2" '
+          f'stroke-dasharray="8,5"/>')
+c.group(34, 670, 740, 250, "Satellite node × N", role="sense")
 
-c.box(70, 730, 260, 80, "Accelerometer", role="sense", title_size=TITLE)
-c.box(70, 830, 260, 80, "Microphone", role="sense", title_size=TITLE)
-c.box(430, 740, 310, 160, "XIAO ESP32-S3",
+c.box(70, 710, 260, 80, "Accelerometer", role="sense", title_size=TITLE)
+c.box(70, 810, 260, 80, "Microphone", role="sense", title_size=TITLE)
+c.box(430, 720, 310, 160, "XIAO ESP32-S3",
       ["reads the sensors", "FFT + statistics"],
       role="sense", title_size=TITLE, body_size=BODY)
 
-c.link([(330, 770), (430, 770)], label="SPI", label_size=12)
-c.link([(330, 870), (430, 870)], label="I²S", label_size=12)
-c.link([(585, 740), (585, 570)], label="Wi-Fi · MQTT", label_size=12)
+c.link([(330, 750), (430, 750)], label="SPI", label_size=12)
+c.link([(330, 850), (430, 850)], label="I²S", label_size=12)
+c.link([(585, 720), (585, 570)], label="Wi-Fi · MQTT", label_size=12)
 
 # ------------------------------------------------------- tells and action
-c.box(1300, 150, 500, 92, "Status dome on every node", role="tell",
+c.box(1300, 140, 500, 92, "Status dome on every node", role="tell",
       title_size=TITLE)
-c.box(1300, 262, 500, 92, "LED matrix on the base station", role="tell",
+c.box(1300, 240, 500, 92, "LED matrix on the base station", role="tell",
       title_size=TITLE)
-c.box(1300, 374, 500, 92, "Dashboard in any browser", role="tell",
+c.box(1300, 340, 500, 92, "Dashboard in any browser", role="tell",
       title_size=TITLE)
-c.box(1300, 486, 500, 92, "Telegram on a phone", role="tell",
+c.box(1300, 440, 500, 92, "Telegram on a phone", role="tell",
       title_size=TITLE)
 
 # The four outputs share one exit point and one riser, so they read as a
 # single fan-out. The stop gets its own riser lower down, clear of that bus.
-for entry in (196, 308, 420, 532):
-    c.link([(1110, 485), (1220, 485), (1220, entry), (1300, entry)],
+for entry in (186, 286, 386, 486):
+    c.link([(1110, 460), (1220, 460), (1220, entry), (1300, entry)],
            kind="arrowTell")
 
 c.box(1300, 695, 500, 130, "Stop the machine",
       ["10 second countdown, then the motor stops",
        "stays stopped until someone clears it"],
       role="act", title_size=TITLE, body_size=BODY)
-c.link([(1110, 560), (1270, 560), (1270, 760), (1300, 760)],
+c.link([(1110, 545), (1270, 545), (1270, 760), (1300, 760)],
        kind="arrowAct", width=2.4)
 
 # ----------------------------------------------------------- the one link
