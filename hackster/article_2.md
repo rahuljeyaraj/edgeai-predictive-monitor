@@ -22,9 +22,19 @@
               names faults, stops the machine to protect it - no cloud, no
               subscription.
 
-     STATUS:  This is the REWRITE (article 2). Chapters 1 and 2 and both
-              appendices below match the currently published article, synced
-              from the live page on 2026-09-04. Later chapters still to come.
+     STATUS:  This is the REWRITE (article 2). Chapters 1 and 2 match the
+              currently published article, synced from the live page on
+              2026-09-04. Chapter 3 is NEW and not yet published.
+
+              The two appendices (Bill of Materials, Schematics) have been
+              REMOVED. Hackster's own "Things used in this project" section
+              already carries the full BOM with quantities, and the
+              Schematics resource section already carries the PDFs and the
+              KiCad zip. The three schematic images now sit inline in 3.6,
+              3.7 and 3.13, where they do work instead of repeating a
+              section further down the same page. Buy links and the
+              per-block grouping, the two things Hackster's BOM field
+              cannot express, moved into 3.3 and the linked repo doc.
 
      NOTE:    Image lines carry the caption exactly as published. Where the
               published image is a photo or an AI-generated render rather than
@@ -186,103 +196,216 @@ Ravi raised his concern. "But we do not have a person to spare to monitor the da
 
 "You found a gem," Ravi said with excitement.
 
-# Appendix A: Bill of Materials
-**Base station components**
+# 3 Building It
 
-- [Arduino UNO Q (4GB, ABX00173)](https://robu.in/product/official-arduino-uno-q-4gb-single-board-computer-abx00173/) *(×1)*
+# 3.1 Two Pages and a Repository
 
-- [KX134-1211 SPI accelerometer](https://robu.in/product/smartelex-triple-axis-accelerometer-breakout-kx134/) *(×1)*
+Ravi had heard enough. "Can we build it?"
 
-- [INMP441 I2S MEMS microphone](https://robu.in/product/inmp441-mems-high-precision-omnidirectional-microphone-module-i2s/) *(×1)*
+Arjun had already found the two pages he needed. "The whole thing is one GitHub repository," he said. "There is a [parts list](https://github.com/rahuljeyaraj/edgeai-predictive-monitor/blob/main/docs/BILL_OF_MATERIALS.md) that tells you exactly what to buy and where, and a [build guide](https://github.com/rahuljeyaraj/edgeai-predictive-monitor/blob/main/docs/BUILD_GUIDE.md) that goes from an empty bench to a machine being watched. Everything else in the repo is those two pages in more detail."
 
-- [8 Bit WS2812B 5050 addressable RGB LED](https://robu.in/product/8bit-ws2812-5050-rgb-led-built-full-color-driving-lights-circular-development-board/) *(×1)*
+What follows is the same route, in order. Every step links to the file that carries the full version.
 
-- [9W LED bulb, for status dome diffuser](https://www.amazon.in/Crompton-Dyna-Round-Cool-Light/dp/B0B6FJNH97/ref=sr_1_7?crid=1WFL4GPO6P5LR&dib=eyJ2IjoiMSJ9.XyZtwgJUEsfIg3kZ7nFTImsLPe5r1mEJa_H20SUz3olKYCbFgZnkmbyhoA-Wla8CEQkV5t__DHhqnMopYsJL-56zZykWqQbgYFST9za5VwhseFFIIwoWvLKliusMA28RmbJe0Dy1pFeW7hyzVbY_tmK4HiCHaGcKcNTdNRIQsBpR1Pkqf18r6akvuweK5o3geswtYcHDecuRpcsAYa0WPkUe2RR2veMZwjC00RlY0zwl7nMjOlcNKf0uPb91fHCUvCpKs_Pn4DdT7N3zQZ6mRXZNQLF_SAy_OqcL-PW_6ls.a3O5yF9NfaExtQIvBHhLP1AZ89IPo-RTNP8CqGYTZdQ&dib_tag=se&keywords=bulb&qid=1788412570&sprefix=bul%2Caps%2C285&sr=8-7&th=1) *(×1)*
+# 3.2 He Ran It on His Laptop First
 
-- [JST-XH 2.54 connector, straight, 8-pin, male and female ](https://makerbazar.in/products/male-female-connector-straight?variant=46140555493616) *(×2)*
+Before spending a rupee, Arjun ran the whole system on his own laptop.
 
-- [JST-XH 2.54 connector, straight, 6-pin, male and female](https://makerbazar.in/products/male-female-connector-straight?variant=46137886703856) *(×1)*
+This is not a demo mode. The dashboard, the feature pipeline, the model, the commissioning flow, the thresholds and the classifier are the same code that runs on the board. Only the sensor is replaced, by a simulator that speaks the real wire protocol and replays real recorded vibration.
 
-- [JST-XH 2.54 connector, straight, 4-pin, male and female](https://makerbazar.in/products/male-female-connector-straight?variant=46134456320240) *(×1)*
+You need an MQTT broker on the machine first:
 
-- [JST-XH 2.54 connector, straight, 3-pin, male and female](https://makerbazar.in/products/male-female-connector-straight?variant=46134287663344) *(×3)*
+```
+sudo apt-get install -y mosquitto mosquitto-clients
+sudo systemctl enable --now mosquitto
+```
 
-- [JST-XH 2.54 connector, straight, 2-pin, male and female](https://makerbazar.in/products/male-female-connector-straight?variant=46134287630576) *(×1)*
+Then:
 
-- [Fresnel lens, to magnify the UNO Q's onboard LED matrix](https://www.amazon.in/oddpodTM-Fresnel-Flexible-Plastic-Magnifying/dp/B09MDH1LLH/ref=sr_1_1_sspa?crid=15NRC4QY9W8UQ&dib=eyJ2IjoiMSJ9.W6--pKYA_WKD0qSAiCZT9glSF_zmv35_dfK5xX253EV5jR1ZoGAlBQEJsIQSz7_2xbTHw-3cS-tj06nlukxe_n2u1fVmGhPvNDCu6DOzYzonENBbMeFeWE_KzRWtjJufpoChvXfRXhRSRnNHxdWgqWhqCTQgkszOXg1JWmJyMdL0LiP1N5hBc2p7At-_U0xdoRbF7yvdTOarWMMyfRzKiIUcHhABQ0EC6LFC_gQLHm1ymoryIIfwNPtTzu7GwN0DIAG-_Yrda5ghZFderH2tRcRgYbelGK41hEmud_x1c6o.DDgGXdvarAm-pnInA3autvQTVCgMVfv8MnOUKfqVrVQ&dib_tag=se&keywords=Fresnel+lens%2C+credit-card+size&qid=1788412959&sprefix=fresnel+lens%2C+credit-card+size%2Caps%2C302&sr=8-1-spons&aref=OBkEda8tdN&sp_csd=d2lkZ2V0TmFtZT1zcF9hdGY&psc=1) *(×1)*
+```
+cd base-station
+./start_desktop_dashboard.sh
+```
 
-- [Neodymium ring magnet, N51, OD15×ID7×5mm](https://patelmagnets.com/shop/od15-x-id7-x-5mm-neodymium-magnet/) *(×1)*
+That builds a virtual environment, starts the application on port 8180 with its own isolated data directory so it can never touch a real device, starts a simulated node, and prints both URLs. About ten minutes, no hardware, nothing bought.
 
-- [USB-C cable](http://amazon.in/Ambrane-Unbreakable-Charging-Braided-Cable/dp/B098NS6PVG/ref=sr_1_2_sspa?crid=M9BW0AHOF6AB&dib=eyJ2IjoiMSJ9.lDE-98HKFWMOuV00UnZQHOVN8B6e1ItwlYioDRiJ4nXc2cuPCVFJBMaA1G48WfOmEbeSAwVOVVhkcdW9b3WzRGnPE_8BkUl1oUJ8cLlUCwQXWekKeqnNFT_7oQHZcoiAMP4k5K8eQDaJ1X4DwO1Z0L_zVQRjBarYWDu3Tqc3THQ5dbIoLQ96lzcQZ7Ggn6-nGWAbqr8RRERKQcV9Ay8ncqR_jk8qbLiEd00Ca5Kj_3Q.i-EkloM_9_VIAI6bsmrCfu1s_p7_eu7Rwzp0FTOlt9E&dib_tag=se&keywords=usb+c&qid=1788413060&sprefix=usb+%2Caps%2C295&sr=8-2-spons&aref=zH7AD8n1Nm&sp_csd=d2lkZ2V0TmFtZT1zcF9hdGY&psc=1) *(×1)*
+- `--nodes N` runs several simulated machines at once, each with its own control page
+- `--auto-online` skips the click that brings the node online
+- `--host 0.0.0.0` lets you open the dashboard from a phone to check the mobile layout
 
-**Satellite node components** *(for 2 nodes)*
+One thing you will not see is the base station's own machine. Its data arrives over a wired SPI link to a chip that does not exist on a laptop. Only the wireless nodes appear, and that is expected.
 
-- [Seeed XIAO ESP32-S3, satellite node MCU](https://robu.in/product/seeed-studio-xiao-esp32s3-2-4ghz-wifi-ble-5-0/) *(×2)*
+Full detail is in section 8 of the [build guide](https://github.com/rahuljeyaraj/edgeai-predictive-monitor/blob/main/docs/BUILD_GUIDE.md).
 
-- [KX134-1211 SPI accelerometer](https://robu.in/product/smartelex-triple-axis-accelerometer-breakout-kx134/) *(×2)*
+# 3.3 What to Buy
 
-- [INMP441 I2S MEMS microphone](https://robu.in/product/inmp441-mems-high-precision-omnidirectional-microphone-module-i2s/) *(×2)*
+The system is bought in blocks, not as a kit.
 
-- [8 Bit WS2812B 5050 addressable RGB LED](https://robu.in/product/8bit-ws2812-5050-rgb-led-built-full-color-driving-lights-circular-development-board/) *(×2)*
+- **One base station per shop.** The Arduino UNO Q, a KX134 accelerometer, an INMP441 microphone, a WS2812B ring, and the connectors and magnet that go with them. Around $100.
+- **One satellite node per additional machine.** A XIAO ESP32-S3 and the same three sensing parts. Around $25.
+- **The bench rig is optional.** An Arduino Uno, a CNC shield, three stepper drivers and three NEMA-17 motors. It is only needed to reproduce the measurements and to see the trip actually stop a motor.
 
-- [9W LED bulb, for status dome diffuser](https://www.amazon.in/Crompton-Dyna-Round-Cool-Light/dp/B0B6FJNH97/ref=sr_1_7?crid=1WFL4GPO6P5LR&dib=eyJ2IjoiMSJ9.XyZtwgJUEsfIg3kZ7nFTImsLPe5r1mEJa_H20SUz3olKYCbFgZnkmbyhoA-Wla8CEQkV5t__DHhqnMopYsJL-56zZykWqQbgYFST9za5VwhseFFIIwoWvLKliusMA28RmbJe0Dy1pFeW7hyzVbY_tmK4HiCHaGcKcNTdNRIQsBpR1Pkqf18r6akvuweK5o3geswtYcHDecuRpcsAYa0WPkUe2RR2veMZwjC00RlY0zwl7nMjOlcNKf0uPb91fHCUvCpKs_Pn4DdT7N3zQZ6mRXZNQLF_SAy_OqcL-PW_6ls.a3O5yF9NfaExtQIvBHhLP1AZ89IPo-RTNP8CqGYTZdQ&dib_tag=se&keywords=bulb&qid=1788412570&sprefix=bul%2Caps%2C285&sr=8-7&th=1) *(×2)*
+So one machine is about $100, three machines about $150, and ten machines about $325. The sensing parts are deliberately identical across every node, so they are one line item bought in bulk rather than a different list per machine.
 
-- [JST-XH 2.54 connector, straight, 6-pin, male and female](https://makerbazar.in/products/male-female-connector-straight?variant=46137886703856) *(×6)*
+Every part, with quantities and a direct purchase link for each, is in the [bill of materials](https://github.com/rahuljeyaraj/edgeai-predictive-monitor/blob/main/docs/BILL_OF_MATERIALS.md). It also lists the software and the bench tools, all of which are free.
 
-- [JST-XH 2.54 connector, straight, 4-pin, male and female](https://makerbazar.in/products/male-female-connector-straight?variant=46134456320240) *(×2)*
+# 3.4 Printing the Case
 
-- [JST-XH 2.54 connector, straight, 3-pin, male and female](https://makerbazar.in/products/male-female-connector-straight?variant=46134287663344) *(×4)*
+[IMAGE: PHOTO NEEDED - the printed shell, mount kit and bezel laid out before assembly]
 
-- [Neodymium ring magnet, N51, OD15×ID7×5mm](https://patelmagnets.com/shop/od15-x-id7-x-5mm-neodymium-magnet/) *(×2)*
+Thirteen printable parts live in [3d-models](https://github.com/rahuljeyaraj/edgeai-predictive-monitor/tree/main/3d-models), each supplied as both a ready-to-slice 3MF and a plain STL.
 
-- [USB-C cable](http://amazon.in/Ambrane-Unbreakable-Charging-Braided-Cable/dp/B098NS6PVG/ref=sr_1_2_sspa?crid=M9BW0AHOF6AB&dib=eyJ2IjoiMSJ9.lDE-98HKFWMOuV00UnZQHOVN8B6e1ItwlYioDRiJ4nXc2cuPCVFJBMaA1G48WfOmEbeSAwVOVVhkcdW9b3WzRGnPE_8BkUl1oUJ8cLlUCwQXWekKeqnNFT_7oQHZcoiAMP4k5K8eQDaJ1X4DwO1Z0L_zVQRjBarYWDu3Tqc3THQ5dbIoLQ96lzcQZ7Ggn6-nGWAbqr8RRERKQcV9Ay8ncqR_jk8qbLiEd00Ca5Kj_3Q.i-EkloM_9_VIAI6bsmrCfu1s_p7_eu7Rwzp0FTOlt9E&dib_tag=se&keywords=usb+c&qid=1788413060&sprefix=usb+%2Caps%2C295&sr=8-2-spons&aref=zH7AD8n1Nm&sp_csd=d2lkZ2V0TmFtZT1zcF9hdGY&psc=1) *(×2)*
+- For the base station, print `a1`, `a2` and `a3`
+- For each satellite, print `b1`, `b2` and `b3`
+- The `c` parts are the bench rig, and a deployment does not need them
 
-**Motor test rig components** *(validation only)*
+Each pod is three sub-assemblies: a two-piece snap-fit shell, a wall mount kit of two plates and a leg, and a front bezel. The base station's bezel carries a lens window over the UNO Q's LED matrix. The satellite's does not, because a satellite has no matrix.
 
-- [Arduino Uno R3](https://robu.in/product/arduino-uno-r3/) *(×1)*
+PLA+, 0.4mm nozzle, 0.2mm layers, 20% infill for the shells and 40% or more for the rig parts. No supports, because the plates are already oriented. There is an optional embossed wordmark for the shell face in [hardware/enclosure-logo](https://github.com/rahuljeyaraj/edgeai-predictive-monitor/tree/main/hardware/enclosure-logo), engraved rather than raised so a thin stroke cannot snap off.
 
-- [CNC Shield V3](https://robu.in/product/cnc-shield-v3-engraving-machine-3d-printer-a4988-drv8825-driver-expansion-board/) *(×1)*
+# 3.5 Making the Harnesses
 
-- [A4988 stepper driver](https://robu.in/product/a4988-driver-stepper-motor-driver/) *(×3)*
+Every sensor connects through a JST-XH harness rather than soldered jumper wires, so a pod can be opened and a sensor swapped without touching an iron.
 
-- [NEMA-17 stepper motor, JK42HS48](https://robu.in/product/nema17-4-2-kgcm-stepper-motor/) *(×3)*
+- Cut the 10-wire ribbon into lengths, keeping the same colour order on every harness you make
+- Crimp a female pin onto each end and seat it in its housing
+- Tug-test every crimp before it goes in. A crimp that pulls out in your fingers will pull out under vibration, which is the only environment this project ever lives in
 
-- [12–24V DC power supply, ≥3A](https://robu.in/product/mean-well-lrs-150-12-12v-12-5a-150w-smps/) *(×1)*
+Solder the pin headers onto the accelerometer and microphone breakouts now if they did not ship fitted.
 
-- M6 × 18mm nut and bolt — flywheel mass and magnetic mounting of sensor nodes to the rig *(×51)*
+# 3.6 Wiring the Base Station
 
-- [Bearing, 6201 — pump rig](https://in.misumi-ec.com/vona2/detail/110310367019/?HissuCode=C-E6201ZZ&lisid=lisid_13082024_01&utm_source=google&utm_medium=ads&utm_campaign=Economy_Series_Commodity_Products_(IND)&utm_id=21522706028&gad_source=1&gad_campaignid=21522706028&gbraid=0AAAAAC-g747psV-_FD2obaK7wO82jWASa&gclid=Cj0KCQjwkt_UBhDMARIsALpnOAzC5870Ut7FRxvU0EEJXA2nIqoyIsDh_XwEncrZcWIqAkYYs-rjDvYaAmxNEALw_wcB) *(×2)*
+[IMAGE: report/diagrams/02b-base-station-schematic-kicad.png]
+*Base station wiring. Arduino UNO Q with the SPI accelerometer, the I2S microphone and the WS2812B status ring.*
 
-- [Bearing, 6004 — turbine rig](https://in.misumi-ec.com/vona2/detail/110310367019/?HissuCode=C-E6004ZZ&lisid=lisid_13082024_01&utm_source=google&utm_medium=ads&utm_campaign=Economy_Series_Commodity_Products_(IND)&utm_id=21522706028&gad_source=1&gad_campaignid=21522706028&gbraid=0AAAAAC-g747psV-_FD2obaK7wO82jWASa&gclid=Cj0KCQjwkt_UBhDMARIsALpnOAzoKeNz1912JANW-ZiETjOcf7qacKxKeHTyOLZcVev89tfoTkthYAEaAt_oEALw_wcB) *(×1)*
+Three peripherals hang off the real-time half of the board. Nothing hangs off the Linux half.
 
-- Wooden block, 200×100×20mm — motor rig base *(×3)*
+- Accelerometer SPI clock, data in and data out: D13, D12, D11
+- Accelerometer chip select: D8
+- Accelerometer buffer-full interrupt: D9
+- Microphone clock, frame sync and data: SCL, D10, A4
+- Status ring data in: D3
 
-**Shared / common components**
+Pins are given as the UNO Q's own silkscreen labels, which is what you actually push a wire into. The microphone's clock is the one signal without a D number. It comes out on the dedicated SCL pin, and the I2C peripheral is switched off to free it, since nothing here uses I2C.
 
-- [eSUN PLA+ Silver, 1.75mm spool — node enclosures](https://robu.in/product/esun-pla-1-75mm-3d-printing-filament-1kg-silver/) *(×1)*
+The schematics are real, editable KiCad projects rather than drawings, generated from Python so that changing a connection is a change to a script. They are in [hardware/kicad](https://github.com/rahuljeyaraj/edgeai-predictive-monitor/tree/main/hardware/kicad), and also attached to this project as PDFs and as a zip.
 
-- [eSUN PLA+ Orange, 1.75mm spool — node enclosures](https://robu.in/product/esun-pla-1-75mm-3d-printing-filament-1kg-orange/) *(×1)*
+# 3.7 Wiring a Satellite Node
 
-- [eSUN PLA+ Grey, 1.75mm spool — motor rig ](https://robu.in/product/esun-pla-1-75mm-3d-printing-filament-1kg-grey/) *(×2)*
+[IMAGE: report/diagrams/03b-satellite-node-schematic-kicad.png]
+*Satellite node wiring. XIAO ESP32-S3 with the same sensor set.*
 
-- [eSUN PLA+ Gold, 1.75mm spool — motor rig](https://robu.in/product/esun-pla-1-75mm-3d-printing-filament-1kg-gold/) *(×1)*
+- Accelerometer SPI clock, data in and data out: D8, D9, D10
+- Accelerometer chip select: D3
+- Accelerometer buffer-full interrupt: D2
+- Microphone word select: D0
+- Microphone bit clock: D1
+- Microphone data in: D4
+- Status ring data in: D5
 
-- [Multicolor flat ribbon cable, 10-wire, 1 meter](https://robu.in/product/multicolor-flat-ribbon-cable-10-cond-1meter/) *(×1)*
+The XIAO breaks out only eleven pins, so every assignment above exists to keep the fixed hardware SPI lines free for the accelerometer, the one peripheral that genuinely needs them.
 
-- [2515 JST-XH crimp terminal, female pins](https://makerbazar.in/products/2515-jst-xh-crimp-terminal-female-pins) *(×~100)*
+There is nothing to set per unit. A node takes its identity from its own Wi-Fi hardware address, so there is no ID to type, no jumper to solder and no build flag to change between one node and the next.
 
-# Appendix B: Schematics
+# 3.8 Closing Up the Pod
 
-[KiCad ](https://www.kicad.org/)source files and PDF exports for every schematic are bundled into a zip under Attachments. The images below are for quick browsing only.
+[IMAGE: PHOTO NEEDED - an assembled pod, opened, showing the board and the three harnesses]
 
-**Base station wiring**
+- Seat the board in the back half of the shell
+- Fit the Fresnel lens into the bezel window over the LED matrix, on the base station only
+- Pop the diffuser cap off a 9W LED bulb and fit it over the status ring. That cap is the status dome, and it is the only reason a bulb is on the parts list
+- Plug in the three harnesses and close the shell
+- Bolt the ring magnet into the mount foot with an M6 bolt through its bore, then attach the mount
 
-[IMAGE: Arduino UNO Q — SPI accelerometer, I2S microphone, WS2812B status ring.]
+Where the finished pod goes matters as much as which accelerometer is inside it. Mount it rigidly, as close to the bearing as the geometry allows. A soft or loose mount is a low-pass filter nobody asked for, and it strips out exactly the high-frequency content that early bearing faults live in.
 
-**Satellite node wiring**
+# 3.9 Bringing Up the Base Station
 
-[IMAGE: XIAO ESP32S3 — SPI accelerometer, I2S microphone, WS2812B status ring.]
+Three scripts configure things that sit outside the application, and each is run once per board:
 
-**Motor-driver rig wiring** *(validation only)*
+```
+cd base-station
+./provision-spi.sh
+./provision-baud.sh
+./provision-wifi.sh
+```
 
-[IMAGE: Arduino Uno + CNC Shield V3, one A4988/DRV8825 driver per stepper axis.]
+The middle one matters more than it looks. The Linux side's serial speed has to match the firmware's, and a mismatch breaks the whole link silently, with no error printed anywhere.
+
+Then open `base-station/sketch` in Arduino App Lab and flash it to the STM32. Finally:
+
+```
+cd base-station
+./start_dashboard.sh
+```
+
+That builds the Linux application, pushes it to the board, waits for its container and prints the board's own network address. Use that address, not a localhost one. A real shop floor has no cable to the board and no port forwarding, and testing through one hides problems you will meet later anyway.
+
+Open it, and the base station's own machine is already there. Nothing has been trained yet, but the sensing half of the loop is live and watchable: vibration and sound spectra, live traces, and a status ring that goes solid the moment real data starts arriving.
+
+# 3.10 Bringing Up a Satellite Node
+
+```
+cd satellite
+pio run
+pio run -t upload
+pio device monitor
+```
+
+No Wi-Fi credential is compiled in. A bench board being reflashed twenty times a day can pass one as a build flag, and the node will seed its storage on first boot and skip the setup page, but a real build passes nothing and that shortcut does nothing.
+
+If a node comes up but a sensor does not, there is a [bring-up guide](https://github.com/rahuljeyaraj/edgeai-predictive-monitor/blob/main/docs/SATELLITE_BRINGUP_GUIDE.md) that walks the board up one module at a time, telling you what to watch in the serial log at each stage.
+
+# 3.11 Putting the Nodes on the Shop Network
+
+[IMAGE: report/diagrams/09-onboarding.png]
+*Onboarding a node. Power it up, join its own network from a phone, fill in three fields, and it appears on the dashboard.*
+
+- **Power it up.** A node with nothing saved raises its own Wi-Fi network, named from its own hardware address, so ten unconfigured nodes on a bench are ten distinguishable networks rather than one collision
+- **Join it from any phone.** No app. The setup page opens by itself, using the same mechanism that airport Wi-Fi uses to push you to its login page
+- **Fill in three fields.** The shop's network name, its password, and the address of the base station, which comes pre-filled. It is a field rather than a fixed value because some networks block name lookup, and when they do a technician needs to type an address rather than reflash a board
+- **It tests before it saves.** Submitting does not blindly write. The node tries the credentials and only stores them on success, so a typo cannot strand a device on a machine you now need a ladder to reach
+- **It appears.** No pairing, no ID to type. The asset shows up the moment its first reading lands
+
+The base station onboards itself the same way, through its own hotspot and its Network tab.
+
+# 3.12 Teaching the First Machine Its Normal
+
+A node that is wired, flashed and online is still not monitoring anything. Every machine is taught its own normal once, from the dashboard, in four to six minutes. Press **Set up** on the asset and work through the six steps shown back in 2.7.
+
+- **Name and class.** Both required. The name is what an alert prints at two in the morning, and the class is what recordings are grouped by
+- **Off.** Switch the machine off and measure. This gives the sensor's own noise floor
+- **Running conditions.** Switch it on and record it under each way it normally runs. At least one, as many as it has
+- **Train.** The model, its statistics and its two thresholds are fitted on the board
+- **Trip output.** Optional, and only if a machine is wired to something that can stop it. Press Test and watch the machine actually stop, rather than picking from a dropdown and hoping
+- **Done.** The asset goes live
+
+Step two is the one instruction no computer can check. Nothing in the software can confirm the machine is really off, so the screen says so plainly. A baseline recorded while the machine is running teaches the system that its own vibration is silence, and nothing works properly again until it is re-measured.
+
+# 3.13 The Bench Rig That Proves the Trip
+
+[IMAGE: report/diagrams/06-motor-driver-rig-schematic-kicad.png]
+*Motor-driver rig wiring. Arduino Uno and a CNC Shield V3, one driver per stepper axis. Validation only.*
+
+None of this is needed to monitor a machine. It exists so that the fault detection and the trip can be proved on a bench rather than asserted.
+
+- Set each stepper driver's current limit with a multimeter before applying power. Too little skips steps, too much cooks the driver
+- Flash the Uno with PlatformIO, then start the rig host, which serves a control page and receives trips
+- Claim a motor at step five of that machine's setup. The control page then shows it with a PROTECTED badge naming the asset, and if the trip ever fires the card turns red and locks until a human presses Reset and re-arm
+
+[IMAGE: hackster/assets/IMG20260901093909.jpg]
+*Worn bearings on the left, new ones on the right. Swapping one in is how a real bearing fault gets recorded rather than simulated.*
+
+Faults are induced physically. A flywheel with a bolt circle takes M6 bolts, and moving or removing one produces a repeatable imbalance. Worn bearings go in to produce bearing wear. That is where the labelled recordings behind the fault naming came from.
+
+# 3.14 Everything in One Place
+
+- [The repository](https://github.com/rahuljeyaraj/edgeai-predictive-monitor), MIT licensed
+- [Bill of materials](https://github.com/rahuljeyaraj/edgeai-predictive-monitor/blob/main/docs/BILL_OF_MATERIALS.md), what to buy and where, including the free software and the bench tools
+- [Build guide](https://github.com/rahuljeyaraj/edgeai-predictive-monitor/blob/main/docs/BUILD_GUIDE.md), the long version of this chapter, including the paths that need no hardware
+- [3D models](https://github.com/rahuljeyaraj/edgeai-predictive-monitor/tree/main/3d-models), thirteen parts as 3MF and STL, also attached to this project
+- [KiCad schematics](https://github.com/rahuljeyaraj/edgeai-predictive-monitor/tree/main/hardware/kicad), editable projects, also attached to this project as PDFs
+- [The full report](https://github.com/rahuljeyaraj/edgeai-predictive-monitor/blob/main/report/REPORT.md), which is where every one of these decisions is argued rather than just stated
+
+"So we could have the compressor on it by the weekend," Ravi said.
+
+Arjun was already reading the parts list out loud.
