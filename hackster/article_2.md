@@ -36,8 +36,11 @@
               chapter carries only what those cannot, which is photographs
               of the build.
 
-     BLOCKING: Chapter 3 has EIGHT [PHOTO NEEDED] slots. The chapter is not
-              publishable until those are shot. Every other line is written.
+     IMAGES:  Chapter 3 carries exactly two photographs, one per node type,
+              each a five-view composite of the same build (exploded, wired,
+              closed, front, top). Save them into hackster/assets/ as
+              base-station-build.jpg and satellite-build.jpg before
+              uploading.
 
      NOTE:    Image lines carry the caption exactly as published. Where the
               published image is a photo or an AI-generated render rather than
@@ -203,62 +206,27 @@ Ravi raised his concern. "But we do not have a person to spare to monitor the da
 
 # 3.1 Full Build Instructions
 
-Order from the parts list, then work through the build guide in order. The photographs in the rest of this chapter show what each stage looks like when you get there.
+Order from the parts list, then work through the build guide in order. The two photographs below show what a finished node looks like, inside and out.
 
 - [Bill of materials](https://github.com/rahuljeyaraj/edgeai-predictive-monitor/blob/main/docs/BILL_OF_MATERIALS.md), every part with a quantity and a purchase link, plus the software and the bench tools
 - [Build guide](https://github.com/rahuljeyaraj/edgeai-predictive-monitor/blob/main/docs/BUILD_GUIDE.md), from an empty bench to a commissioned machine, including two paths that need no hardware at all
 - [3D models](https://github.com/rahuljeyaraj/edgeai-predictive-monitor/tree/main/3d-models), thirteen printable parts as 3MF and STL, also under Custom parts and enclosures on this page
 - [KiCad schematics](https://github.com/rahuljeyaraj/edgeai-predictive-monitor/tree/main/hardware/kicad), editable projects for all three boards, also under Schematics on this page
 
-# 3.2 Printed Enclosure Parts
+# 3.2 Base Station
 
-[PHOTO NEEDED: the printed shell halves, mount kit and bezel for one pod, laid out unassembled]
+[IMAGE: base-station-build.jpg - base station laid out and assembled, five views]
+*The base station: Arduino UNO Q, accelerometer, microphone and status ring, laid out and closed up.*
 
-Thirteen printable parts. A pod is three sub-assemblies: a two-piece snap-fit shell, a wall mount, and a front bezel.
+Every sensor plugs in on its own crimped harness, so the pod can be opened and a part swapped without a soldering iron. The accelerometer sits on its own plate against the shell wall, which is what couples it to the machine rather than to the board.
 
-# 3.3 Sensor Harnesses
+The white globe is the diffuser cap off a 9W LED bulb, and it is the status dome over the ring. The rectangular window on the top face holds a Fresnel lens over the UNO Q's own LED matrix, which is what makes the fleet summary readable from across a floor. The round port on the front is the microphone. The foot underneath takes the ring magnet, pressed in by hand.
 
-[PHOTO NEEDED: finished JST-XH harnesses next to the ribbon cable and crimp pins]
+# 3.3 Satellite Node
 
-Every sensor connects through a crimped JST-XH harness, so a pod can be opened and a sensor swapped without a soldering iron.
+[IMAGE: satellite-build.jpg - satellite node laid out and assembled, five views]
+*The satellite node: the same shell pattern and the same three sensors, scaled down for the XIAO ESP32-S3.*
 
-# 3.4 Base Station Assembly
+The satellite is deliberately the same build. Same sensors, same harnesses, same status dome, one USB-C cable for power. The only difference you can see is the front face, which has no lens window, because a satellite has no LED matrix to magnify.
 
-[PHOTO NEEDED: the Arduino UNO Q seated in the shell with the accelerometer, microphone and status ring connected]
-
-The accelerometer, the microphone and the status ring all connect to the UNO Q's microcontroller side. Nothing connects to its Linux side.
-
-# 3.5 Satellite Node Assembly
-
-[PHOTO NEEDED: the XIAO ESP32-S3 in the smaller shell with the same three sensors connected]
-
-The same three sensors on a XIAO ESP32-S3. There is nothing to configure per unit, since a node takes its identity from its own Wi-Fi hardware address.
-
-# 3.6 Status Dome and Matrix Lens
-
-[PHOTO NEEDED: the diffuser cap off a 9W LED bulb next to the bare WS2812B ring, and the Fresnel lens in the bezel window]
-
-The status dome is the diffuser cap off a cheap LED bulb. On the base station, a Fresnel lens sits in the bezel window to magnify the UNO Q's own LED matrix.
-
-# 3.7 Magnetic Mounting
-
-[PHOTO NEEDED: the ring magnet pressed into the mount foot, and the finished pod stuck to a machine housing]
-
-The ring magnet is an interference fit in the mount foot. It goes in with thumb pressure, with no fastener and no adhesive.
-
-Mount the pod rigidly and as close to the bearing as the machine allows. A soft or loose mount is a low-pass filter nobody asked for, and it strips out exactly the high-frequency content that early bearing faults live in.
-
-# 3.8 Fault Injection Hardware
-
-[PHOTO NEEDED: the assembled motor rig with the printed flywheel]
-
-[IMAGE: hackster/assets/IMG20260901093909.jpg]
-*Worn bearings on the left, new on the right.*
-
-Faults are induced physically rather than simulated. The printed flywheel carries a bolt circle, and moving or removing an M6 bolt produces a repeatable imbalance. Worn bearings go in to produce bearing wear. Those recordings are what the fault naming was trained on.
-
-# 3.9 First Run
-
-[PHOTO NEEDED: the finished pod on a machine with the dashboard open on a laptop or phone beside it]
-
-Flash, run one script, and the machine appears on the dashboard by itself. Commissioning it takes another four to six minutes.
+There is nothing to set per unit. A node takes its identity from its own Wi-Fi hardware address, so ten of these are ten distinct machines on the dashboard with no ID typed anywhere.
