@@ -77,67 +77,55 @@
               chapter carries only what those cannot, which is photographs
               of the build.
 
-     PAGE FIXES REQUIRED, from the 2026-09-04 cross-check of the live page
-              against this file. Each one is a defect on the page, not here.
+     PAGE FIXES REQUIRED, re-verified against the live page on 2026-09-04
+              after Rahul's first round of corrections. Only these remain.
 
-       LINKS  13 of this file's 14 links did not survive the paste. The page
-              has exactly ONE working outbound link, the github.com URL in the
-              conclusion. Every other one is plain text. Re-apply with the link
-              button:
-                1.3   Fluke, Tractian, Augury, Murata, KCF (five links, and
-                      they are what makes the "I actually priced this" story
-                      credible)
-                2.1   EdgeAI Predictive Monitor -> the repo
-                2.7   Edge Impulse project -> studio.edgeimpulse.com/studio/1092356
-                3.1   all four bullets: BOM, Build guide, 3D models, KiCad
-                4.1   project report -> report/REPORT.md
-                4.4   Edge Impulse project -> studio URL
-              The conclusion's link also lost its display text: it reads
-              "edgeai-predictive-monitor" where it should read the full
-              "github.com/rahuljeyaraj/edgeai-predictive-monitor".
+       1 NUMBERING. The Conclusion is still headed "5 Conclusion", so the page
+              has TWO chapter 5s, Planned Improvements and Conclusion. It must
+              read "6 Conclusion". 2.12 and 2.13 are already fixed.
 
-       NUMBERS Section numbering on the page is stale in three places:
-                2.14 -> must be 2.12 (Physical AI, Not Just an Alert)
-                2.15 -> must be 2.13 (No Server, No Subscription)
-                5 Conclusion -> must be 6 Conclusion; the page currently has
-                      TWO chapter 5s, Planned Improvements and Conclusion.
+       2 4.4 LITERAL ASTERISKS. Its first line still shows the raw
+              **541 captures taken from this rig**
+              Delete the four asterisks and bold that span with the B button.
 
-       MISSING 2.7 lost a whole paragraph. After "Exactly." and before the
-              microphone block quote it must read: "The Edge Impulse project is
-              public, so the impulse, the data and the trained model can all be
-              inspected. What it scores, and what one inference costs, is in
-              chapter 4."
+       3 4.4 PARAGRAPH TRAPPED IN A BULLET. The paragraph beginning
+              "A perfect score is a claim that deserves its caveat" runs on
+              from the end of the second bullet ("...affordable on the board.")
+              with no break, so it renders as part of that bullet. Put the
+              cursor before "A perfect", press Enter to break out of the list,
+              and make sure the bullet button is OFF for that paragraph.
 
-       BROKEN 4.4 has two formatting defects:
-                - Its first line shows the literal asterisks of
-                  **541 captures taken from this rig**. Delete the asterisks
-                  and use the B button.
-                - The "A perfect score is a claim that deserves its caveat"
-                  paragraph is swallowed inside the second bullet, running on
-                  from "...affordable on the board." with no break. It must be
-                  its own paragraph AFTER the list ends.
-              4.5's first bullet reads "widened the healthy spread 5.1." The
-              "x" is missing: it is 5.1x.
-
-       CAPTIONS Four captions on the page are the old wording:
+       4 CAPTIONS, four of them. These are NOT body text: each one lives in
+              the caption field of its image widget, so click the image in the
+              editor and edit the caption there. Current -> required:
                 2.3  "Every Machine Gets a Sensor Node (AI generated)"
-                     -> "Every machine gets a sensor node (AI generated)"
+                  -> "Every machine gets a sensor node (AI generated)"
                 2.3  "Internal wiring of Base station and satellite nodes"
-                     -> "Internal wiring of the base station and satellite nodes"
-                2.4  "...page of base station (left) and satellite (right)"
-                     -> "...page of the base station (left) and a satellite (right)"
-                4.4  the old long caption ending "built from recordings the
-                     dashboard uploaded: ..." -> the short one in this file.
+                  -> "Internal wiring of the base station and satellite nodes"
+                2.4  "The Wi-Fi onboarding page of base station (left) and
+                       satellite (right)"
+                  -> "The Wi-Fi onboarding page of the base station (left) and
+                       a satellite (right)"
+                4.4  "The trained fault identification model in Edge Impulse,
+                       built from recordings the dashboard uploaded: four fault
+                       classes, their confusion matrix, and the cost of one
+                       inference"
+                  -> "The trained fault identification model in Edge Impulse:
+                       four fault classes, their confusion matrix, and the cost
+                       of one inference"
 
-       TYPOS  2.3 "so the system scales cheaply" paragraph: the page spells it
-              "license", this file uses "licence" and the article is British
-              throughout. 2.3 also drops the closing quotation mark after
-              "two boards and a wire between them."
+       VERIFIED CORRECT on the page, do not re-check: all 12 outbound links
+              (an earlier audit here wrongly reported them missing; Hackster
+              writes href with SINGLE quotes, so grep for href=' not href="),
+              the 2.1 video embed, every number in chapter 4, the
+              muted-microphone block quote, 2.12's bullets, all of Planned
+              Improvements, 4.5's "5.1x", 2.3's "licence" and its closing
+              quotation mark, and the 2.12 / 2.13 section numbers.
 
-       OK     Verified correct on the page: the 2.1 video embed (it does carry
-              the real YouTube URL), the whole of chapter 4's numbers, the
-              muted-microphone block quote, all of 2.12's bullets, and every
-              item in Planned Improvements.
+       BY DESIGN, not a defect: 2.7 ends at "Exactly." and carries no Edge
+              Impulse paragraph. That paragraph was dropped deliberately
+              because 4.4 makes the same point beside the numbers. This file
+              matches the page.
 
      VIDEO:   Section 2.1 carries the only video, the full demo walkthrough on
               YouTube (8h05_KkEtwQ, public, 12:53). It is the hook: Arjun
@@ -257,8 +245,6 @@ Ravi struggled at first, but he understood the gist of it.
 "So we need to induce a fault and record that data, and later, when a similar fault happens, the system will alert us with the type of fault?"
 
 "Exactly."
-
-The [Edge Impulse project](https://studio.edgeimpulse.com/studio/1092356) is public, so the impulse, the data and the trained model can all be inspected. What it scores, and what one inference costs, is in chapter 4.
 
 > The microphone is muted in both models for now. This rig is not acoustically isolated, so a machine running next to it is heard as if it belonged to this one, and the sound channel is therefore zeroed before the feature vector reaches either model. Every result in chapter 4 is vibration alone, and restoring sound is the first item in chapter 5.
 
