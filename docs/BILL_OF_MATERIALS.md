@@ -2,9 +2,8 @@
 
 Everything you need to buy to build an EdgeAI Predictive Monitor.
 
-**This is the canonical parts list for the project.** The Hackster write-up and
-[`report/REPORT.md`](../report/REPORT.md) Appendix A carry a copy of it; if the
-three ever disagree, this file is the one that is right.
+**This is the canonical parts list for the project.** Anywhere else a part is
+mentioned, including the Hackster write-up, this file is the one that is right.
 
 Build steps that use these parts are in [`BUILD_GUIDE.md`](BUILD_GUIDE.md).
 Pin-by-pin wiring is in [`BUILD_GUIDE.md` §4.1 and §5.1](BUILD_GUIDE.md).
@@ -223,10 +222,12 @@ figure.
 ## 8. Notes on substitutions
 
 - **The accelerometer is the one part not to swap casually.** The KX134-1211 was
-  chosen for its bandwidth and its 512-byte hardware FIFO. Without that FIFO the
+  chosen for two reasons: it reaches 6 kHz, which is where early bearing faults
+  show up, and it has a 512-byte hardware FIFO. Without that FIFO the
   microcontroller needs servicing roughly every 39 microseconds at full rate,
-  which is a hostile interrupt load for a chip that also has FFTs to run. The
-  full rationale is in [`report/REPORT.md`](../report/REPORT.md) Appendix D.
+  which is a hostile interrupt load for a chip that also has FFTs to run.
+  Cheaper parts fail the first test; far more expensive ones buy accuracy this
+  application cannot use.
 - **The microphone can be any I2S MEMS part** with a 24-bit output, but the
   INMP441's pinout is what the printed shell's cutout matches.
 - **DRV8825 drivers work in place of A4988** on the rig, with a different

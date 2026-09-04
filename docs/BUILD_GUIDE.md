@@ -130,7 +130,13 @@ nothing in this project uses I2C.
 
 The editable schematic is
 [`hardware/kicad/base_station.kicad_sch`](../hardware/kicad/base_station.kicad_sch),
-with a one-page PDF next to it.
+with a one-page PDF next to it. Both tables in this guide are transcribed from
+the firmware itself, not from a drawing:
+[`base-station/sketch/accel_sampler.cpp`](../base-station/sketch/accel_sampler.cpp),
+[`mic_sampler.cpp`](../base-station/sketch/mic_sampler.cpp) and
+[`rgb_display.cpp`](../base-station/sketch/rgb_display.cpp) for this board,
+[`satellite/include/board_pins.h`](../satellite/include/board_pins.h) for the
+satellite.
 
 ### 4.2 Assemble the pod
 
@@ -140,8 +146,9 @@ with a one-page PDF next to it.
    cap is the status dome, and it is the only reason the bulb is on the parts
    list.
 4. Plug the three harnesses in and close the shell.
-5. Bolt the ring magnet into the mount foot with an M6 bolt through its 7 mm
-   bore, then attach the mount kit.
+5. Press the ring magnet into the mount foot. The pocket is sized as an
+   interference fit, so it goes in with thumb pressure and stays there. No
+   fastener and no adhesive.
 
 **Where you put the finished pod matters as much as which sensor you bought.**
 Mount it rigidly, as close to the bearing as the geometry allows. A soft or loose
@@ -213,12 +220,19 @@ to configure. With the token unset, every alert path no-ops cleanly.
 | Signal | Pin | Notes |
 |---|---|---|
 | KX134 SPI SCK / MISO / MOSI | D8 / D9 / D10 | The board's fixed hardware SPI pins |
-| KX134 chip select | D3 | |
-| KX134 INT1, buffer-full | D2 | |
-| INMP441 WS / LRCLK | D0 | |
-| INMP441 BCLK | D1 | |
-| INMP441 SD, data in | D4 | |
+| KX134 chip select | D6 | |
+| KX134 INT1, buffer-full | D7 | |
+| INMP441 BCLK / SCK | D1 | |
+| INMP441 WS / LRCLK | D2 | |
+| INMP441 SD, data in | D3 | |
 | WS2812B ring data in | D5 | |
+
+D0 and D4 are unused.
+
+**The KX134 breakout's silkscreen lies to you here.** It is a dual-protocol
+part, and the three SPI pins are screen-printed with their I2C-mode names:
+`SCL` is SPI clock, `ADR` is data out (MISO), and `SDA` is data in (MOSI). Wire
+by the electrical role above, not by the label you can read on the board.
 
 The XIAO ESP32-S3 breaks out only 11 GPIOs, so every assignment above is chosen
 to keep the fixed hardware SPI lines free for the accelerometer, the one
@@ -303,9 +317,35 @@ Setup state lives in memory only. Restart the dashboard mid-setup and the curren
 step restarts, because a batch resumed across a restart is worse data than a
 fresh one.
 
-Naming the fault type, rather than just detecting one, needs a second model
-trained through Edge Impulse. That flow is entirely dashboard-driven and is
-covered in [`report/REPORT.md`](../report/REPORT.md) Chapter 7.
+That is the whole of fault *detection*. Naming the fault type needs a second
+model, in [§6.1](#61-optional-naming-the-fault-type).
+
+### 6.1 Optional: naming the fault type
+
+Detection tells you a machine has drifted from healthy. The classifier names
+*what kind* of fault it is, and it is trained per asset class rather than per
+machine, so one model covers every pump in the shop.
+
+Five steps, and only one happens outside the dashboard.
+
+- **Record.** On the machine's row, open the **Record** drawer, type a label
+  such as `bearing_wear`, and capture the machine while that fault is present.
+- **Link.** On the **Classifier** tab, each asset class has a card. Press **Link
+  to Edge Impulse** and sign in. A project is created for that class over the
+  API; you never visit Studio to do it.
+- **Upload.** Push the labelled recordings to that project from the same card.
+  This is the only step in the entire system that needs an internet connection.
+- **Train.** This one step is deliberately left in Edge Impulse Studio. Tuning
+  DSP parameters and reading a confusion matrix is what Studio is for, and a
+  button in this dashboard would only have frozen one architecture forever. The
+  card links straight to the project.
+- **Fetch.** Press **Fetch trained model**. It runs the build, downloads the
+  deployment archive, extracts the `.tflite` and saves it under the class name.
+  It is a background job with progress streamed to the browser, because an Edge
+  Impulse build takes real minutes.
+
+From the moment that file lands, **every asset of that class is being
+classified**, with no restart and no per-node action.
 
 ---
 
@@ -467,5 +507,3 @@ python3 base-station/python/tools/gen_telemetry_schema.py
   satellite debugging when a module does not come up
 - [`Dashboard_LAN_Access_Guide.md`](Dashboard_LAN_Access_Guide.md) — reaching the
   dashboard from other machines
-- [`report/REPORT.md`](../report/REPORT.md) — why every one of these decisions was
-  made the way it was
