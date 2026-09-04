@@ -43,9 +43,7 @@ OUT_PNG = os.path.join(OUT_DIR, "18-status-light.png")
 # House style, borrowed from diagram_lib.py so this sits with the other 17.
 INK = (0x16, 0x20, 0x2B)
 INK_SOFT = (0x4A, 0x5A, 0x6A)
-INK_FAINT = (0x6B, 0x78, 0x87)
 PAPER = (0xFF, 0xFF, 0xFF)
-BAND = (0xF4, 0xF7, 0xFA)
 HAIRLINE = (0xD6, 0xDE, 0xE6)
 # The ring sits in a dark bezel on top of the node. Drawing it that way is
 # not decoration: on white paper an unlit LED and the IDLE white LED are the
@@ -95,7 +93,6 @@ PATTERN_WORDS = {
 # Layout (1x units).
 W = 1120
 MARGIN = 40
-TITLE_H = 102
 LAMP_R = 37          # lit disc
 DOME_R = 46          # dark bezel around it
 GLOW = 28            # halo reach beyond the disc
@@ -106,7 +103,7 @@ ROW_A1, ROW_A2 = SHARED[:4], SHARED[4:]
 COLS = 4
 COL_W = (W - 2 * MARGIN) // COLS
 
-SEC_A_Y = TITLE_H + 30
+SEC_A_Y = 40
 ROW_A1_Y = SEC_A_Y + 30
 ROW_A2_Y = ROW_A1_Y + CELL_H
 DIV_Y = ROW_A2_Y + CELL_H + 4
@@ -143,13 +140,6 @@ def build_background():
     img = Image.new("RGB", (W * S, H * S), PAPER)
     d = ImageDraw.Draw(img)
 
-    d.rectangle([0, 0, W * S, TITLE_H * S], fill=BAND)
-    d.line([MARGIN * S, TITLE_H * S, (W - MARGIN) * S, TITLE_H * S], fill=HAIRLINE, width=S)
-    d.text((MARGIN * S, 31 * S), "What the light on a node means",
-           font=font(30, bold=True), fill=INK, anchor="ls")
-    d.text((MARGIN * S, 60 * S), "One ring on the base station, one on every satellite. Same colours as the dashboard.",
-           font=font(17.5), fill=INK_SOFT, anchor="ls")
-
     d.text((MARGIN * S, SEC_A_Y * S), "Machine health  ·  every node",
            font=font(20, bold=True), fill=INK, anchor="ls")
     d.line([MARGIN * S, DIV_Y * S, (W - MARGIN) * S, DIV_Y * S], fill=HAIRLINE, width=S)
@@ -158,7 +148,7 @@ def build_background():
 
     rows = [(ROW_A1, ROW_A1_Y), (ROW_A2, ROW_A2_Y), (SATELLITE, ROW_B_Y)]
     lamps = []
-    f_name, f_desc, f_pat = font(22, bold=True), font(18), font(16.5)
+    f_name, f_desc, f_pat = font(22, bold=True), font(18), font(18)
     for items, row_y in rows:
         for (cx, cy), (label, desc, rgb, mode, period) in zip(cell_positions(items, row_y), items):
             ly = cy + LAMP_DY
@@ -166,8 +156,8 @@ def build_background():
                       fill=BEZEL, outline=BEZEL_EDGE, width=int(1.6 * S))
             d.text((cx * S, (cy + 140) * S), label, font=f_name, fill=INK, anchor="ms")
             d.text((cx * S, (cy + 168) * S), desc, font=f_desc, fill=INK_SOFT, anchor="ms")
-            d.text((cx * S, (cy + 194) * S), PATTERN_WORDS[(mode, period)],
-                   font=f_pat, fill=INK_FAINT, anchor="ms")
+            d.text((cx * S, (cy + 196) * S), PATTERN_WORDS[(mode, period)],
+                   font=f_pat, fill=INK_SOFT, anchor="ms")
             lamps.append((cx, ly, hex_rgb(rgb), mode, period))
     return img, lamps
 
