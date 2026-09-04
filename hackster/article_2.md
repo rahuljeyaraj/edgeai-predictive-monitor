@@ -206,9 +206,11 @@ Ravi raised his concern. "But we do not have a person to spare to monitor the da
 
 # 3.1 Full Build Instructions
 
-"So what do we do first?" Ravi asked.
+"So who do we call?" Ravi asked.
 
-"We order the parts," Arjun said. "Whoever built this wrote all of it down. Where every piece can be bought, what order to put them together in, even how to try it on a laptop before we spend anything."
+"Nobody." Arjun turned the laptop around. "It's all here. What to buy, where to buy it, and what to do with it when it arrives."
+
+Ravi scrolled to the bottom of the page and back up. "No forms."
 
 - [Bill of materials](https://github.com/rahuljeyaraj/edgeai-predictive-monitor/blob/main/docs/BILL_OF_MATERIALS.md), every part with a quantity and a purchase link, plus the software and the bench tools
 - [Build guide](https://github.com/rahuljeyaraj/edgeai-predictive-monitor/blob/main/docs/BUILD_GUIDE.md), from an empty bench to a commissioned machine, including two paths that need no hardware at all
