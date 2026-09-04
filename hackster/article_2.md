@@ -229,6 +229,6 @@ The white globe is the diffuser cap off a 9W LED bulb, and it is the status dome
 [IMAGE: satellite-build.jpg - satellite node laid out and assembled, five views]
 *The satellite node: the same shell pattern and the same three sensors, scaled down for the XIAO ESP32-S3.*
 
-The satellite is deliberately the same build. Same sensors, similar harnesses, same status dome, one USB-C cable for power. The only difference you can see is the front face, which has no lens window, because a satellite has no LED matrix to magnify.
+The satellite is deliberately the same build. Same sensors, similar harnesses, same status dome, one USB-C cable for power. The only difference you can see is the front face, which has no lens window, because a satellite has no LED matrix to magnify. The black sticker on the side is the Wi-Fi antenna.
 
 There is nothing to set per unit in software. A node takes its identity from its own Wi-Fi hardware address, so ten of these are ten distinct machines on the dashboard with no ID typed anywhere.
