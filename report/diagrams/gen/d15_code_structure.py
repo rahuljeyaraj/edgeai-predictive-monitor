@@ -276,32 +276,24 @@ save(c, "15e-trip-path", scale=SCALE)
 # ====================================================== 15f -- guided setup
 
 # setup_controller.py:72 STEPS, :79 SKIPPABLE_STEPS. Operator-facing titles
-# from frontend/setup.js:40-47.
-c = Canvas(
-    900, 780,
-    title="The guided setup",
-    subtitle="Six steps, run once per machine. None of this is in the live scoring path.",
-    footnotes=[("api/setup_controller.py owns the step order only — each step drives a "
-                "controller that already existed.", None)],
-)
+# from frontend/setup.js:40-47. Bare flowchart: no title band, no footnote --
+# this one is placed under its own prose heading.
+c = Canvas(460, 550, margin=20)
 
 STEPS = [
-    (150, "1 · Name & class", "name the asset"),
-    (238, "2 · Machine off", "learn what stopped looks like"),
-    (326, "3 · Machine running", "collect healthy data"),
-    (414, "4 · Train", "fit the model on the board"),
-    (502, "5 · Stop output", "wire the trip — skippable"),
-    (590, "6 · Done", "live and scoring"),
+    (20, "1 \u00b7 Name & class", "name the asset"),
+    (108, "2 \u00b7 Machine off", "learn what stopped looks like"),
+    (196, "3 \u00b7 Machine running", "collect healthy data"),
+    (284, "4 \u00b7 Train", "fit the model on the board"),
+    (372, "5 \u00b7 Stop output", "wire the trip \u2014 skippable"),
+    (460, "6 \u00b7 Done", "live and scoring"),
 ]
 for y, title, sub in STEPS:
     role = "ghost" if "skippable" in sub else "neutral"
-    c.box(250, y, 400, 70, title, [sub], role=role,
+    c.box(30, y, 400, 70, title, [sub], role=role,
           title_size=TITLE - 1, body_size=BODY - 0.5)
 
-for y in (150, 238, 326, 414, 502):
-    c.link([(450, y + 70), (450, y + 88)], kind="arrowSoft")
-
-c.text(450, 700, "step 5 is the only skippable one  (setup_controller.py:79)",
-       size=BODY, anchor="middle", fill=INK_SOFT)
+for y in (20, 108, 196, 284, 372):
+    c.link([(230, y + 70), (230, y + 88)], kind="arrowSoft")
 
 save(c, "15f-setup-steps", scale=SCALE)
