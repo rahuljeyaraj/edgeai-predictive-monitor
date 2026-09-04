@@ -22,15 +22,38 @@
               names faults, stops the machine to protect it - no cloud, no
               subscription.
 
-     STATUS:  This is the REWRITE (article 2). Chapters 1 to 3 match the
-              currently published article, synced from the live page on
-              2026-09-04, except for three small wordings in 3.2 and 3.3 that
-              are edited here and not yet edited on the page. The video embed
-              in 2.1 is NEW and not yet published.
+     STATUS:  This is the REWRITE (article 2). It has diverged from the
+              currently published page and REPLACES it wholesale rather than
+              patching it. Differences from the live page, all unpublished:
 
-              Chapters 4 and 5 are NEW and not yet published, as is the block
-              quote at the end of 2.9 stating that the microphone is muted in
-              both models.
+              - Chapter 2 was restructured. The old 2.3, 2.4 and 2.5 (node,
+                base station, satellite) are merged into one 2.3, so Ch 2 now
+                runs 2.1 to 2.13 instead of 2.1 to 2.15. Every section number
+                after 2.3 has shifted down by two.
+              - The Ravi/Arjun dialogue now stops after 2.7. Sections 2.8 to
+                2.12 are straight narration. Dialogue returns once at 3.1 as a
+                deliberate bookend to the sales calls in 1.3.
+              - 2.12 (Physical AI) is substantially expanded. It is the one
+                capability none of the commercial products in 1.3 have, and it
+                now says so explicitly, including the honest motion-not-power
+                limit.
+              - The muted-microphone block quote in 2.7 is cut to two
+                sentences and now points forward to chapters 4 and 5.
+              - Chapter 4 (Measured Results) is NEW. Every figure in it is
+                taken from report/REPORT.md ch 12, which recorded them off the
+                physical rig. Do not add a number to this chapter that is not
+                already measured and written down there.
+              - Planned Improvements is now chapter 5 and Conclusion is
+                chapter 6.
+
+              OUTSTANDING: 4.4 deliberately does NOT quote a classifier
+              accuracy figure, because none is recorded anywhere in the repo
+              (report/REPORT.md I.5 still says FILL IN). Read it off the Edge
+              Impulse Studio page and add one bullet to 4.4 with the accuracy
+              and the per-inference cost. The 59.82% and 69.64% in REPORT.md
+              I.3 are from the STALE Kaggle-replay phase and must not be used.
+
+              The video embed in 2.1 is NEW and not yet published.
 
               The two appendices (Bill of Materials, Schematics) have been
               REMOVED. Hackster's own "Things used in this project" section
@@ -41,17 +64,6 @@
               docs/BILL_OF_MATERIALS.md and docs/BUILD_GUIDE.md, and this
               chapter carries only what those cannot, which is photographs
               of the build.
-
-     IMAGES:  Section 2.9 carries a screenshot of the Edge Impulse model page.
-              Save it into hackster/assets/ as edge-impulse-model.png before
-              uploading, and replace PUBLIC_EI_URL in that section with the
-              project's public Studio URL.
-
-              Chapter 3 carries exactly two photographs, one per node type,
-              each a five-view composite of the same build (exploded, wired,
-              closed, front, top). Save them into hackster/assets/ as
-              base-station-build.jpg and satellite-build.jpg before
-              uploading.
 
      VIDEO:   Section 2.1 carries the only video, the full demo walkthrough on
               YouTube (8h05_KkEtwQ, public, 12:53). It is the hook: Arjun
@@ -118,45 +130,41 @@ He watched it a second time.
 
 Arjun explained the system to his father, part by part.
 
-# 2.3 Every Machine Gets a Sensor Node
+# 2.3 One Base Station, Ten Satellites
 
 [IMAGE: Sensor node on a machine housing, held by its magnet.]
-*Every Machine Gets a Sensor Node (AI generated)*
+*Every machine gets a sensor node (AI generated)*
 
-"A node is an accelerometer and a microphone in a small printed case, mounted on the machine housing with a strong magnet," he began. "The accelerometer feels vibration up to 6 kHz. The microphone hears sound up to 24 kHz. There are two types of node, a base station node and satellite nodes."
+"A node is an accelerometer and a microphone in a small printed case, mounted on the machine housing with a strong magnet," he began. "The accelerometer feels vibration up to 6 kHz. The microphone hears sound up to 24 kHz. Every machine gets one. There are two kinds."
 
-# 2.4 One Arduino UNO Q Runs the Whole Shop
-
-"What is a base station?" Ravi asked.
-
-"The base station is the central node that takes all the decisions," Arjun said. "It is built around the powerful Arduino UNO Q board, which carries two processors. The microcontroller listens to the asset it is attached to through its sensors. The Linux processor receives that sensor data and runs the AI models for every node to detect faults. It also serves the dashboard and sends the alerts. Doing this on any other board means buying two boards and wiring them together."
-
-# 2.5 Machines Further Away Get a Satellite Node
+"The base station is the one that decides. It is built around the Arduino UNO Q, which carries two processors on one board. The microcontroller listens to the machine the base station is bolted to. The Linux processor takes that data, and the data from every other node, runs the AI models for all of them, serves the dashboard and sends the alerts. On any other board that is two boards and a wire between them."
 
 [IMAGE: base station and satellite internal wiring, side by side]
-*Internal wiring of Base station and satellite nodes*
+*Internal wiring of the base station and satellite nodes*
 
-"A satellite, on the other hand, is that same pair of sensors connected to a XIAO ESP32-S3," he went on. "It watches its own asset and sends the readings to the base station over Wi-Fi. The base station costs around $100. Every satellite node after that costs about $25, so the system scales cheaply."
+"A satellite is the same pair of sensors on a XIAO ESP32-S3. It watches its own machine and sends readings to the base station over Wi-Fi. It makes no decisions and holds no model."
 
-# 2.6 The Network Is Whatever the Shop Already Has
+"The base station costs around $100. Every satellite after that is about $25, so the eleventh machine costs $25 to cover, not another licence."
+
+# 2.4 The Network Is Whatever the Shop Already Has
 
 [IMAGE: Wi-Fi onboarding pages, base station and satellite side by side]
-*The Wi-Fi onboarding page of base station (left) and satellite (right)*
+*The Wi-Fi onboarding page of the base station (left) and a satellite (right)*
 
 "I guess we would need to set up a Wi-Fi network on the floor," Ravi said.
 
 "No," Arjun corrected. "If there is Wi-Fi on the floor, everything joins it, base station included. If there is none, the base station becomes the Wi-Fi access point itself, and the satellite nodes and the phone or laptop running the dashboard connect straight to it."
 
-# 2.7 Each Machine Is Taught Its Own Normal
+# 2.5 Each Machine Is Taught Its Own Normal
 
 [IMAGE: report/diagrams/15f-setup-steps.png]
 *Commissioning steps*
 
 Ravi liked the flexibility of the system. He needed to know more. "How do we set up the sensor nodes with our machines?"
 
-"Every new asset is commissioned once from the dashboard, and it takes only a few minutes," Arjun said patiently. "The node records the asset while it is idle and again while it runs under each of its normal operating conditions, and a model is trained on the base station from those recordings. Nothing is downloaded and no factory average is used. Different assets such as Pump 1 and Pump 2 end up with their own models, each judged against itself."
+"Every new asset is commissioned once from the dashboard, and it takes only a few minutes," Arjun said. "The node records the asset while it is idle and again while it runs under each of its normal operating conditions, and a model is trained on the base station from those recordings. Nothing is downloaded and no factory average is used. Different assets such as Pump 1 and Pump 2 end up with their own models, each judged against itself."
 
-# 2.8 Fault Detection Is Drift Away From That Normal
+# 2.6 Fault Detection Is Drift Away From That Normal
 
 [IMAGE: report/diagrams/04-feature-pipeline.png]
 *From raw vibration and sound to fault detection*
@@ -165,7 +173,7 @@ Ravi liked the flexibility of the system. He needed to know more. "How do we set
 
 Ravi struggled at first, but he understood the gist of it.
 
-# 2.9 Fault Identification Names the Fault
+# 2.7 Fault Identification Names the Fault
 
 [IMAGE: report/diagrams/11-edge-impulse-flow.png]
 *Fault identification steps*
@@ -181,58 +189,63 @@ Ravi struggled at first, but he understood the gist of it.
 
 The [Edge Impulse project](https://studio.edgeimpulse.com/studio/1092356) is public, so the impulse, the data and the trained model can all be inspected.
 
-> The microphone is currently muted in both models. On this rig it is not acoustically isolated: sound from a machine standing next to it is picked up as if it belonged to this one, which produces false fault flags and wrong fault names. Until the mounting is fixed, the sound channel is zeroed out before the feature vector reaches either model, and every decision shown here is made on vibration alone. With the microphone active and nothing else running nearby, both models do well on the combined vibration and sound signal, but that mode is not usable on a floor where several machines run at once. The dashboard still shows the live sound spectrum, and the frame format is unchanged.
+> The microphone is muted in both models for now. This rig is not acoustically isolated, so a machine running next to it is heard as if it belonged to this one, and the sound channel is therefore zeroed before the feature vector reaches either model. Every result in chapter 4 is vibration alone, and restoring sound is the first item in chapter 5.
 
-# 2.10 Dashboard in Any Browser
+# 2.8 Dashboard in Any Browser
 
 [IMAGE: report/diagrams/08-dashboard-anatomy.png]
 *Dashboard depiction*
 
-"So how will we monitor the health of the assets? Do we need to put it up on a monitor?" Ravi asked.
+The dashboard is served from the UNO Q itself, so any phone or laptop on the shop network can open it and there is no app to install. It lists every machine with its status, and the status tiles at the top double as filters. Open a machine and you see how far it has drifted, plotted live against its own warning and fault lines, along with the fault name, the live vibration and sound spectra, and the last half hour of history. If a machine has been stopped, a banner says so above every page.
 
-"Yes, the system has a dashboard," Arjun said. "It is served from the UNO Q itself, so any phone or laptop on the shop network can open it and there is no app to install. It lists every machine with its status, and the status tiles at the top double as filters. Open a machine and you see how far it has drifted, plotted live against its own warning and fault lines, along with the fault name, the live vibration and sound spectra, and the last half hour of history. If a machine has been stopped, a banner says so above every page."
-
-# 2.11 Status Light on Every Node
+# 2.9 Status Light on Every Node
 
 [IMAGE: Row of nodes on machines, one showing red]
 *One glance down the row tells you which machine needs attention (AI generated)*
 
 [IMAGE: report/diagrams/18-status-light.gif]
 
-Ravi raised his concern. "But we do not have a person to spare to monitor the dashboard all day. All six of us are out on the floor, working alongside the machines."
+A dashboard only helps somebody who is looking at one, and in a shop of six people nobody is spare to do that. So the answer had to be readable without opening anything.
 
-"EPM has a solution for that too," Arjun said with a smile. "Each sensor node has an RGB dome on top of it. Green is healthy, amber is a warning, red is a fault. So you can read it from across the floor without opening anything."
+Each sensor node carries an RGB dome on top. Green is healthy, amber is a warning, red is a fault. Walking the floor is the check.
 
-# 2.12 Fleet Summary on the Base Station
+# 2.10 Fleet Summary on the Base Station
 
 [IMAGE: led_matrix_1.gif - UNO Q LED matrix scrolling the fleet summary]
 *1 Tripped(TRP), 1 Faulty(FLT), 10 Offline(OFF), 1 Healthy(OK)*
 
-"And when some nodes are out of sight, you can still read the status of every machine without opening the dashboard," he added, encouraged by the happiness on his father's face. "The UNO Q's own LED matrix scrolls a one line summary of the whole fleet, worst status first. One glance on the way past tells you whether anything is wrong."
+Nodes out of sight are covered by the base station itself. The UNO Q's own LED matrix scrolls a one line summary of the whole fleet, worst status first, so one glance on the way past says whether anything anywhere is wrong.
 
-# 2.13 Telegram Alert on a Phone
+# 2.11 Telegram Alert on a Phone
 
 [IMAGE: Alerts page next to a phone showing a Telegram alert]
 *The Alerts page, and what lands on a subscribed phone*
 
-"Scan the QR code on the dashboard once and that phone is subscribed to Telegram notifications. There is no account to create and no bot name to remember. We can select what alerts we need, either warnings and faults or faults only, and which machines, either the whole shop or a named few. The message carries the machine's name and the fault name."
+Nights and weekends are covered by phone. Scanning the QR code on the dashboard once subscribes that phone to Telegram notifications, with no account to create and no bot name to remember. Each phone chooses what it wants, warnings and faults or faults only, and which machines, the whole shop or a named few. The message carries the machine's name and the fault name.
 
-"So I can know if something went wrong while I am at home."
-
-"Yes."
-
-# 2.14 Physical AI, Not Just an Alert
+# 2.12 Physical AI, Not Just an Alert
 
 [IMAGE: report/diagrams/07-trip-sequence.png]
 *Fault detected and named Unbalanced, 10 seconds to press Hold; if not held it trips, and stays tripped until acknowledged*
 
-"It also has the feature you were looking for," Arjun said. "When a fault is confirmed, the system stops the machine itself to prevent further damage, and it stays stopped until someone clears it. It announces itself first: a banner counts down for 10 seconds, names the machine, and offers a Hold button for the case where the machine has to keep running."
+Everything above this point is still, in the end, a notification. This is the part that is not.
 
-# 2.15 No Server, No Subscription
+Every product Ravi called ends at the message. The sensor measures, a gateway forwards, a server decides, and a human is told. If the line is down, or it is 3 a.m., or the person holding the phone is forty minutes away, the machine keeps destroying itself for exactly as long as it takes someone to arrive.
 
-"The models run on the UNO Q and the dashboard is served from it. Nothing has to talk to a server, and there is nothing to pay for after the build," Arjun concluded.
+EPM closes that loop on the board. When a fault is confirmed, the base station stops the machine itself.
 
-"You found a gem," Ravi said with excitement.
+- It announces first. A banner names the machine and counts down 10 seconds, with a Hold button for the case where the machine genuinely has to keep running.
+- It latches. A tripped machine stays tripped and refuses further speed commands until somebody clears it from the dashboard, so a fault that comes and goes cannot quietly restart the motor.
+- It does not trust the label. The naming model is deliberately kept out of the safety path. If the classifier picks the wrong fault, the machine still stops. Only the name on the banner is wrong.
+- It decides where it measures. No gateway, no server, no internet. The decision and the action happen on the same board that felt the vibration.
+
+The honest limit is that the trip stops motion, not power. It commands the machine to stop and confirms it did. Cutting the supply at the source needs a relay per motor, which is in chapter 5.
+
+# 2.13 No Server, No Subscription
+
+The models run on the UNO Q and the dashboard is served from it. Nothing has to talk to a server, and there is nothing to pay for after the build.
+
+"So the whole thing is ours," Ravi said. "Once."
 
 # 3 Build
 
@@ -265,19 +278,59 @@ The satellite is deliberately the same build. Same sensors, similar harnesses, s
 
 There is nothing to set per unit in software. A node takes its identity from its own Wi-Fi hardware address, so ten of these are ten distinct machines on the dashboard with no ID typed anywhere.
 
-# 4 Planned Improvements
+# 4 Measured Results
+
+# 4.1 What Was Measured, and How
+
+Every figure in this chapter came off the physical rig: a sensor node on a spinning motor, a trip that actually stopped that motor, a dashboard checked in a real browser against the live board. The microphone is muted, so all of it is vibration alone. The full record of how each was checked is in the [project report](https://github.com/rahuljeyaraj/edgeai-predictive-monitor/blob/main/report/REPORT.md).
+
+# 4.2 Fault Detection
+
+Numbers straight off the rig:
+
+- After training on the healthy running machine, its live anomaly score sat at **0.046**, against a warning line of **0.144** and a fault line of **0.288**. That is real daylight between a machine reading as itself and the line that means trouble.
+- Induced fault, a 2.4x overspeed: scored **1.851** against a fault threshold of **0.292**, and the motor **tripped in about 11 seconds**.
+- Ramping back down returned the node cleanly to Idle rather than to Fault.
+
+The running/stopped gate matters as much as the model, because a stopped machine must not read as a broken one:
+
+- Full-spectrum average energy separates stopped from running by only **1.18x**, which is not enough to threshold safely.
+- Excess energy over the machine's own measured baseline separates them by **2.09x**, and that is the metric shipped.
+
+# 4.3 Why the Feature Vector Looks Like That
+
+The 536 numbers were not a guess. An offline harness replayed real captures through the whole pipeline and swept it:
+
+- **Per-axis beats fused.** Keeping the three vibration axes separate gave **+38.5 sigma** worst-case fault separation, against **+1.8 sigma** for a single combined tri-axial magnitude on the same captures.
+- **The six summary statistics carry more than expected.** Adding them took healthy-versus-imbalance separation from roughly **3 sigma** to roughly **80 sigma**. A spectrum on its own was leaving a lot on the table.
+
+# 4.4 Fault Identification
+
+The naming model was trained on **541 captures taken from this rig**, across four classes: healthy, bearing, loose mount and unbalanced. The trained model, its data and its confusion matrix are public in the [Edge Impulse project](https://studio.edgeimpulse.com/studio/1092356).
+
+One methodological limit is stated rather than buried. Because each fault condition exists as one continuous recording rather than many independent short ones, a file-level train/test split was not available. A contiguous-tail split was used instead, with the last portion of each recording held out and never trained on. It is the closest leakage-free approximation available under that constraint, and it is why the classifier is kept out of the safety path.
+
+# 4.5 The Costs, Measured
+
+Three limits with numbers on them, because a result without its cost is only half a result:
+
+- **Training one machine across several operating conditions costs sensitivity.** Adding a second condition widened the healthy spread **5.1x**. The same 2.4x overspeed that scored 1.851 and tripped under single-condition training never crossed the threshold at all under two conditions.
+- **A score sitting exactly on the fault line makes the countdown flap.** In one session the countdown started and cancelled three times before the trip finally fired. The system was correct each time, since a fault has to persist to be believed, but it is unpleasant to watch and hysteresis fixes it.
+- **Faults above roughly bin 24 look alike on this rig.** Above the motor's own mechanical signature there is nothing but sensor noise to tell classes apart. On a machine with genuine high-frequency fault content the sensor can see it, so this is a property of the bench rig rather than of the design.
+
+# 5 Planned Improvements
 
 Arjun forked the repository that same evening and opened an issue list for his father's build.
 
 - Isolate the microphone mounting acoustically and turn the sound channel back on for both models. It is the one thing holding back a signal both models already know how to use.
 - Add a relay per motor. Today's trip stops motion; a relay would remove power at the source as well. The trip message, the latch and the confirmation logic would not change.
 - Add hysteresis to the fault threshold, so a score sitting exactly on the line stops making the countdown flap.
-- Give each operating condition its own threshold. Training one machine across several conditions costs sensitivity, and the hard part is not the thresholds, it is knowing which condition the machine is in right now.
+- Give each operating condition its own threshold. Training one machine across several conditions costs a measured 5.1x, and the hard part is not the thresholds, it is knowing which condition the machine is in right now.
 - Pre-train one shared healthy model per asset class, so commissioning the fortieth pump becomes calibration rather than training, and takes less time than the first one did.
 - Record more labelled fault data per class. The fault identification model's ceiling is set by how much genuinely different fault data exists, and the recording workflow is now good enough that this is a matter of time rather than tooling.
 - Trend severity, not just detect it. The anomaly score is already stored per machine, so the question after something is wrong is how fast it is getting worse.
 
-# 5 Conclusion
+# 6 Conclusion
 
 The compressor gave Ravi weeks of warning. Months, maybe. Nobody could feel it, because a machine that is failing slowly feels exactly like it did yesterday, every day, until the morning it does not turn.
 
