@@ -203,13 +203,12 @@ Ravi raised his concern. "But we do not have a person to spare to monitor the da
 
 # 3.1 Full Build Instructions
 
-The complete instructions are on GitHub and are not repeated here. This chapter is the build in photographs; the two documents below are the build in words.
+Order from the parts list, then work through the build guide in order. The photographs in the rest of this chapter show what each stage looks like when you get there.
 
-- [Bill of materials](https://github.com/rahuljeyaraj/edgeai-predictive-monitor/blob/main/docs/BILL_OF_MATERIALS.md), every part with a quantity and a purchase link, plus the software and bench tools
+- [Bill of materials](https://github.com/rahuljeyaraj/edgeai-predictive-monitor/blob/main/docs/BILL_OF_MATERIALS.md), every part with a quantity and a purchase link, plus the software and the bench tools
 - [Build guide](https://github.com/rahuljeyaraj/edgeai-predictive-monitor/blob/main/docs/BUILD_GUIDE.md), from an empty bench to a commissioned machine, including two paths that need no hardware at all
-- [3D models](https://github.com/rahuljeyaraj/edgeai-predictive-monitor/tree/main/3d-models) and [KiCad schematics](https://github.com/rahuljeyaraj/edgeai-predictive-monitor/tree/main/hardware/kicad), also attached to this project
-
-Wiring is in the Schematics section of this page. Printable parts are in Custom parts and enclosures.
+- [3D models](https://github.com/rahuljeyaraj/edgeai-predictive-monitor/tree/main/3d-models), thirteen printable parts as 3MF and STL, also under Custom parts and enclosures on this page
+- [KiCad schematics](https://github.com/rahuljeyaraj/edgeai-predictive-monitor/tree/main/hardware/kicad), editable projects for all three boards, also under Schematics on this page
 
 # 3.2 Printed Enclosure Parts
 
