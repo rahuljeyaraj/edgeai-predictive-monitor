@@ -64,7 +64,7 @@ Arjun explained the system to his father, part by part.
 
 "A satellite is the same pair of sensors on a XIAO ESP32-S3. It watches its own machine and sends readings to the base station over Wi-Fi. It makes no decisions and holds no model."
 
-"The base station costs around $100. Every satellite after that is about $25, so the eleventh machine costs $25 to cover, not another licence."
+"The base station costs around $100. Every satellite after it is about $25, so covering all eleven machines is a one-time $350, with nothing to pay after that."
 
 # 2.4 The Network Is Whatever the Shop Already Has
 
