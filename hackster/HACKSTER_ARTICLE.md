@@ -91,7 +91,7 @@ Ravi liked the flexibility of the system. He needed to know more. "How do we set
 
 "Each node reduces its raw signal to 536 numbers, five times a second," he continued. "That is 128 frequency bins and 6 summary values for each of four channels, the three vibration axes and the sound. During commissioning the model on the UNO Q learned to rebuild the healthy version of those numbers. Every reading after that, it rebuilds what it expects and compares it with what actually arrived. The bigger the difference, the further the machine has moved from healthy. Past a threshold set from that machine's own data, it reports a fault."
 
-Ravi took a moment with that. "So it's my hand on the housing," he said. "Except it remembers exactly how the machine felt on a good day, and I don't."
+Ravi nodded slowly. "So it learns what the machine feels like when it is fine, and tells me when that changes."
 
 # 2.7 Fault Identification Names the Fault
 
