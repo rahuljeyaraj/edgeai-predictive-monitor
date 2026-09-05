@@ -161,7 +161,7 @@ The honest limit is that the trip stops motion, not power. It commands the machi
 
 The models run on the UNO Q and the dashboard is served from it. Nothing has to talk to a server, and there is nothing to pay for after the build.
 
-"So the whole thing is ours," Ravi said. "Once."
+"So we pay once," Ravi said. "And nobody can switch it off on us."
 
 # 3 Build
 
