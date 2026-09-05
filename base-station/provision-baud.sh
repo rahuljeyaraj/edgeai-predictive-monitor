@@ -19,14 +19,14 @@
 # and the handshake is clean).
 #
 # Usage:
+#   ./provision-baud.sh                             # defaults to 500000
 #   BRIDGE_BAUD=2000000 ./provision-baud.sh          # baud must match app_config.h
-#   ./provision-baud.sh                             # defaults to 1000000
 #
 # You will be prompted for the board's sudo password.
 
 set -euo pipefail
 
-BAUD="${BRIDGE_BAUD:-1000000}"
+BAUD="${BRIDGE_BAUD:-500000}"   # matches app_config.h BRIDGE_BAUD
 SERIAL_PORT="/dev/ttyHS1"   # UNO Q ("Imola"): MCU <-> Linux high-speed UART
 DROPIN_DIR="/etc/systemd/system/arduino-router.service.d"
 DROPIN="${DROPIN_DIR}/99-baud.conf"
