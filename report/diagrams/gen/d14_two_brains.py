@@ -3,62 +3,80 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from diagram_lib import Canvas, save, INK_SOFT  # noqa: E402
-
-c = Canvas(
-    1340, 700,
-    title="Two brains, one board, one power supply",
-    subtitle="The split is not cosmetic. Each side does the job the other physically cannot.",
-    footnotes=[
-        ("Take the Linux half away and commissioning becomes a cloud round trip. Take the real-time half "
-         "away and the spectra are no longer worth training on. This project needs both, on one board.", None),
-        ("Both links run between the two chips inside the UNO Q. Neither leaves the board, and neither "
-         "needs a wire a builder has to solder.", None),
-    ],
+from diagram_lib import (  # noqa: E402
+    Canvas, save, text_width, ROLES, INK, INK_SOFT, PAPER,
 )
 
-# ---- MCU side ----------------------------------------------------------
-c.box(34, 168, 570, 92, "STM32U585 · Cortex-M33 @ 160 MHz",
-      ["Zephyr RTOS · 2 MB flash · 786 kB SRAM"], role="sense", title_size=16)
-mcu_rows = [
-    ("Sample without missing a window", "KX134 over SPI at 12.8 kHz, INMP441 over SAI, both continuous"),
-    ("Reduce the firehose", "512-point FFT per channel, six statistics, average-pooled to 128 wire bins"),
-    ("Drive the lights", "WS2812 ring on a DMA timer channel, and the board's own 8×13 LED matrix"),
-]
-y = 278
-for title, blurb in mcu_rows:
-    c.box(34, y, 570, 78, title, [blurb], role="sense", title_size=13, body_size=10.5)
-    y += 90
+c = Canvas(1340, 536)
 
-# ---- MPU side ----------------------------------------------------------
-c.box(736, 168, 570, 92, "QRB2210 · 4 × Cortex-A53 @ 2.0 GHz",
-      ["Debian Linux · 2 GB LPDDR4X · Wi-Fi 5"], role="brain", title_size=16)
-mpu_rows = [
-    ("Train a neural network in the field", "PyTorch, on the board, while a technician waits — no cloud, no queue"),
-    ("Score and decide", "anomaly model, running/stopped gate, TFLite classifier, the trip decision"),
-    ("Be a server", "dashboard, WebSocket, MQTT broker, asset registry, history, Telegram"),
-]
-y = 278
-for title, blurb in mpu_rows:
-    c.box(736, y, 570, 78, title, [blurb], role="brain", title_size=13, body_size=10.5)
-    y += 90
+# ---- the board itself, drawn around both halves ------------------------
+BX, BY, BW, BH = 34, 56, 1272, 444
+c.raw(f'<rect x="{BX}" y="{BY}" width="{BW}" height="{BH}" rx="18" '
+      f'fill="#FBFCFD" stroke="#5B6B7A" stroke-width="1.8"/>')
+label = "Arduino UNO Q"
+lw = text_width(label, 15, "bold") + 48
+c.raw(f'<rect x="{BX + 30:.1f}" y="{BY - 18:.1f}" width="{lw:.1f}" height="36" rx="9" '
+      f'fill="{PAPER}" stroke="#5B6B7A" stroke-width="1.5"/>')
+c.text(BX + 30 + lw / 2, BY + 7, label, size=15, weight="bold", anchor="middle", fill=INK)
+
+COL_W, COL_H = 520, 322
+COL_Y = BY + 30
+LX, RX = 56, 764
+PAD, ROW_H, ROW_GAP = 16, 66, 14
+ROW_TOP = COL_Y + 78
+
+
+def half(x, chip, spec, rows, role):
+    """One processor: a big box carrying its own three jobs."""
+    fill, stroke, tcol = ROLES[role]
+    c.raw(f'<rect x="{x}" y="{COL_Y}" width="{COL_W}" height="{COL_H}" rx="14" '
+          f'fill="{fill}" stroke="{stroke}" stroke-width="2" filter="url(#softshadow)"/>')
+    c.text(x + COL_W / 2, COL_Y + 34, chip, size=15, weight="bold",
+           anchor="middle", fill=tcol)
+    c.text(x + COL_W / 2, COL_Y + 57, spec, size=11, anchor="middle", fill=INK_SOFT)
+    for i, (head, blurb) in enumerate(rows):
+        y = ROW_TOP + i * (ROW_H + ROW_GAP)
+        c.raw(f'<rect x="{x + PAD}" y="{y}" width="{COL_W - 2 * PAD}" height="{ROW_H}" '
+              f'rx="8" fill="{PAPER}" stroke="{stroke}" stroke-width="1.3"/>')
+        c.text(x + COL_W / 2, y + 27, head, size=12.5, weight="bold",
+               anchor="middle", fill=tcol)
+        c.text(x + COL_W / 2, y + 48, blurb, size=10.5, anchor="middle", fill=INK_SOFT)
+
+
+half(LX, "STM32U585 · Cortex-M33 @ 160 MHz", "Zephyr RTOS · 2 MB flash · 786 kB SRAM", [
+    ("Samples both sensors", "KX134 at 12.8 kHz and INMP441, never missing a window"),
+    ("Reduces the firehose", "512-point FFT and six statistics, per channel"),
+    ("Drives the lights", "the status ring, and the board's own 8×13 LED matrix"),
+], "sense")
+
+half(RX, "QRB2210 · 4 × Cortex-A53 @ 2.0 GHz", "Debian Linux · 4 GB LPDDR4X · Wi-Fi 5", [
+    ("Trains a model per machine", "PyTorch on the board, in seconds, with no cloud"),
+    ("Scores and decides", "anomaly model, running gate, classifier, the trip"),
+    ("Is the server", "dashboard, MQTT broker, asset registry, Telegram"),
+], "brain")
 
 # ---- the two links between them ---------------------------------------
-c.box(628, 300, 84, 236, "", role="ghost", title_size=1)
-c.text(670, 330, "LPUART1", size=12, anchor="middle", weight="bold")
-c.text(670, 348, "500 kbaud", size=10.5, anchor="middle", fill=INK_SOFT)
-c.text(670, 366, "control RPC", size=10.5, anchor="middle", fill=INK_SOFT)
-c.text(670, 452, "SPI", size=12, anchor="middle", weight="bold")
-c.text(670, 470, "~40 MHz", size=10.5, anchor="middle", fill=INK_SOFT)
-c.text(670, 488, "bulk telemetry", size=10.5, anchor="middle", fill=INK_SOFT)
+GAP_L, GAP_R = LX + COL_W, RX
+MID = (GAP_L + GAP_R) / 2
+for i, (name, sub, width) in enumerate([
+    ("LPUART1 · 500 kbaud", "commands and status", 1.7),
+    (None, None, 0),
+    ("SPI · about 40 MHz", "the bulk spectra", 2.6),
+]):
+    y = ROW_TOP + i * (ROW_H + ROW_GAP) + ROW_H / 2
+    if name is None:
+        continue
+    c.link([(GAP_L + 6, y), (GAP_R - 6, y)], label=name, both=True, width=width,
+           label_size=11)
+    c.text(MID, y + 22, sub, size=10.5, anchor="middle", fill=INK_SOFT)
 
-c.link([(604, 320), (628, 320)], both=True, width=1.6)
-c.link([(712, 320), (736, 320)], both=True, width=1.6)
-c.link([(604, 442), (628, 442)], both=True, width=2.2)
-c.link([(712, 442), (736, 442)], both=True, width=2.2)
-
-c.text(670, 566, "Two links, on purpose:", size=11, anchor="middle", fill=INK_SOFT)
-c.text(670, 583, "a big diagnostic capture", size=11, anchor="middle", fill=INK_SOFT)
-c.text(670, 600, "cannot stall the status loop.", size=11, anchor="middle", fill=INK_SOFT)
+# ---- what else came on the board --------------------------------------
+chips = ["One power supply", "One USB-C cable", "On-board Wi-Fi", "8×13 LED matrix"]
+widths = [text_width(t, 14, "bold") + 48 for t in chips]
+gap = 30
+x = (BX + BW / 2) - (sum(widths) + gap * (len(chips) - 1)) / 2
+for label_, w in zip(chips, widths):
+    c.chip(x, COL_Y + COL_H + 20, label_, role="ghost", size=14, pad=24, h=44)
+    x += w + gap
 
 save(c, "14-two-brains")

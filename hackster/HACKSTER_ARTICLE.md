@@ -66,7 +66,25 @@ Arjun explained the system to his father, part by part.
 
 "The base station costs around $100. Every satellite after it is about $25, so covering all eleven machines is a one-time $350, with nothing to pay after that."
 
-# 2.4 The Network Is Whatever the Shop Already Has
+# 2.4 Why the UNO Q
+
+[IMAGE: report/diagrams/14-two-brains.png]
+*One board, two processors. The STM32 half samples and reduces, the Qualcomm Linux half trains and decides, and neither link leaves the board.*
+
+"Why that board?" Ravi asked. "A sensor is a sensor."
+
+"Because it is two computers on one PCB, wired to each other at the factory, on one power supply and one USB-C cable," Arjun said, and went through what is on it.
+
+- **A real-time half.** An STM32U585, Cortex-M33 at 160 MHz, 2 MB of flash and 786 kB of SRAM, running Zephyr. SPI, SAI and timer peripherals with DMA behind them, so it can sample sensors continuously and still hit every window on time.
+- **A Linux half.** A Qualcomm QRB2210, four Cortex-A53 cores at 2.0 GHz with 4 GB of RAM, running Debian. Not a cut-down embedded distribution, the ordinary one, so PyTorch, an MQTT broker and a web server install with pip and apt and simply run.
+- **Two links between them, already routed on the board.** An internal serial line, and a dedicated SPI bus that clocks at about 40 MHz. Nothing to solder, and traffic on one cannot block the other.
+- **Wi-Fi on board**, which can be a client or an access point.
+- **An 8x13 LED matrix on board**, driven from the real-time half.
+- **Arduino App Lab**, which packages the Linux side as an application, ships it to the board, runs it in its own container, and keeps a secret such as a bot token out of the repository.
+
+"That first pair is the whole reason," he said. "A chip that samples properly and a computer that can train a model, on the same purchase order. Anywhere else that is two boards, a bridge somebody has to design and debug, and a second power supply."
+
+# 2.5 The Network Is Whatever the Shop Already Has
 
 [IMAGE: Wi-Fi onboarding pages, base station and satellite side by side]
 *The Wi-Fi onboarding page of the base station (left) and a satellite (right)*
@@ -75,7 +93,7 @@ Arjun explained the system to his father, part by part.
 
 "No," Arjun corrected. "If there is Wi-Fi on the floor, everything joins it, base station included. If there is none, the base station becomes the Wi-Fi access point itself, and the satellite nodes and the phone or laptop running the dashboard connect straight to it."
 
-# 2.5 Each Machine Is Taught Its Own Normal
+# 2.6 Each Machine Is Taught Its Own Normal
 
 [IMAGE: report/diagrams/15f-setup-steps.png]
 *Commissioning steps*
@@ -84,7 +102,7 @@ Ravi liked the flexibility of the system. He needed to know more. "How do we set
 
 "Every new asset is commissioned once from the dashboard, and it takes only a few minutes," Arjun said. "The node records the asset while it is idle and again while it runs under each of its normal operating conditions, and a model is trained on the base station from those recordings. Nothing is downloaded and no factory average is used. Different assets such as Pump 1 and Pump 2 end up with their own models, each judged against itself."
 
-# 2.6 Fault Detection Is Drift Away From That Normal
+# 2.7 Fault Detection Is Drift Away From That Normal
 
 [IMAGE: report/diagrams/04-feature-pipeline.png]
 *From raw vibration and sound to fault detection*
@@ -93,7 +111,7 @@ Ravi liked the flexibility of the system. He needed to know more. "How do we set
 
 Ravi nodded slowly. "So it learns what the machine feels like when it is fine, and tells me when that changes."
 
-# 2.7 Fault Identification Names the Fault
+# 2.8 Fault Identification Names the Fault
 
 [IMAGE: report/diagrams/11-edge-impulse-flow.png]
 *Fault identification steps*
@@ -106,14 +124,14 @@ Ravi nodded slowly. "So it learns what the machine feels like when it is fine, a
 
 > The microphone is muted in both models for now. This rig is not acoustically isolated, so a machine running next to it is heard as if it belonged to this one, and the sound channel is therefore zeroed before the feature vector reaches either model. Every result in chapter 4 is vibration alone, and restoring sound is the first item in chapter 5.
 
-# 2.8 Dashboard in Any Browser
+# 2.9 Dashboard in Any Browser
 
 [IMAGE: report/diagrams/08-dashboard-anatomy.png]
 *Dashboard depiction*
 
 The dashboard is served from the UNO Q itself, so any phone or laptop on the shop network can open it and there is no app to install. It lists every machine with its status, and the status tiles at the top double as filters. Open a machine and you see how far it has drifted, plotted live against its own warning and fault lines, along with the fault name, the live vibration and sound spectra, and the last half hour of history. If a machine has been stopped, a banner says so above every page.
 
-# 2.9 Status Light on Every Node
+# 2.10 Status Light on Every Node
 
 [IMAGE: report/diagrams/18-status-light.gif]
 *Every state the dome can show: seven for machine health on any node, four more while a satellite is getting connected. Blink and fade carry meaning as well as colour, which is how a tripped machine reads differently from a faulty one.*
@@ -125,21 +143,21 @@ A dashboard only helps somebody who is looking at one, and in a shop of six peop
 
 Each sensor node carries an RGB dome on top. Green is healthy, amber is a warning, red is a fault. Walking the floor is the check.
 
-# 2.10 Fleet Summary on the Base Station
+# 2.11 Fleet Summary on the Base Station
 
 [IMAGE: led_matrix_1.gif - UNO Q LED matrix scrolling the fleet summary]
 *The base station's own LED matrix, worst status first: 1 Tripped (TRP), 1 Faulty (FLT), 10 Offline (OFF), 1 Healthy (OK). The offline entries are simulated nodes, registered alongside the real ones to exercise the display at fleet scale.*
 
 Nodes out of sight are covered by the base station itself. The UNO Q's own LED matrix scrolls a one line summary of the whole fleet, worst status first, so one glance on the way past says whether anything anywhere is wrong.
 
-# 2.11 Telegram Alert on a Phone
+# 2.12 Telegram Alert on a Phone
 
 [IMAGE: Alerts page next to a phone showing a Telegram alert]
 *The Alerts page, and what lands on a subscribed phone*
 
 Nights and weekends are covered by phone. Scanning the QR code on the dashboard once subscribes that phone to Telegram notifications, with no account to create and no bot name to remember. Each phone chooses what it wants, warnings and faults or faults only, and which machines, the whole shop or a named few. The message carries the machine's name and the fault name.
 
-# 2.12 Physical AI, Not Just an Alert
+# 2.13 Physical AI, Not Just an Alert
 
 [IMAGE: report/diagrams/07-trip-sequence.png]
 *Fault detected and named Unbalanced, 10 seconds to press Hold; if not held it trips, and stays tripped until acknowledged*
@@ -157,7 +175,7 @@ EPM closes that loop on the board. When a fault is confirmed, the base station s
 
 The honest limit is that the trip stops motion, not power. It commands the machine to stop and confirms it did. Cutting the supply at the source needs a relay per motor, which is in chapter 5.
 
-# 2.13 No Server, No Subscription
+# 2.14 No Server, No Subscription
 
 The models run on the UNO Q and the dashboard is served from it. Nothing has to talk to a server, and there is nothing to pay for after the build.
 
@@ -213,7 +231,7 @@ cd base-station
 
 `provision-baud.sh` matters more than it looks. The Linux-side router's baud must match the firmware's, and a mismatch breaks the whole link silently, with no error anywhere.
 
-Then flash the real-time side: open `base-station/sketch/` in Arduino App Lab and flash it to the STM32U585. Then build, deploy and run the Linux side:
+Then flash the real-time side: open `base-station/sketch/` in Arduino App Lab and flash it to the STM32U585. The Linux side is an App Lab application from the same project, declared by `base-station/app.yaml`: its name, its icon, the two ports it opens and the `arduino:telegram_bot` brick that holds the bot token, so no secret is ever committed. One script wraps App Lab's own build and deploy:
 
 ```
 cd base-station
@@ -255,22 +273,26 @@ pio device monitor     # optional serial console, 115200 baud
 
 No credential is compiled in, and there is nothing to set per unit. A node with no saved credentials raises its own access point, named from its own hardware address, for example `EPM-SAT-a4cf12`, so ten unconfigured nodes on a bench are ten distinguishable networks. Join it from any phone, and the setup page opens by itself through the same captive-portal mechanism airport Wi-Fi uses. Three fields: the shop's Wi-Fi name, its password, and the broker address, pre-filled with `epm-base.local`. Submitting does not blindly save. The node tries the credentials first and writes them to storage only on success, so a typo cannot strand a device on a machine you now need a ladder to reach.
 
-A node takes its identity from its own Wi-Fi hardware address, so ten of these are ten distinct machines on the dashboard with no ID typed anywhere, no pairing step and no jumper to solder.
-
 # 3.4 Commissioning a Machine
+
+[IMAGE: setup-wizard-done.png - the six-step setup drawer on its last step, all steps ticked]
+*Commissioning Turbine 1 from the dashboard: six steps, each one ticked off, ending with the asset live and being monitored.*
 
 A node that is wired and online is not monitoring anything yet. Every asset is taught its own normal once, from the dashboard, in four to six minutes. Find it in the list and press **Set up**. Six steps:
 
-- **Name and class.** The name is what alerts print, and the class is what recordings group by.
-- **Off**, with the machine switched off. Captures this sensor's own noise floor, per frequency bin.
-- **Running conditions**, with the machine running, at least one. Produces the training batch, the running reference, and the labelled healthy recordings.
+- **Name & class.** The name is what alerts print, and the class is what recordings group by.
+- **Machine off**, with the machine switched off. Captures this sensor's own noise floor, per frequency bin.
+- **Machine running**, one recording per normal operating condition, at least one. Produces the training batch, the running reference, and the labelled healthy recordings.
 - **Train.** Produces this asset's own model, its normalisation statistics and its two thresholds.
-- **Trip output**, optional. Establishes which motor stops this machine, confirmed by actually stopping it rather than guessed.
+- **Stop output**, optional. Establishes which motor stops this machine, confirmed by actually stopping it rather than guessed.
 - **Done.** A summary, and the asset goes live.
 
 Step 2 is the one instruction no computer can check. Nothing in the software can confirm the machine is actually switched off. A baseline captured while it runs teaches the system that its own vibration is silence, and the running/stopped gate will never work correctly until you re-measure it.
 
 # 3.5 Naming the Fault Type
+
+[IMAGE: classifier-tab-pump.png - Classifier tab, pump class card with its labelled recordings]
+*The Classifier tab, one card per asset class: labelled recordings from both pumps, ready to upload, and the model already fetched back to the board.*
 
 That is the whole of fault detection. Naming the fault needs the second model, and five more steps, only one of which happens outside the dashboard.
 
@@ -390,9 +412,9 @@ A perfect score is a claim that deserves its caveat, so here it is. These four f
 
 The model, its data and its confusion matrix are public in the [Edge Impulse project](https://studio.edgeimpulse.com/studio/1092356).
 
-# 4.5 The Costs, Measured
+# 4.5 What It Does Not Do Well
 
-Three limits with numbers on them, because a result without its cost is only half a result:
+Three limits, each measured on the rig rather than estimated:
 
 - **Training one machine across several operating conditions costs sensitivity.** Adding a second condition widened the healthy spread **5.1x**. The same 2.4x overspeed that scored 1.851 and tripped under single-condition training never crossed the threshold at all under two conditions.
 - **A score sitting exactly on the fault line makes the countdown flap.** In one session the countdown started and cancelled three times before the trip finally fired. The system was correct each time, since a fault has to persist to be believed, but it is unpleasant to watch and hysteresis fixes it.
@@ -417,11 +439,11 @@ Ravi's first complaint was not downtime. It was the bin.
 A calendar service changes a bearing whether it needed changing or not, and after the compressor his shop shortened the cycle, which only threw the parts away faster. Most of what comes out of a machine on a service schedule is still serviceable. The worn bearings in the photographs above are genuinely finished, and they were kept because a finished bearing is what a fault class needs. The ones that come out beside them on a calendar mostly are not.
 
 - **Parts get replaced when the machine asks.** Condition tells you which bearing is going, so the other ten stay in the machine instead of in the bin.
-- **The machine survives its own fault.** A bearing caught early is a bearing. A bearing caught after the shaft has been running on it is a rotor, a housing and a week of work. Stopping the motor at the fault is what keeps a repair a repair.
+- **The machine survives its own fault.** Caught early, the repair is one bearing. Left running, the failing bearing scores the shaft and the housing, and the job becomes a rotor, a housing and a week of work. Stopping the motor at the fault is what holds the damage to the one part.
 - **The monitor itself is repairable.** Every sensor is on its own crimped harness and every part of the enclosure is a printable file in this project. A dead microphone is a $3 part and a plug, not a scrapped node.
 - **Nothing is stranded by a subscription.** There is no service to switch off, so a node is worth the same on the day the project stops being maintained as it is today.
 
-None of that is measured, and it is not claimed as a number. It is the reason the trip exists rather than an alert.
+None of this was measured over a real service year, so none of it is claimed as a number.
 
 # 7 Conclusion
 
@@ -429,6 +451,6 @@ The compressor gave Ravi weeks of warning. Months, maybe. Nobody could feel it, 
 
 That is the gap this fills. Each machine is measured against what it felt like the day it was serviced, on the machine itself, by a sensor node attached to it. A bearing gets changed because a machine asked for it, not because a calendar came round. A light on the housing says which machine to fix, from across the floor. A phone says so when nobody is on the floor at all. And the motor stops itself to avoid further damage.
 
-Eleven machines was the number that ended every sales call. It is also the number that makes this worth building: a base station and ten satellites, roughly $350 of parts, no gateway, no subscription, no account, and nothing leaving the shop.
+Eleven machines was the number that ended every sales call. It is also the number that makes this worth building: one Arduino UNO Q as the base station and ten satellites around it, roughly $350 of parts, no gateway, no subscription, no account, and nothing leaving the shop. The board samples the machine, trains its model, names the fault, serves the dashboard and stops the motor. All of it on the one board bolted to the machine.
 
 All the code, the firmware, the wiring, and the 3D models are at [github.com/rahuljeyaraj/edgeai-predictive-monitor](https://github.com/rahuljeyaraj/edgeai-predictive-monitor). Fork it, as Arjun did.

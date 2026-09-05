@@ -235,7 +235,7 @@ single-board computer for 3–4, and a bridge between them that somebody has to
 design, debug and power. The UNO Q is that whole arrangement already built,
 already routed, already sharing one power supply and one USB connector.
 
-![Two brains, one board: what runs on the STM32U585 side, what runs on the QRB2210 Linux side, and the two links between them](diagrams/14-two-brains.png)
+![One board, two processors: the STM32U585 samples and reduces, the QRB2210 Linux side trains and decides, and both links between them stay inside the board](diagrams/14-two-brains.png)
 
 **What we actually use, and where:**
 
@@ -2390,16 +2390,16 @@ category moves.
 
 | Part | Qty | What it does here | ≈ ₹ | Buy |
 |---|---:|---|---:|---|
-| Arduino UNO Q (2 GB) | 1 | The board. Real-time sensing on the STM32U585, models + dashboard on the QRB2210 Linux side | 6,800 | [Robu](https://robu.in/product/official-arduino-uno-q/) |
+| Arduino UNO Q (4 GB, ABX00173) | 1 | The board. Real-time sensing on the STM32U585, models + dashboard on the QRB2210 Linux side | 6,800 | [Robu](https://robu.in/product/official-arduino-uno-q-4gb-single-board-computer-abx00173/) |
 | SmartElex KX134-1211 breakout | 1 | Vibration sensing over SPI | 900 | [Robu](https://robu.in/product/smartelex-triple-axis-accelerometer-breakout-kx134/) |
 | INMP441 I²S MEMS microphone | 1 | Audio sensing | 180 | [Robu](https://robu.in/product/inmp441-mems-high-precision-omnidirectional-microphone-module-i2s/) |
 | WS2812B 8-pixel RGB ring | 1 | Local status light | 85 | [Robu](https://robu.in/product/8bit-ws2812-5050-rgb-led-built-full-color-driving-lights-circular-development-board/) |
 | Jumper wires + rigid mount / magnet base | 1 set | Wiring, and rigidly coupling the accelerometer to the machine housing | 150 | [Robu](https://robu.in/product-category/connectors/jumper-wire/) |
 | | | **Base station subtotal** | **≈ 8,115** | |
 
-A 4 GB UNO Q variant exists ([Robu](https://robu.in/product/official-arduino-uno-q-4gb-single-board-computer-abx00173/))
-and is a straight drop-in — nothing in this project needs it, but it is the one
-to buy if you plan to train larger models on-device.
+A 2 GB UNO Q variant exists ([Robu](https://robu.in/product/official-arduino-uno-q/))
+and is a straight drop-in — nothing in this project needs 4 GB, but 4 GB is the
+one to buy if you plan to train larger models on-device.
 
 **The mount is not an accessory.** An accelerometer read through a soft or
 loose mount is a low-pass filter you did not ask for, and it removes exactly the
