@@ -198,7 +198,7 @@ The microphone's bit clock is the one signal without a D-number. It comes out on
 
 Every sensor connects through its own crimped harness, so the pod can be opened and a part swapped without a soldering iron. The accelerometer sits on its own plate against the shell wall, which is what couples it to the machine rather than to the board.
 
-The white globe is the diffuser cap off a 9W LED bulb, and it is the status dome over the ring. The rectangular window on the top face holds a Fresnel lens over the UNO Q's own LED matrix, which is what makes the fleet summary readable from across the floor. The round hole on the bottom is the microphone port. The foot underneath takes the ring magnet, pressed in by hand.
+The white globe is the diffuser cap off a 9W LED bulb, and it is the status dome over the ring. The rectangular window on the front face holds a Fresnel lens over the UNO Q's own LED matrix, which is what makes the fleet summary readable from across the floor. The round hole on the bottom is the microphone port. The foot underneath takes the ring magnet, pressed in by hand.
 
 Where the finished pod goes matters as much as which sensor went into it. Mount it rigidly, as close to the bearing as the geometry allows. A soft or loose mount is a low-pass filter you did not ask for, and it removes exactly the high-frequency content that early bearing faults live in.
 
